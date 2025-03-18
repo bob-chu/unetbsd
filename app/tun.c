@@ -21,6 +21,7 @@ int af_packet_output(void *data, long unsigned int len, void *arg);
 
 void print_packet(unsigned char *buf, int len, bool dir)
 {
+    return;
     int i;
     printf("Packet: %s Length: %d\n", dir ? "IN" : "OUT", len);
     for (i = 0; i < len; i++) {
@@ -127,7 +128,7 @@ int open_af_packet()
 void close_af_packet()
 {
     if (socket_fd) {
-        close(socket_fd); 
+        close(socket_fd);
     }
 }
 

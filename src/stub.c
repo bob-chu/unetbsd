@@ -261,10 +261,8 @@ struct lwp lwp0 = {
 lwp_t *gl_lwp;
 struct proc dummy_proc = {0};
 extern struct proc *curproc;
-//struct proc *curproc = &dummy_proc;
 
 __attribute__((constructor)) void init_dummy_lwp() {
-    printf("haha\n");
     gl_lwp = (struct lwp_t *)&lwp0;
 }
 
@@ -276,32 +274,6 @@ int cpu_intr_p(void) {
     return 0;  /* Not in interrupt context */
 }
 
-/*
- * insert an element into a queue 
- */
-#if 0
-#undef insque
-void _insque(element, head)
-	register struct prochd *element, *head;
-{
-	element->ph_link = head->ph_link;
-	head->ph_link = (struct proc *)element;
-	element->ph_rlink = (struct proc *)head;
-	((struct prochd *)(element->ph_link))->ph_rlink=(struct proc *)element;
-}
-
-/*
- * remove an element from a queue
- */
-#undef remque
-void _remque(element)
-	register struct prochd *element;
-{
-	((struct prochd *)(element->ph_link))->ph_rlink = element->ph_rlink;
-	((struct prochd *)(element->ph_rlink))->ph_link = element->ph_link;
-	element->ph_rlink = (struct proc *)0;
-}
-#endif
 //////////////////////////////////////////////////////////////////////////////
 // sys/i386/i386/trap.c
 //////////////////////////////////////////////////////////////////////////////
@@ -807,7 +779,6 @@ void *softint_establish(u_int flags, void (*func)(void *), void *arg) {
     gl_sh[handle_index].intrh = func;
     gl_sh[handle_index].arg = arg;
     void *sih = &gl_sh[handle_index];
-    printf("sih: %p, index: %d, func: %p\n", sih, handle_index, func);
     handle_index++;
     return (void *)sih;
 }

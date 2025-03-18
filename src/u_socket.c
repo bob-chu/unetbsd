@@ -18,11 +18,13 @@ static void soupcall_set(struct socket *so, void *arg,
     so->so_upcallarg = arg;
     so->so_upcall = so_upcall;
     so->so_rcv.sb_flags |= SB_UPCALL;
+    so->so_snd.sb_flags |= SB_UPCALL;
 }
 
 static void soupcall_clear(struct socket *so)
 {
     so->so_rcv.sb_flags &= ~SB_UPCALL;
+    so->so_snd.sb_flags &= ~SB_UPCALL;
     so->so_upcallarg = NULL;
     so->so_upcall = NULL;
 }
@@ -44,6 +46,10 @@ soupcall_cb(struct socket *so, void *arg, int events, int waitflag)
     ev->events = events;
 
     TAILQ_INSERT_TAIL(&event_queue, ev, next);
+
+    so->so_rcv.sb_flags |= SB_UPCALL;
+    so->so_snd.sb_flags |= SB_UPCALL;
+
 #if 0
     switch (events) {
         case POLLIN|POLLRDNORM:
@@ -73,16 +79,16 @@ netbsd_process_event()
     struct netbsd_event *ev;
     while ((ev = TAILQ_FIRST(&event_queue)) != NULL) {
         struct netbsd_handle *nh = ev->nh;
-        int events = ev->events; 
+        int events = ev->events;
         TAILQ_REMOVE(&event_queue, ev, next);
         switch (events) {
             case POLLIN|POLLRDNORM:
-                if (nh->read_cb) {
+                if (nh->read_cb && nh->so) {
                     nh->read_cb(nh, events);
                 }
                 break;
             case POLLOUT|POLLWRNORM:
-                if (nh->write_cb) {
+                if (nh->write_cb && nh->so) {
                     nh->write_cb(nh->data, nh->so->so_error);
                 }
                 break;
@@ -106,9 +112,16 @@ netbsd_socket(struct netbsd_handle *nh)
     int error;
 
     error = socreate(nh->is_ipv4 ? AF_INET : AF_INET6, &nh->so, nh->type, nh->proto, curlwp, NULL);
-    soupcall_set(nh->so, nh, soupcall_cb);
     return error;
 }
+
+void
+netbsd_io_start(struct netbsd_handle *nh)
+{
+    soupcall_set(nh->so, nh, soupcall_cb);
+}
+
+
 
 /* 绑定地址 */
 int
@@ -141,7 +154,7 @@ int
 netbsd_accept(struct netbsd_handle *nh_server, struct netbsd_handle *nh_client)
 {
     struct socket *so, *so2;
-    struct sockaddr *sa = NULL;
+    struct sockaddr sa;
     int error;
 
     so = nh_server->so;
@@ -178,7 +191,7 @@ netbsd_accept(struct netbsd_handle *nh_server, struct netbsd_handle *nh_client)
         panic("accept");
 
 
-    error = soaccept(so, sa);
+    error = soaccept(so, &sa);
     if (error == 0) {
         nh_client->so = so2;
     }
@@ -288,7 +301,7 @@ static size_t so_read(struct netbsd_handle *nh, struct iovec *iov, int iovcnt, s
 }
 
 
-size_t netbsd_read(struct netbsd_handle *nh, struct iovec *iov, int iovcnt)
+int netbsd_read(struct netbsd_handle *nh, struct iovec *iov, int iovcnt)
 {
     return so_read(nh, iov, iovcnt, NULL);
 }

@@ -35,12 +35,13 @@ int netbsd_bind(struct netbsd_handle *nh, const struct sockaddr *addr);
 int netbsd_listen(struct netbsd_handle *nh, int backlog);
 int netbsd_connect(struct netbsd_handle *nh, struct sockaddr *addr);
 
+void netbsd_io_start(struct netbsd_handle *nh);
 int netbsd_accept(struct netbsd_handle *nh_server, struct netbsd_handle *nh_client);
 int netbsd_close(struct netbsd_handle *nh);
 
 int netbsd_socket_error(struct netbsd_handle *nh);
 
-size_t netbsd_read(struct netbsd_handle *nh, struct iovec *iov, int iovcnt);
+int netbsd_read(struct netbsd_handle *nh, struct iovec *iov, int iovcnt);
 ssize_t netbsd_write(struct netbsd_handle *nh, const struct iovec *iov, int iovcnt);
 
 size_t netbsd_recvfrom(struct netbsd_handle *nh, struct iovec *iov, int iovcnt, struct sockaddr *from);
