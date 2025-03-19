@@ -14,14 +14,23 @@
 
 #define BUF_SIZE 9000
 #define PORT 12345
+#define MAX_CLIENTS  4096
 static struct netbsd_handle udp_server;
 static struct netbsd_handle tcp_server;
-static struct netbsd_handle tcp_client;
+static struct netbsd_handle tcp_client[MAX_CLIENTS];
+static int cli_idx = 0;
 
 static void tcp_read_cb(void *handle, int events);
 static void tcp_write_cb(void *handle, int events);
 static void tcp_close_cb(void *handle);
+static void tcp_client_read_cb(void *handle, int events);
 
+static struct netbsd_handle *get_client()
+{
+    if (cli_idx >= MAX_CLIENTS - 6)
+        cli_idx = 0;
+    return &tcp_client[cli_idx++];
+}
 
 // libev 读事件回调函数
 void tun_read_cb(EV_P_ ev_io *w, int revents) {
@@ -85,20 +94,24 @@ udp_read_cb(void *handle, int events)
 static void tcp_accept(void *handle, int events)
 {
     printf("tcp_accept: handle: %p\n", handle);
-    static struct netbsd_handle *only_one = NULL;
-    if (only_one != NULL) {
-        printf("Client is already running, do not accept this new one\n");
+    struct netbsd_handle *tcp_client = get_client();;
+    if (tcp_client == NULL) {
         return;
     }
-    if (netbsd_accept(&tcp_server, &tcp_client)) {
+
+    tcp_client->read_cb = tcp_read_cb;
+    tcp_client->write_cb = tcp_write_cb;
+    tcp_client->close_cb = tcp_close_cb;
+    tcp_client->is_ipv4 = 1;
+    tcp_server.type = SOCK_STREAM;
+    tcp_server.proto = IPPROTO_TCP;
+
+    if (netbsd_accept(&tcp_server, tcp_client)) {
         printf("Accept tcp client error\n");
         return;
     }
 
-    tcp_client.read_cb = tcp_read_cb;
-    tcp_client.write_cb = tcp_write_cb;
-    tcp_client.close_cb = tcp_close_cb;
-    netbsd_io_start(&tcp_client);
+    netbsd_io_start(tcp_client);
 }
 
 static void tcp_client_read_cb(void *handle, int events)
@@ -112,8 +125,8 @@ static void tcp_client_read_cb(void *handle, int events)
 
     /* 读取数据 */
     bytes = netbsd_read(nh, &iov, 1);
+    printf("netbsd_read return : %d\n", bytes);
     if (bytes > 0) {
-        printf("Received %zu bytes: %.*s\n", bytes, (int)bytes, buffer);
 
         /* 原样回显数据 */
         iov.iov_len = bytes; /* 只回显实际接收的字节数 */
@@ -123,9 +136,10 @@ static void tcp_client_read_cb(void *handle, int events)
         } else {
             printf("Sent %zd bytes back\n", sent);
         }
-    } else if (bytes <= 0) {
+    } else {
         printf("No data received, socket closed\n");
         netbsd_close(nh);
+        return;
     }
 }
 static void
@@ -135,7 +149,7 @@ tcp_read_cb(void *handle, int events)
     if (h == &tcp_server) {
         return tcp_accept(handle, events);
     } else {
-        return tcp_client_read_cb(&tcp_client, events);
+        return tcp_client_read_cb(handle, events);
    }
 }
 static void
