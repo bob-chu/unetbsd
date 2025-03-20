@@ -1,5 +1,5 @@
 CC = gcc
-CFLAGS = -O0 -nostdinc -Wall -g \
+CFLAGS = -O2 -nostdinc -Wall -g \
         -Iinclude/opt \
         -Iinclude \
         -Inetbsd_src/sys \
@@ -22,7 +22,7 @@ CFLAGS += $(DEFS)
 
 # userspace CFLAGS (remove -nostdinc)
 #CFLAGS_USER = -Wall -g -O2 -frename-registers -funswitch-loops -fweb -Wno-format-truncation
-CFLAGS_USER = -g -O0  -frename-registers -funswitch-loops -fweb -Wno-format-truncation \
+CFLAGS_USER = -g -O2  -frename-registers -funswitch-loops -fweb -Wno-format-truncation \
         -Iinclude \
 	-I/usr/include/openssl
 

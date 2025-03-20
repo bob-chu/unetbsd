@@ -21,6 +21,7 @@ int af_packet_output(void *data, long unsigned int len, void *arg);
 
 void print_packet(unsigned char *buf, int len, bool dir)
 {
+    return 0;
     int i;
     printf("Packet: %s Length: %d\n", dir ? "IN" : "OUT", len);
     for (i = 0; i < len; i++) {

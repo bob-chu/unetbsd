@@ -47,5 +47,7 @@ ssize_t netbsd_write(struct netbsd_handle *nh, const struct iovec *iov, int iovc
 size_t netbsd_recvfrom(struct netbsd_handle *nh, struct iovec *iov, int iovcnt, struct sockaddr *from);
 ssize_t netbsd_sendto(struct netbsd_handle *nh, const struct iovec *iov, int iovcnt, const struct sockaddr *to);
 
+int netbsd_reuseaddr(struct netbsd_handle *nh, const void *optval, socklen_t optlen);
+
 void netbsd_process_event();
 #endif

@@ -297,3 +297,27 @@ ssize_t netbsd_sendto(struct netbsd_handle *nh, const struct iovec *iov,
         int iovcnt, const struct sockaddr *to) {
     return so_send(nh, iov, iovcnt, to);
 }
+
+int netbsd_reuseaddr(struct netbsd_handle *nh, const void *optval, socklen_t optlen)
+{
+    struct socket *so = nh->so;
+    if (so == NULL || optval == NULL || optlen <= 0) {
+        return EINVAL;
+    }
+
+    struct sockopt sopt;
+    bzero(&sopt, sizeof(sopt));
+    sopt.sopt_level = SOL_SOCKET;
+    sopt.sopt_name = SO_REUSEADDR;
+    sopt.sopt_data = (void *)optval;
+    sopt.sopt_size = optlen;
+
+    int error = sosetopt(so, &sopt);
+    if (error) {
+        printf("netbsd_reuseaddr failed: level=%d, optname=%d, error=%d\n",
+                sopt.sopt_level, sopt.sopt_name, error);
+    }
+    return error;
+}
+
+
