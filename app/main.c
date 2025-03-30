@@ -206,7 +206,6 @@ static void tcp_accept(void *handle, int events) {
 }
 
 static void tcp_connect_cb(void *handle, int events) {
-    printf("tcp_connect_cb\n");
     struct netbsd_handle *tcp_client = (struct netbsd_handle *)handle;
     struct tcp_client *cli = container_of(handle, struct tcp_client, handle);
 
@@ -229,7 +228,6 @@ static void tcp_client_read_cb(void *handle, int events) {
     struct sockaddr_storage from;
 
     bytes = netbsd_read(nh, &iov, 1);
-    printf("tcp_client_read_cb: bytes: %d\n", bytes);
     if (bytes > 0) {
         if (cli->read_flag) {
             //netbsd_close(nh);
@@ -256,15 +254,12 @@ static void tcp_read_cb(void *handle, int events) {
 static void tcp_write_cb(void *handle, int events) {
     struct netbsd_handle *nh = (struct netbsd_handle *)handle;
     struct tcp_client *cli = container_of(handle, struct tcp_client, handle);
-     printf("tcp write_cb.\n");
 
      if (cli->read_flag) {
-         printf("write done, close socket\n");
          netbsd_close(nh);
      }
 }
 static void tcp_close_cb(void *handle) {
-    printf("tcp close_cb.\n");
     netbsd_close(handle);
 }
 

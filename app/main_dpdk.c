@@ -129,7 +129,7 @@ static void timer_1s_cb(EV_P_ ev_timer *w, int revents) {
     static int cc_count = 0;
     if (cc_count < cc_cli_count) {
         int i = 0;
-        while (i < 10) {
+        while (i < 200) {
             cc_client_connect();
             i++;
             cc_count++;
@@ -211,7 +211,7 @@ static void tcp_client_read_cb(void *handle, int events) {
     bytes = netbsd_read(nh, &iov, 1);
     if (bytes > 0) {
         if (cli->read_flag) {
-            netbsd_close(nh);
+            //netbsd_close(nh);
             return;
         }
         iov.iov_len = bytes;
@@ -233,7 +233,12 @@ static void tcp_read_cb(void *handle, int events) {
     }
 }
 static void tcp_write_cb(void *handle, int events) {
-    // printf("tcp write_cb.\n");
+    struct netbsd_handle *nh = (struct netbsd_handle *)handle;
+    struct tcp_client *cli = container_of(handle, struct tcp_client, handle);
+
+     if (cli->read_flag) {
+         netbsd_close(nh);
+     }
 }
 static void tcp_close_cb(void *handle) {
     netbsd_close(handle);

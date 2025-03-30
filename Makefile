@@ -1,5 +1,5 @@
 CC = gcc
-CFLAGS = -O0 -march=native -nostdinc -Wall -g \
+CFLAGS = -O2 -march=native -nostdinc -Wall -g \
         -Iinclude/opt \
         -Iinclude \
         -Inetbsd_src/sys \
@@ -25,10 +25,11 @@ CFLAGS += $(DEFS)
 
 # userspace CFLAGS (remove -nostdinc)
 #CFLAGS_USER = -Wall -g -O2 -frename-registers -funswitch-loops -fweb -Wno-format-truncation
-CFLAGS_USER = -g -O0 -frename-registers -funswitch-loops -fweb -Wno-format-truncation \
+CFLAGS_USER = -g -O2 -frename-registers -funswitch-loops -fweb -Wno-format-truncation \
         -Iinclude \
 		-I/usr/include/openssl
 
+USE_DPDK = 1
 USE_DPDK ?= 0
 ifeq ($(USE_DPDK),1)
     ifneq ($(shell pkg-config --exists libdpdk && echo 0),0)
@@ -158,8 +159,7 @@ APP_TARGET = us_netbsd_af
 APP_DPDK_TARGET = us_netbsd_dpdk
 
 # build all
-all: $(LIB_TARGET) $(APP_TARGET)
-#all: $(LIB_TARGET) $(APP_TARGET)  $(APP_DPDK_TARGET)
+all: $(LIB_TARGET) $(APP_TARGET)  $(APP_DPDK_TARGET)
 
 # build static library
 $(LIB_TARGET): $(LIB_OBJS)

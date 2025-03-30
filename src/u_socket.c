@@ -33,7 +33,6 @@ static void soupcall_cb(struct socket *so, void *arg, int events,
     struct netbsd_handle *nh = (struct netbsd_handle *)arg;
     struct netbsd_event *ev;
 
-    printf("%s:%d: soupcall: so: %p, events: %d\n", __FUNCTION__, __LINE__, so, events);
     ev = malloc(sizeof(*ev), M_TEMP, M_NOWAIT);
     if (ev == NULL) {
         printf("Failed to alloce event.\n");
@@ -83,7 +82,6 @@ int netbsd_socket(struct netbsd_handle *nh) {
 
     error = socreate(nh->is_ipv4 ? AF_INET : AF_INET6, &nh->so, nh->type,
             nh->proto, curlwp, NULL);
-    printf("%s:%d, after socreate: so: %p\n", __FUNCTION__, __LINE__, nh->so);
     return error;
 }
 
@@ -177,10 +175,8 @@ int netbsd_connect(struct netbsd_handle *nh, struct sockaddr *addr) {
 int netbsd_close(struct netbsd_handle *nh) {
     if (nh->so) {
         soclose(nh->so);
-        printf("%s:%d, after soclose: so: %p\n", __FUNCTION__, __LINE__, nh->so);
         soupcall_clear(nh->so);
         nh->so = NULL;
-        printf("%s:%d, so set to NULL: so: %p\n", __FUNCTION__, __LINE__, nh->so);
     }
     return 0;
 }
@@ -327,5 +323,4 @@ int netbsd_reuseaddr(struct netbsd_handle *nh, const void *optval, socklen_t opt
     }
     return error;
 }
-
 
