@@ -1,5 +1,5 @@
 CC = gcc
-CFLAGS = -O2 -nostdinc -Wall -g \
+CFLAGS = -O0 -march=native -nostdinc -Wall -g \
         -Iinclude/opt \
         -Iinclude \
         -Inetbsd_src/sys \
@@ -15,18 +15,30 @@ CFLAGS = -O2 -nostdinc -Wall -g \
 AR = ar
 ARFLAGS = rcs
 
+LIBS += -lcrypto -lev
+#LIBS += -lev
+
 #DEFS = -D_KERNEL -D__NetBSD__ -D_NETBSD_SOURCE -DINET -DINET6 -D_NETBSD_SOURCE -D__BSD_VISIBLE
 //DEFS = -D_KERNEL -D__NetBSD__ -D_NETBSD_SOURCE -DNO_KERNEL_PRINTF -DINET -D_NETBSD_SOURCE -D__BSD_VISIBLE
-DEFS = -D_KERNEL -D__NetBSD__ -D_NETBSD_SOURCE -D_RUMPKERNEL  -DINET -D_NETBSD_SOURCE -D__BSD_VISIBLE
+DEFS = -D_KERNEL -D__NetBSD__ -DNET_MPSAFE -DTCP_DEBUG  -D_NETBSD_SOURCE -D_RUMPKERNEL  -DINET -D_NETBSD_SOURCE -D__BSD_VISIBLE
 CFLAGS += $(DEFS)
 
 # userspace CFLAGS (remove -nostdinc)
 #CFLAGS_USER = -Wall -g -O2 -frename-registers -funswitch-loops -fweb -Wno-format-truncation
-CFLAGS_USER = -g -O2  -frename-registers -funswitch-loops -fweb -Wno-format-truncation \
+CFLAGS_USER = -g -O0 -frename-registers -funswitch-loops -fweb -Wno-format-truncation \
         -Iinclude \
-	-I/usr/include/openssl
+		-I/usr/include/openssl
 
-LIBS = -lcrypto -lev
+USE_DPDK ?= 0
+ifeq ($(USE_DPDK),1)
+    ifneq ($(shell pkg-config --exists libdpdk && echo 0),0)
+        $(error "No installation of DPDK found, maybe you should export environment variable `PKG_CONFIG_PATH`")
+    endif
+
+    PKGCONF ?= pkg-config
+    CFLAGS_USER += $(shell $(PKGCONF) --cflags libdpdk)
+    LIBS += $(shell $(PKGCONF) --static --libs libdpdk)
+endif
 
 # dir
 OBJDIR := obj
@@ -129,26 +141,36 @@ USER_OBJS = $(USER_SRCS:src/%.c=$(OBJDIR)/%.o)
 LIB_OBJS = $(NETBSD_OBJS) $(USER_OBJS)
 LIB_TARGET = libnetbsdstack.a
 
-# example
 APP_SRCS = \
 	   app/main.c \
-	   app/tun.c
+	   app/tun.c \
+	   app/log.c
 
+APP_DPDK_SRCS = \
+	   app/main_dpdk.c \
+	   app/gen_if.c \
+	   app/log.c
 
 APP_OBJS = $(APP_SRCS:src/%.c=$(OBJDIR)/%.o)
-APP_TARGET = us_netbsd_ping
+APP_DPDK_OBJS = $(APP_DPDK_SRCS:src/%.c=$(OBJDIR)/%.o)
+
+APP_TARGET = us_netbsd_af
+APP_DPDK_TARGET = us_netbsd_dpdk
 
 # build all
 all: $(LIB_TARGET) $(APP_TARGET)
+#all: $(LIB_TARGET) $(APP_TARGET)  $(APP_DPDK_TARGET)
 
 # build static library
 $(LIB_TARGET): $(LIB_OBJS)
 	$(AR) $(ARFLAGS) $@ $^
 
 # build example
+$(APP_DPDK_TARGET): $(APP_DPDK_OBJS) $(LIB_TARGET)
+	$(CC) $(CFLAGS_USER) -o $@ $(APP_DPDK_OBJS) $(LIB_TARGET) -L. -lnetbsdstack $(LIBS)
+
 $(APP_TARGET): $(APP_OBJS) $(LIB_TARGET)
 	$(CC) $(CFLAGS_USER) -o $@ $(APP_OBJS) $(LIB_TARGET) -L. -lnetbsdstack $(LIBS)
-
 # **auto create obj dir **
 $(OBJDIR):
 	mkdir -p $(OBJDIR)
@@ -165,5 +187,5 @@ $(OBJDIR)/%.o: src/%.c | $(OBJDIR)
 
 # **clean **
 clean:
-	rm -rf $(OBJDIR) $(LIB_TARGET) $(APP_TARGET)
+	rm -rf $(OBJDIR) $(LIB_TARGET) $(APP_TARGET)  $(APP_DPDK_TARGET)
 	rm -f *~ core*

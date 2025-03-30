@@ -22,7 +22,15 @@ int virt_if_register_callbacks(struct virt_interface *vif,
                                virt_if_input_cb in_cb);
 int virt_if_output(struct virt_interface *vif, void *data, size_t len);
 int virt_if_input(struct virt_interface *vif, void *data, size_t len);
+int virt_if_mbuf_input(struct virt_interface *vif, void *data);
+
 int virt_if_add_addr(struct virt_interface *vif, void *addr, unsigned netmask, int is_ipv4);
 void virt_if_add_gateway(struct virt_interface *vif, void *addr);
 
+
+long netbsd_mbufvec(void *mp, struct iovec *iov, int *n_iov);
+void netbsd_freembuf(void *mbuf);
+
+void *netbsd_mget_hdr(void *data, int len);
+void *netbsd_mget_data(void *pre, void *data, int len);
 #endif

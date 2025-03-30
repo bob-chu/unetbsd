@@ -38,10 +38,10 @@ int virt_transmit(struct ifnet *ifp, struct mbuf *m)
         total -= total;
     }
     */
-    //gl_vif->output_cb((void *)data, len, gl_vif->sc_arg);
-    gl_vif->output_cb((void *)data_ptr, len, gl_vif->sc_arg);
+    //gl_vif->output_cb((void *)data_ptr, len, gl_vif->sc_arg);
+    gl_vif->output_cb((void *)m, len, gl_vif->sc_arg);
 out:
-    m_freem((struct mbuf *)m);
+    m_freem((struct mbuf *)mb);
     return;
 }
 
@@ -59,7 +59,7 @@ struct virt_interface *virt_if_create(const char *name)
     if (!gl_vif) return NULL;
 
     //struct ifnet *ifp = malloc(sizeof(struct ifnet));
-    struct ifnet *ifp = malloc(sizeof(struct ethercom));
+    struct ifnet *ifp = calloc(1, sizeof(struct ethercom));
     if (!ifp) {
         free(gl_vif);
         return NULL;
@@ -211,4 +211,79 @@ virt_if_add_gateway(struct virt_interface *vif, void *addr)
         printf("Failed to add gateway: error=%d\n", error);
         return;
     }
+}
+
+/*
+ * Copy segments to iov[].  Returns length, or -1 if iov does not fit.
+ */
+long netbsd_mbufvec(void *mp, struct iovec *iov, int *n_iov)
+{
+    struct mbuf *m = mp;
+    int n, limit;
+    long len;
+
+    len = 0;
+    limit = *n_iov;
+    for (n = 0; ((m != NULL) && (n < limit)); n++) {
+        iov[n].iov_base = mtod(m, char *);
+        iov[n].iov_len = m->m_len;
+        len += m->m_len;
+        m = m->m_next;
+    }
+    *n_iov = n;
+    return len;
+}
+
+void netbsd_freembuf(void *mbuf) {
+    m_free(mbuf);
+}
+
+void *netbsd_mget_hdr(void *data, int len)
+{
+    struct mbuf *m;
+    m = m_gethdr(M_NOWAIT, MT_DATA);
+    if (m == NULL) {
+        return NULL;
+    }
+    m->m_pkthdr.len = len;
+    m->m_pkthdr._rcvif.index =gl_vif->ifp->if_index;
+    if (len > MHLEN) {
+        m = m_getcl(M_NOWAIT, MT_DATA, M_PKTHDR);
+        if (m->m_ext.ext_buf == NULL) {
+            return NULL;
+        }
+        u_memcpy(m->m_data, data, len);
+        m->m_len = len;
+    } else {
+        u_memcpy(m->m_data, data, len);
+        m->m_len = len;
+    }
+    return m;
+}
+
+void *netbsd_mget_data(void *pre, void *data, int len)
+{
+    struct mbuf *m_new = NULL;
+    if (len > MLEN) {
+        m_new = m_getcl(M_NOWAIT, MT_DATA, M_PKTHDR);
+        if (m_new == NULL) {
+            return NULL;
+        }
+    } else {
+        MGET(m_new, M_NOWAIT, MT_DATA);
+        if (m_new == NULL) {
+            return NULL;
+        }
+    }
+    u_memcpy(m_new->m_data, data, len);
+    m_new->m_len = len;
+    return m_new;
+}
+
+int virt_if_mbuf_input(struct virt_interface *vif, void *data)
+{
+    if (data == NULL) {
+        return -1;
+    }
+    ether_input(gl_vif->ifp, data);
 }

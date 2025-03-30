@@ -18,10 +18,11 @@ static int socket_fd;
 static struct virt_interface *v_if;
 int af_packet_input(void *data, long unsigned int len, void *arg);
 int af_packet_output(void *data, long unsigned int len, void *arg);
+int af_packet_output_m(void *data, long unsigned int len, void *arg);
 
 void print_packet(unsigned char *buf, int len, bool dir)
 {
-    return 0;
+    return;
     int i;
     printf("Packet: %s Length: %d\n", dir ? "IN" : "OUT", len);
     for (i = 0; i < len; i++) {
@@ -102,7 +103,8 @@ int open_af_packet()
     v_if = virt_if_create(if_name);
     virt_if_attach(v_if, src_mac);
 
-    virt_if_register_callbacks(v_if, af_packet_output, af_packet_input);
+    //virt_if_register_callbacks(v_if, af_packet_output, af_packet_input);
+    virt_if_register_callbacks(v_if, af_packet_output_m, af_packet_input);
 
     char *ip_str = "192.168.1.2";
     char *netmask_str = "255.255.255.0";
@@ -136,6 +138,34 @@ int af_packet_output(void *data, long unsigned int len, void *arg)
 {
     print_packet((char *)data, len, false);
     write(socket_fd, (char *)data, len);
+    return 0;
+}
+
+int af_packet_output_m(void *m, long unsigned int len, void *arg)
+{
+#define MAX_OUT_MBUFS 8
+    struct iovec iov[MAX_OUT_MBUFS];
+    int i, total_len, count;
+    char *data;
+
+    //count = array_size(iov);
+    count = sizeof(iov)/sizeof(iov[0]);
+
+    total_len = netbsd_mbufvec(m, iov, &count);
+    if (total_len == 0) {
+        return -1;
+    }
+    char *data_ptr = malloc(total_len+1);
+    if (!data_ptr) return -1;
+    int offset = 0;
+
+    for (i = 0; i < count; i++) {
+        memcpy(data_ptr + offset, iov[i].iov_base, iov[i].iov_len);
+        offset += iov[i].iov_len; 
+    }
+    print_packet((char *)data, len, false);
+    write(socket_fd, (char *)data_ptr, total_len);
+    free(data_ptr);
     return 0;
 }
 

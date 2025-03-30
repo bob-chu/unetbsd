@@ -329,10 +329,15 @@ xmalloc(size, type, flags)
 	int type, flags;
 {
 	// mbuf requires 128-byte alignment
-	if (size > 8 && (size & (size-1)) == 0)
-		return memalign(size, size);
-	else
-		return malloc(size);
+    if (size > 8 && (size & (size-1)) == 0) {
+        void *ptr = memalign(size, size);
+        memset(ptr, 0, size);
+        return ptr;
+    } else {
+        void *ptr = malloc(size);
+        memset(ptr, 0, size);
+        return ptr;
+    }
 }
 
 /*
@@ -596,7 +601,7 @@ percpu_alloc(size_t size)
 {
 
     //cur_percpu = (percpu_t *)calloc(1, size * 2000);
-    cur_percpu = (percpu_t *)calloc(2000, sizeof(struct percpu));
+    cur_percpu = (percpu_t *)calloc(16000, sizeof(struct percpu));
     return cur_percpu;
 }
 

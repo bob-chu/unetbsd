@@ -13,7 +13,8 @@
 #include <u_if.h>
 #include <u_socket.h>
 
-#include "tun.h"
+#include "logger.h"
+#include "gen_if.h"
 
 #ifndef container_of
 #define container_of(ptr, type, member) ({ \
@@ -39,7 +40,7 @@ static struct tcp_client tcp_curr_client[CURRENT_CLIENTS];
 
 
 static int cli_idx = 0;
-static int cc_cli_count = 1000000;
+static int cc_cli_count = 1000000000;
 static int read_flag = 0;
 
 static void tcp_read_cb(void *handle, int events);
@@ -52,21 +53,6 @@ static struct netbsd_handle *get_client() {
     if (cli_idx >= MAX_CLIENTS - 6)
         cli_idx = 0;
     return &s_tcp_client[cli_idx++].handle;
-}
-
-void tun_read_cb(EV_P_ ev_io *w, int revents) {
-    int tun_fd = w->fd;
-    unsigned char buffer[BUF_SIZE];
-    int packet_len;
-
-    packet_len = read(tun_fd, buffer, BUF_SIZE);
-    if (packet_len < 0) {
-        perror("read TUN device data failed");
-        ev_break(EV_A_ EVBREAK_ALL);
-        return;
-    }
-
-    af_packet_input(buffer, packet_len, NULL);
 }
 
 static void timer_10ms_cb(EV_P_ ev_timer *w, int revents)
@@ -143,21 +129,16 @@ static void timer_1s_cb(EV_P_ ev_timer *w, int revents) {
     static int cc_count = 0;
     if (cc_count < cc_cli_count) {
         int i = 0;
-        while (i < 100) {
+        while (i < 10) {
             cc_client_connect();
             i++;
             cc_count++;
-        }
-    } else {
-        static int abc = 0;
-        abc++;
-        if (abc >= 5) {
-            ev_break(EV_A_ EVBREAK_ALL);
         }
     }
 }
 
 static void idle_cb(struct ev_loop *loop, ev_idle *w, int revents) {
+    dpdk_read();
     netbsd_process_event();
 }
 
@@ -206,7 +187,6 @@ static void tcp_accept(void *handle, int events) {
 }
 
 static void tcp_connect_cb(void *handle, int events) {
-    printf("tcp_connect_cb\n");
     struct netbsd_handle *tcp_client = (struct netbsd_handle *)handle;
     struct tcp_client *cli = container_of(handle, struct tcp_client, handle);
 
@@ -229,10 +209,9 @@ static void tcp_client_read_cb(void *handle, int events) {
     struct sockaddr_storage from;
 
     bytes = netbsd_read(nh, &iov, 1);
-    printf("tcp_client_read_cb: bytes: %d\n", bytes);
     if (bytes > 0) {
         if (cli->read_flag) {
-            //netbsd_close(nh);
+            netbsd_close(nh);
             return;
         }
         iov.iov_len = bytes;
@@ -254,18 +233,11 @@ static void tcp_read_cb(void *handle, int events) {
     }
 }
 static void tcp_write_cb(void *handle, int events) {
-    struct netbsd_handle *nh = (struct netbsd_handle *)handle;
-    struct tcp_client *cli = container_of(handle, struct tcp_client, handle);
-     printf("tcp write_cb.\n");
-
-     if (cli->read_flag) {
-         printf("write done, close socket\n");
-         netbsd_close(nh);
-     }
+    // printf("tcp write_cb.\n");
 }
 static void tcp_close_cb(void *handle) {
-    printf("tcp close_cb.\n");
     netbsd_close(handle);
+    // printf("tcp close_cb.\n");
 }
 
 static void udp_server_init() {
@@ -332,26 +304,35 @@ static void tcp_server_init() {
     printf("TCP echo server listening on port 12345\n");
 }
 
-int main() {
-    int tun_fd = -1;
+int main()
+{
+    logger_init();
+    logger_set_level(LOG_LEVEL_WARN);  // Show all logs above DEBUG
+    logger_enable_colors(1);            // Enable colored output
+
+    char *dpdk_str[] = {
+       [0] =  "tt",
+       [1] = " -n4",
+       [2] =  "-c",
+       [3] = "0x3",
+       [4] = "-m",
+       [5] = "1024",
+       [6] = "--no-huge",
+       [7] = "--vdev=eth_af_packet0,iface=veth1,blocksz=4096,framesz=2048,framecnt=512,qpairs=1,qdisc_bypass=0",
+       [8] = "--proc-type=auto",
+       [9] = "--file-prefix=container-veth0",
+    };
 
     netbsd_init();
-    tun_fd = open_af_packet();
-    if (tun_fd < 0) {
-        printf("Can not open tun device\n");
-        return -1;
-    }
 
-    // 3. 初始化 libev 事件循环
+    dpdk_init(9, dpdk_str);
+    open_interface("veth1");
+
     struct ev_loop *loop = EV_DEFAULT;
     ev_io tun_read_watcher;
     ev_idle idle_watcher;
     ev_timer timer_10ms_watcher;
     ev_timer timer_1s_watcher;
-
-    // 4. 初始化并配置读事件 watcher
-    ev_io_init(&tun_read_watcher, tun_read_cb, tun_fd, EV_READ);
-    ev_io_start(loop, &tun_read_watcher);
 
     ev_timer_init(&timer_10ms_watcher, timer_10ms_cb, 0.01, 0.01);
     ev_timer_start(loop, &timer_10ms_watcher);
@@ -363,11 +344,10 @@ int main() {
     ev_idle_start(loop, &idle_watcher);
 
     printf("hello world\n");
-    // 5. 运行 libev 事件循环
+
     udp_server_init();
     tcp_server_init();
     ev_run(loop, 0);
 
-    close_af_packet();
     return 0;
 }

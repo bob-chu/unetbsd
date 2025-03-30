@@ -33,6 +33,7 @@ static void soupcall_cb(struct socket *so, void *arg, int events,
     struct netbsd_handle *nh = (struct netbsd_handle *)arg;
     struct netbsd_event *ev;
 
+    printf("%s:%d: soupcall: so: %p, events: %d\n", __FUNCTION__, __LINE__, so, events);
     ev = malloc(sizeof(*ev), M_TEMP, M_NOWAIT);
     if (ev == NULL) {
         printf("Failed to alloce event.\n");
@@ -52,6 +53,7 @@ void netbsd_process_event() {
         struct netbsd_handle *nh = ev->nh;
         int events = ev->events;
         TAILQ_REMOVE(&event_queue, ev, next);
+
         switch (events) {
             case POLLIN | POLLRDNORM:
                 if (nh->read_cb && nh->so) {
@@ -60,11 +62,11 @@ void netbsd_process_event() {
                 break;
             case POLLOUT | POLLWRNORM:
                 if (nh->write_cb && nh->so) {
-                    nh->write_cb(nh->data, nh->so->so_error);
+                    nh->write_cb(nh, nh->so->so_error);
                 }
                 break;
             case POLLHUP:
-                if (nh->close_cb) {
+                if (nh->so && nh->close_cb) {
                     nh->close_cb(nh);
                 }
                 break;
@@ -81,6 +83,7 @@ int netbsd_socket(struct netbsd_handle *nh) {
 
     error = socreate(nh->is_ipv4 ? AF_INET : AF_INET6, &nh->so, nh->type,
             nh->proto, curlwp, NULL);
+    printf("%s:%d, after socreate: so: %p\n", __FUNCTION__, __LINE__, nh->so);
     return error;
 }
 
@@ -164,15 +167,20 @@ int netbsd_connect(struct netbsd_handle *nh, struct sockaddr *addr) {
     }
 
     int ret = soconnect(nh->so, (struct sockaddr *)&sa, curlwp);
+    /* enable debug */
+    //nh->so->so_options |= SO_DEBUG;
+
     return ret;
 }
 
 /* 关闭 socket */
 int netbsd_close(struct netbsd_handle *nh) {
     if (nh->so) {
-        soupcall_clear(nh->so);
         soclose(nh->so);
+        printf("%s:%d, after soclose: so: %p\n", __FUNCTION__, __LINE__, nh->so);
+        soupcall_clear(nh->so);
         nh->so = NULL;
+        printf("%s:%d, so set to NULL: so: %p\n", __FUNCTION__, __LINE__, nh->so);
     }
     return 0;
 }
