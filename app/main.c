@@ -39,8 +39,9 @@ static struct tcp_client tcp_curr_client[CURRENT_CLIENTS];
 
 
 static int cli_idx = 0;
-static int cc_cli_count = 1000000;
+static int cc_cli_count = 100000;
 static int read_flag = 0;
+static int total_accept_cls = 0;
 
 static void tcp_read_cb(void *handle, int events);
 static void tcp_write_cb(void *handle, int events);
@@ -141,9 +142,10 @@ void cc_client_connect() {
 
 static void timer_1s_cb(EV_P_ ev_timer *w, int revents) {
     static int cc_count = 0;
+#if 0
     if (cc_count < cc_cli_count) {
         int i = 0;
-        while (i < 100) {
+        while (i < 50) {
             cc_client_connect();
             i++;
             cc_count++;
@@ -155,6 +157,13 @@ static void timer_1s_cb(EV_P_ ev_timer *w, int revents) {
             ev_break(EV_A_ EVBREAK_ALL);
         }
     }
+#else
+    static int abc = 0;
+    abc++;
+    if (abc >= 100) {
+        ev_break(EV_A_ EVBREAK_ALL);
+    }
+#endif
 }
 
 static void idle_cb(struct ev_loop *loop, ev_idle *w, int revents) {
@@ -201,7 +210,7 @@ static void tcp_accept(void *handle, int events) {
         printf("Accept tcp client error\n");
         return;
     }
-
+    total_accept_cls ++;
     netbsd_io_start(tcp_client);
 }
 
@@ -213,7 +222,11 @@ static void tcp_connect_cb(void *handle, int events) {
 
     char *buffer = "1234";
     struct iovec iov = {.iov_base = buffer, .iov_len = strlen(buffer)};
-    netbsd_write(tcp_client, &iov, 1);
+    int len = netbsd_write(tcp_client, &iov, 1);
+    if (len < 0) {
+        netbsd_close(tcp_client);
+        return;
+    }
     cli->read_flag = 1;
 }
 

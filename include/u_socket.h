@@ -42,9 +42,9 @@ int netbsd_close(struct netbsd_handle *nh);
 int netbsd_socket_error(struct netbsd_handle *nh);
 
 int netbsd_read(struct netbsd_handle *nh, struct iovec *iov, int iovcnt);
-ssize_t netbsd_write(struct netbsd_handle *nh, const struct iovec *iov, int iovcnt);
+int netbsd_write(struct netbsd_handle *nh, const struct iovec *iov, int iovcnt);
 
-size_t netbsd_recvfrom(struct netbsd_handle *nh, struct iovec *iov, int iovcnt, struct sockaddr *from);
+int netbsd_recvfrom(struct netbsd_handle *nh, struct iovec *iov, int iovcnt, struct sockaddr *from);
 ssize_t netbsd_sendto(struct netbsd_handle *nh, const struct iovec *iov, int iovcnt, const struct sockaddr *to);
 
 int netbsd_reuseaddr(struct netbsd_handle *nh, const void *optval, socklen_t optlen);

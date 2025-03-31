@@ -186,7 +186,7 @@ int netbsd_socket_error(struct netbsd_handle *nh) {
     return nh->so ? nh->so->so_error : 0;
 }
 
-static size_t so_read(struct netbsd_handle *nh, struct iovec *iov, int iovcnt,
+static int so_read(struct netbsd_handle *nh, struct iovec *iov, int iovcnt,
         struct sockaddr *from) {
     struct uio uio;           /* 用户 I/O 结构 */
     ssize_t bytes, total;     /* 可读取字节数 */
@@ -227,7 +227,10 @@ static size_t so_read(struct netbsd_handle *nh, struct iovec *iov, int iovcnt,
     if (error) {
         return -error; /* 返回负值表示错误，如 -EAGAIN */
     }
-
+    if (so->so_state & SS_CANTRCVMORE) {
+        /* EOF notify*/
+        return -1;
+    }
     if (from && addr_mbuf) {
         int len = MIN(addr_mbuf->m_len, sizeof(struct sockaddr_storage));
         m_copydata(addr_mbuf, 0, len, (char *)&sa);
@@ -247,7 +250,7 @@ int netbsd_read(struct netbsd_handle *nh, struct iovec *iov, int iovcnt) {
     return so_read(nh, iov, iovcnt, NULL);
 }
 
-size_t netbsd_recvfrom(struct netbsd_handle *nh, struct iovec *iov, int iovcnt,
+int netbsd_recvfrom(struct netbsd_handle *nh, struct iovec *iov, int iovcnt,
         struct sockaddr *from) {
     return so_read(nh, iov, iovcnt, from);
 }
@@ -292,7 +295,7 @@ static ssize_t so_send(struct netbsd_handle *nh, const struct iovec *iov,
     return bytes;
 }
 
-ssize_t netbsd_write(struct netbsd_handle *nh, const struct iovec *iov,
+int netbsd_write(struct netbsd_handle *nh, const struct iovec *iov,
         int iovcnt) {
     return so_send(nh, iov, iovcnt, NULL);
 }
