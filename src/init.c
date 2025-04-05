@@ -4,7 +4,7 @@
 typedef struct kauth_cred *kauth_cred_t;
 kauth_cred_t cred0 = NULL;
 static struct proc dummy_proc = {0};
-extern volatile struct	timeval time;
+extern volatile struct	timeval my_time;
 extern struct cpu_info cpu0;
 
 struct lwp dummy_lwp;
@@ -13,7 +13,7 @@ extern lwp_t *gl_lwp;
 
 void updatetime()
 {
-  microtime((struct timeval *)&time);
+  microtime((struct timeval *)&my_time);
 }
 
 void setipaddr(const char* name, uint ip)

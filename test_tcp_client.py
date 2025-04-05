@@ -12,6 +12,7 @@ def tcp_echo_client(server_address, message="12345", iterations=10000000):
         try:
             client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 
+            client_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             print(f"[{i+1}/{iterations}] Connecting to {server_address}...")
             client_socket.connect(server_address)
             print(f"[{i+1}/{iterations}] Connected.")
@@ -21,8 +22,8 @@ def tcp_echo_client(server_address, message="12345", iterations=10000000):
             client_socket.sendall(encoded_message)
 
             data = client_socket.recv(1024)
-            decoded_message = data.decode('utf-8')
-            print(f"[{i+1}/{iterations}] Received: {decoded_message}")
+            #decoded_message = data.decode('utf-8')
+            print(f"[{i+1}/{iterations}] Received: {data}")
 
             client_socket.close()
             print(f"[{i+1}/{iterations}] Socket closed.")
@@ -36,7 +37,7 @@ def tcp_echo_client(server_address, message="12345", iterations=10000000):
 
 if __name__ == "__main__":
     server_host = '192.168.1.2'
-    server_port = 12345
+    server_port = 80
 
     server_address = (server_host, server_port)
 

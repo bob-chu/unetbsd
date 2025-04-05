@@ -43,7 +43,7 @@ struct lwp	*curlwp;
  * sys/kern/uipc_mbuf.c global variable
  */
 
-const int msize = 256;
+const int msize = 512;
 const int mclbytes = 2048;
 
 #define PHYSMEM 1048576*256
@@ -60,7 +60,7 @@ int mcllowat = 64;
  * time related
  */
 time_t time_update = 0;
-volatile struct	timeval time;
+volatile struct	timeval my_time;
 volatile time_t time__uptime;
 volatile time_t time__second;
 
@@ -166,17 +166,17 @@ void microtime(tvp)
 
 void init_time(void)
 {
-    struct timeval time;
-    gettimeofday(&time, NULL);
-    time_update = time.tv_sec;
+    struct timeval local_time;
+    gettimeofday(&local_time, NULL);
+    time_update = local_time.tv_sec;
 }
 
 void tick_update(void)
 {
-    time.tv_usec += tick;
-    if (time.tv_usec >= 1000000) {
-        time.tv_usec -= 1000000;
-        time.tv_sec += 1;
+    my_time.tv_usec += tick;
+    if (my_time.tv_usec >= 1000000) {
+        my_time.tv_usec -= 1000000;
+        my_time.tv_sec += 1;
         time_update += 1;
     }
 }
@@ -1030,15 +1030,14 @@ struct sockaddr_dl *sockaddr_dl_init(struct sockaddr_dl *sdl, socklen_t socklen,
 }
 
 
-
 /*
  * uio related
  */
 int uiomove(void *buf, size_t len, struct uio *uio) {
     if (uio->uio_rw == UIO_READ) {
-        memcpy(uio->uio_iov->iov_base, buf, len);
+        memcpy(uio->uio_iov->iov_base + uio->uio_offset, buf, len);
     } else {
-        memcpy(buf, uio->uio_iov->iov_base, len);
+        memcpy(buf, uio->uio_iov->iov_base + uio->uio_offset, len);
     }
     //memcpy(buf, uio->uio_iov->iov_base, len);
     uio->uio_iov->iov_len -= len;

@@ -160,7 +160,7 @@ static void timer_1s_cb(EV_P_ ev_timer *w, int revents) {
 #else
     static int abc = 0;
     abc++;
-    if (abc >= 100) {
+    if (abc >= 200) {
         ev_break(EV_A_ EVBREAK_ALL);
     }
 #endif
@@ -246,8 +246,41 @@ static void tcp_client_read_cb(void *handle, int events) {
             //netbsd_close(nh);
             return;
         }
-        iov.iov_len = bytes;
-        ssize_t sent = netbsd_write(nh, &iov, 1);
+        //printf("read data: %lu: %s\n", iov.iov_len, (char *)iov.iov_base);
+char html[] =
+"HTTP/1.1 200 OK\r\n"
+"Server: unetbsd\r\n"
+"Date: Sat, 25 Feb 2017 09:26:33 GMT\r\n"
+"Content-Type: text/html\r\n"
+"Content-Length: 436\r\n"
+"Last-Modified: Tue, 21 Feb 2017 09:44:03 GMT\r\n"
+"Connection: keep-alive\r\n"
+"Accept-Ranges: bytes\r\n"
+"\r\n"
+"<!DOCTYPE html>\r\n"
+"<html>\r\n"
+"<head>\r\n"
+"<title>Welcome to unetbsd_stack!</title>\r\n"
+"<style>\r\n"
+"    body {  \r\n"
+"        width: 35em;\r\n"
+"        margin: 0 auto; \r\n"
+"        font-family: Tahoma, Verdana, Arial, sans-serif;\r\n"
+"    }\r\n"
+"</style>\r\n"
+"</head>\r\n"
+"<body>\r\n"
+"<h1>Welcome to unetbsd_stack!</h1>\r\n"
+"\r\n"
+"<p>For online documentation and support please refer to\r\n"
+"<a href=\"http://unetbsd_stack.org/\">unetbsd_stack.org</a>.<br/>\r\n"
+"\r\n"
+"<p><em>Thank you for using unetbsd_stack.</em></p>\r\n"
+"</body>\r\n"
+"</html>";
+        iov.iov_base = html;
+        iov.iov_len = strlen(iov.iov_base);
+        int sent = netbsd_write(nh, &iov, 1);
         if (sent < 0) {
             printf("Failed to send: %d\n", (int)sent);
         }
@@ -322,7 +355,7 @@ static void tcp_server_init() {
     memset(&addr, 0, sizeof(addr));
     addr.sin_family = AF_INET;
     addr.sin_addr.s_addr = INADDR_ANY;
-    addr.sin_port = htons(12345);
+    addr.sin_port = htons(80);
 
     if (netbsd_bind(&tcp_server, (struct sockaddr *)&addr)) {
         printf("TCP server bind addr failed\n");

@@ -29,7 +29,6 @@ CFLAGS_USER = -g -O2 -frename-registers -funswitch-loops -fweb -Wno-format-trunc
         -Iinclude \
 		-I/usr/include/openssl
 
-USE_DPDK = 1
 USE_DPDK ?= 0
 ifeq ($(USE_DPDK),1)
     ifneq ($(shell pkg-config --exists libdpdk && echo 0),0)
@@ -158,12 +157,19 @@ APP_DPDK_OBJS = $(APP_DPDK_SRCS:src/%.c=$(OBJDIR)/%.o)
 APP_TARGET = us_netbsd_af
 APP_DPDK_TARGET = us_netbsd_dpdk
 
+ALL_TARGET = $(LIB_TARGET) $(APP_TARGET)
+
+ifeq ($(USE_DPDK),1)
+	ALL_TARGET += $(APP_DPDK_TARGET)
+endif
+
 # build all
-all: $(LIB_TARGET) $(APP_TARGET)  $(APP_DPDK_TARGET)
+all: $(ALL_TARGET)
 
 # build static library
 $(LIB_TARGET): $(LIB_OBJS)
 	$(AR) $(ARFLAGS) $@ $^
+
 
 # build example
 $(APP_DPDK_TARGET): $(APP_DPDK_OBJS) $(LIB_TARGET)
