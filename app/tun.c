@@ -163,7 +163,7 @@ int af_packet_output_m(void *m, long unsigned int len, void *arg)
         memcpy(data_ptr + offset, iov[i].iov_base, iov[i].iov_len);
         offset += iov[i].iov_len; 
     }
-    print_packet((char *)data, len, false);
+    print_packet((char *)data_ptr, total_len, false);
     write(socket_fd, (char *)data_ptr, total_len);
     free(data_ptr);
     return 0;

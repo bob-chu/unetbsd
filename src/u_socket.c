@@ -257,7 +257,7 @@ int netbsd_recvfrom(struct netbsd_handle *nh, struct iovec *iov, int iovcnt,
 
 static ssize_t so_send(struct netbsd_handle *nh, const struct iovec *iov,
         int iovcnt, const struct sockaddr *to) {
-    struct uio uio;
+    struct uio uio = {0};
     ssize_t bytes = 0;
     int error;
     int flags = MSG_NBIO;
@@ -288,7 +288,9 @@ static ssize_t so_send(struct netbsd_handle *nh, const struct iovec *iov,
     error = sosend(so, to ? (struct sockaddr *)to : NULL, &uio, NULL, NULL, flags,
             curlwp);
     if (error) {
-        return -error;
+        if (error != EWOULDBLOCK) {
+            return -error;
+        }
     }
 
     bytes = bytes - uio.uio_resid;

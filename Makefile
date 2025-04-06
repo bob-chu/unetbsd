@@ -18,13 +18,11 @@ ARFLAGS = rcs
 LIBS += -lcrypto -lev
 #LIBS += -lev
 
-#DEFS = -D_KERNEL -D__NetBSD__ -D_NETBSD_SOURCE -DINET -DINET6 -D_NETBSD_SOURCE -D__BSD_VISIBLE
-//DEFS = -D_KERNEL -D__NetBSD__ -D_NETBSD_SOURCE -DNO_KERNEL_PRINTF -DINET -D_NETBSD_SOURCE -D__BSD_VISIBLE
-DEFS = -D_KERNEL -D__NetBSD__ -DNET_MPSAFE -DTCP_DEBUG  -D_NETBSD_SOURCE -D_RUMPKERNEL  -DINET -D_NETBSD_SOURCE -D__BSD_VISIBLE
+DEFS = -D_KERNEL -D__NetBSD__ -DNET_MPSAFE -DSOSEND_NO_LOAN \
+       -DTCP_DEBUG  -D_NETBSD_SOURCE -D_RUMPKERNEL  -DINET -D_NETBSD_SOURCE -D__BSD_VISIBLE
 CFLAGS += $(DEFS)
 
 # userspace CFLAGS (remove -nostdinc)
-#CFLAGS_USER = -Wall -g -O2 -frename-registers -funswitch-loops -fweb -Wno-format-truncation
 CFLAGS_USER = -g -O2 -frename-registers -funswitch-loops -fweb -Wno-format-truncation \
         -Iinclude \
 		-I/usr/include/openssl
@@ -171,7 +169,6 @@ $(LIB_TARGET): $(LIB_OBJS)
 	$(AR) $(ARFLAGS) $@ $^
 
 
-# build example
 $(APP_DPDK_TARGET): $(APP_DPDK_OBJS) $(LIB_TARGET)
 	$(CC) $(CFLAGS_USER) -o $@ $(APP_DPDK_OBJS) $(LIB_TARGET) -L. -lnetbsdstack $(LIBS)
 
