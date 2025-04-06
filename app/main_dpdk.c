@@ -29,9 +29,10 @@
 #define CURRENT_CLIENTS 8000
 
 struct tcp_client {
-    int read_flag;
+    int connect_flag;
     struct netbsd_handle handle;
-
+    char *write_ptr;
+    int write_sz;
 };
 static struct netbsd_handle udp_server;
 static struct netbsd_handle tcp_server;
@@ -40,14 +41,105 @@ static struct tcp_client tcp_curr_client[CURRENT_CLIENTS];
 
 
 static int cli_idx = 0;
-static int cc_cli_count = 1000000000;
+static int cc_cli_count = 10;
 static int read_flag = 0;
+static int total_accept_cls = 0;
 
 static void tcp_read_cb(void *handle, int events);
 static void tcp_write_cb(void *handle, int events);
 static void tcp_close_cb(void *handle);
 static void tcp_client_read_cb(void *handle, int events);
 static void tcp_connect_cb(void *handle, int events);
+
+#define TARGET_CONTENT_LENGTH 100000
+
+static char *html;
+static int html_len;
+
+static void generate_html()
+{
+    time_t now = time(NULL);
+    struct tm tm = *gmtime(&now);
+    char date_str[128];
+    strftime(date_str, sizeof(date_str), "%a, %d %b %Y %H:%M:%S GMT", &tm);
+    html = malloc(TARGET_CONTENT_LENGTH + 1024);
+
+    char body[] = "<!DOCTYPE html>\r\n"
+                  "<html lang=\"en\">\r\n"
+                  "<head>\r\n"
+                  "<meta charset=\"UTF-8\">\r\n"
+                  "<title>Welcome to UnetStack!</title>\r\n"
+                  "<style>\r\n"
+                  "    body {\r\n"
+                  "        width: 35em;\r\n"
+                  "        margin: 0 auto;\r\n"
+                  "        font-family: Tahoma, Verdana, Arial, sans-serif;\r\n"
+                  "    }\r\n"
+                  "</style>\r\n"
+                  "</head>\r\n"
+                  "<body>\r\n"
+                  "<h1>Welcome to UnetStack!</h1>\r\n"
+                  "<p>For online documentation and support please refer to\r\n"
+                  "<a href=\"http://unetstack.org/\">unetstack.org</a>.</p>\r\n"
+                  "<p><em>Thank you for using UnetStack.</em></p>\r\n"
+                  "</body>\r\n"
+                  "</html>\r\n";
+
+    char ending_string[] = "This is the end of the HTML body.\r\n";
+    char padding_start[] = "<!-- Padding: ";
+    char padding_end[] = " -->\r\n";
+
+    size_t body_length = strlen(body);
+    size_t ending_length = strlen(ending_string);
+    size_t padding_start_length = strlen(padding_start);
+    size_t padding_end_length = strlen(padding_end);
+    size_t fixed_length = body_length + ending_length + padding_start_length + padding_end_length;
+    size_t padding_content_length = TARGET_CONTENT_LENGTH - fixed_length;
+
+    char header[512];
+    snprintf(header, sizeof(header),
+             "HTTP/1.1 200 OK\r\n"
+             "Server: tg\r\n"
+             "Date: %s\r\n"
+             "Content-Type: text/html\r\n"
+             "Content-Length: %zu\r\n"
+             "Last-Modified: %s\r\n"
+             "Connection: close\r\n"
+             "Accept-Ranges: bytes\r\n"
+             "\r\n",
+             date_str, TARGET_CONTENT_LENGTH, date_str);
+
+    size_t header_length = strlen(header);
+    size_t current_length = 0;
+
+    memcpy(html, header, header_length);
+    current_length += header_length;
+
+    memcpy(html + current_length, body, body_length);
+    current_length += body_length;
+
+    memcpy(html + current_length, ending_string, ending_length);
+    current_length += ending_length;
+
+    if (padding_content_length > 0) {
+        memcpy(html + current_length, padding_start, padding_start_length);
+        current_length += padding_start_length;
+
+        char random_chars[] = "abcdefghijklmnopqrstuvwxyz0123456789";
+        size_t random_chars_length = strlen(random_chars);
+        for (size_t i = 0; i < padding_content_length; i++) {
+            html[current_length + i] = random_chars[rand() % random_chars_length];
+        }
+        current_length += padding_content_length;
+
+        memcpy(html + current_length, padding_end, padding_end_length);
+        current_length += padding_end_length;
+    }
+
+    html[current_length] = '\0';
+    html_len = current_length;
+    printf("html len: %d, content: %s\n", strlen(html), html);
+}
 
 static struct netbsd_handle *get_client() {
     if (cli_idx >= MAX_CLIENTS - 6)
@@ -75,7 +167,7 @@ void cc_client_connect() {
     nh->is_ipv4 = 1;
     nh->type = SOCK_STREAM;
     nh->proto = IPPROTO_TCP;
-    cli->read_flag = 0;
+    cli->connect_flag = 0;
 
     if (netbsd_socket(nh) < 0) {
         printf("Can not open socket.\n");
@@ -127,14 +219,28 @@ void cc_client_connect() {
 
 static void timer_1s_cb(EV_P_ ev_timer *w, int revents) {
     static int cc_count = 0;
+#if 0
     if (cc_count < cc_cli_count) {
         int i = 0;
-        while (i < 200) {
+        while (i < 1) {
             cc_client_connect();
             i++;
             cc_count++;
         }
+    } else {
+        static int abc = 0;
+        abc++;
+        if (abc >= 20) {
+            ev_break(EV_A_ EVBREAK_ALL);
+        }
     }
+#else
+    static int abc = 0;
+    abc++;
+    if (abc >= 200) {
+        ev_break(EV_A_ EVBREAK_ALL);
+    }
+#endif
 }
 
 static void idle_cb(struct ev_loop *loop, ev_idle *w, int revents) {
@@ -177,12 +283,15 @@ static void tcp_accept(void *handle, int events) {
     tcp_client->write_cb = tcp_write_cb;
     tcp_client->close_cb = tcp_close_cb;
     tcp_client->is_ipv4 = 1;
+    struct tcp_client *cli = container_of(tcp_client, struct tcp_client, handle);
 
+    cli->write_ptr = html;
+    cli->write_sz = html_len;
     if (netbsd_accept(&tcp_server, tcp_client)) {
         printf("Accept tcp client error\n");
         return;
     }
-
+    total_accept_cls ++;
     netbsd_io_start(tcp_client);
 }
 
@@ -191,11 +300,21 @@ static void tcp_connect_cb(void *handle, int events) {
     struct tcp_client *cli = container_of(handle, struct tcp_client, handle);
 
     tcp_client->read_cb = tcp_client_read_cb;
+    cli->write_ptr = html;
+    cli->write_sz = html_len;
 
     char *buffer = "1234";
-    struct iovec iov = {.iov_base = buffer, .iov_len = strlen(buffer)};
-    netbsd_write(tcp_client, &iov, 1);
-    cli->read_flag = 1;
+    struct iovec iov = {
+        .iov_base = cli->write_ptr,
+        .iov_len = cli->write_sz,
+    };
+    int len = netbsd_write(tcp_client, &iov, 1);
+    if (len < 0) {
+        printf("netbsd_write failed, error: %d, close socket\n", len);
+        netbsd_close(tcp_client);
+        return;
+    }
+    cli->connect_flag = 1;
 }
 
 static void tcp_client_read_cb(void *handle, int events) {
@@ -210,15 +329,22 @@ static void tcp_client_read_cb(void *handle, int events) {
 
     bytes = netbsd_read(nh, &iov, 1);
     if (bytes > 0) {
-        if (cli->read_flag) {
-            //netbsd_close(nh);
+        if (cli->write_sz <= 0) {
             return;
         }
-        iov.iov_len = bytes;
-        ssize_t sent = netbsd_write(nh, &iov, 1);
+        //printf("read data: %lu: %s\n", iov.iov_len, (char *)iov.iov_base);
+        iov.iov_base = cli->write_ptr;;
+        iov.iov_len = cli->write_sz;;
+        //printf("write data: %lu: %s\n", iov.iov_len, (char *)iov.iov_base);
+        int sent = netbsd_write(nh, &iov, 1);
+        //printf("sent data: %lu\n", sent);
         if (sent < 0) {
-            printf("Failed to send: %d\n", (int)sent);
+            printf("failed to send: %d\n", (int)sent);
+            netbsd_close(nh);
+            return;
         }
+        cli->write_ptr += sent;
+        cli->write_sz -= sent;
     } else {
         netbsd_close(nh);
         return;
@@ -236,8 +362,24 @@ static void tcp_write_cb(void *handle, int events) {
     struct netbsd_handle *nh = (struct netbsd_handle *)handle;
     struct tcp_client *cli = container_of(handle, struct tcp_client, handle);
 
-     if (cli->read_flag) {
-         netbsd_close(nh);
+     if (cli->write_sz > 0) {
+         struct iovec iov;;
+         iov.iov_base = cli->write_ptr;;
+         iov.iov_len = cli->write_sz;;
+        int sent = netbsd_write(nh, &iov, 1);
+        //printf("sent data: %lu\n", sent);
+        if (sent < 0) {
+            printf("failed to send: %d\n", (int)sent);
+            netbsd_close(nh);
+            return;
+        }
+        cli->write_ptr += sent;
+        cli->write_sz -= sent;
+
+        if (cli->write_sz == 0) {
+            printf("write done on one connection\n");
+            netbsd_close(nh);
+        }
      }
 }
 static void tcp_close_cb(void *handle) {
@@ -291,7 +433,7 @@ static void tcp_server_init() {
     memset(&addr, 0, sizeof(addr));
     addr.sin_family = AF_INET;
     addr.sin_addr.s_addr = INADDR_ANY;
-    addr.sin_port = htons(12345);
+    addr.sin_port = htons(80);
 
     if (netbsd_bind(&tcp_server, (struct sockaddr *)&addr)) {
         printf("TCP server bind addr failed\n");
@@ -315,6 +457,7 @@ int main()
     logger_set_level(LOG_LEVEL_WARN);  // Show all logs above DEBUG
     logger_enable_colors(1);            // Enable colored output
 
+    generate_html();
     char *dpdk_str[] = {
        [0] =  "tt",
        [1] = " -n4",
