@@ -42,7 +42,7 @@ int virt_transmit(struct ifnet *ifp, struct mbuf *m)
     gl_vif->output_cb((void *)m, len, gl_vif->sc_arg);
 out:
     m_freem((struct mbuf *)mb);
-    return;
+    return 0;
 }
 
 int

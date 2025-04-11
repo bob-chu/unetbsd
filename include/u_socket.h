@@ -8,12 +8,17 @@ typedef void (*netbsd_read_cb)(void *handle, int events);
 typedef void (*netbsd_write_cb)(void *handle, int error);
 typedef void (*netbsd_close_cb)(void *handle);
 
+enum proto_type {
+    PROTO_TCP,
+    PROTO_UDP,
+};
+
 /* socket 处理结构体 */
 struct netbsd_handle {
     struct socket *so;              /* NetBSD socket */
     int is_ipv4;                    /* 是否 IPv4 */
     int type;                       /* socket 类型 (SOCK_STREAM, SOCK_DGRAM) */
-    int proto;                      /* 协议 (IPPROTO_TCP, IPPROTO_UDP) */
+    enum proto_type proto;               /* 协议 (IPPROTO_TCP, IPPROTO_UDP) */
     netbsd_read_cb read_cb;         /* 读取回调 */
     netbsd_write_cb write_cb;       /* 写入回调 */
     netbsd_close_cb close_cb;       /* 关闭回调 */

@@ -76,12 +76,20 @@ void netbsd_process_event() {
     }
 }
 
-/* 创建 socket */
 int netbsd_socket(struct netbsd_handle *nh) {
     int error;
-
-    error = socreate(nh->is_ipv4 ? AF_INET : AF_INET6, &nh->so, nh->type,
-            nh->proto, curlwp, NULL);
+    int type, proto;
+    if (nh->proto == PROTO_TCP) {
+        proto = IPPROTO_TCP;
+        type = SOCK_STREAM;
+    } else if (nh->proto == PROTO_UDP) {
+        proto = IPPROTO_UDP;
+        type = SOCK_DGRAM;
+    } else {
+        return -1;
+    }
+    error = socreate(nh->is_ipv4 ? AF_INET : AF_INET6, &nh->so, type,
+            proto, curlwp, NULL);
     return error;
 }
 
@@ -89,7 +97,6 @@ void netbsd_io_start(struct netbsd_handle *nh) {
     soupcall_set(nh->so, nh, soupcall_cb);
 }
 
-/* 绑定地址 */
 int netbsd_bind(struct netbsd_handle *nh, const struct sockaddr *addr) {
     struct sockaddr_storage sa;
     int len =
@@ -107,7 +114,6 @@ int netbsd_bind(struct netbsd_handle *nh, const struct sockaddr *addr) {
     return sobind(nh->so, (struct sockaddr *)&sa, curlwp);
 }
 
-/* 开始监听 */
 int netbsd_listen(struct netbsd_handle *nh, int backlog) {
     return solisten(nh->so, backlog, curlwp);
 }
@@ -124,12 +130,11 @@ int netbsd_accept(struct netbsd_handle *nh_server,
         return EINVAL;
     }
 
-    /* 检查队列是否为空 */
     if (TAILQ_EMPTY(&so->so_q)) {
         if (so->so_state & SS_NBIO) {
             return EWOULDBLOCK;
         }
-        return EAGAIN; /* 或等待，视需求 */
+        return EAGAIN;
     }
 
     so2 = TAILQ_FIRST(&so->so_q);
@@ -149,7 +154,6 @@ int netbsd_accept(struct netbsd_handle *nh_server,
     return 0;
 }
 
-/* 发起连接 */
 int netbsd_connect(struct netbsd_handle *nh, struct sockaddr *addr) {
     struct sockaddr_storage sa;
     int len =
@@ -171,7 +175,6 @@ int netbsd_connect(struct netbsd_handle *nh, struct sockaddr *addr) {
     return ret;
 }
 
-/* 关闭 socket */
 int netbsd_close(struct netbsd_handle *nh) {
     if (nh->so) {
         soclose(nh->so);
@@ -181,28 +184,25 @@ int netbsd_close(struct netbsd_handle *nh) {
     return 0;
 }
 
-/* 获取 socket 错误 */
 int netbsd_socket_error(struct netbsd_handle *nh) {
     return nh->so ? nh->so->so_error : 0;
 }
 
 static int so_read(struct netbsd_handle *nh, struct iovec *iov, int iovcnt,
         struct sockaddr *from) {
-    struct uio uio;           /* 用户 I/O 结构 */
-    ssize_t bytes, total;     /* 可读取字节数 */
-    int error;                /* 错误码 */
-    int flags = MSG_DONTWAIT; /* 非阻塞读取 */
+    struct uio uio;
+    ssize_t bytes, total;
+    int error;
+    int flags = MSG_DONTWAIT;
     struct sockaddr_storage sa;
     struct mbuf *addr_mbuf = NULL;
 
     struct socket *so = nh->so;
 
-    /* 检查参数 */
     if (so == NULL || iov == NULL || iovcnt <= 0) {
         return -EINVAL;
     }
 
-    /* 初始化 uio */
     uio.uio_iov = iov;
     uio.uio_iovcnt = iovcnt;
     uio.uio_offset = 0;
@@ -212,20 +212,18 @@ static int so_read(struct netbsd_handle *nh, struct iovec *iov, int iovcnt,
         if (iov[i].iov_len < 0) {
             return -EINVAL;
         }
-        uio.uio_resid += iov[i].iov_len; /* 计算总缓冲区大小 */
+        uio.uio_resid += iov[i].iov_len;
     }
 
-    /* 获取接收缓冲区数据量 */
     bytes = so->so_rcv.sb_cc;
     total = uio.uio_resid;
     if (total == 0) {
-        return -1; /* 无数据 */
+        return -1;
     }
 
-    /* 调用 soreceive 读取数据 */
     error = soreceive(so, from ? &addr_mbuf : NULL, &uio, NULL, NULL, &flags);
     if (error) {
-        return -error; /* 返回负值表示错误，如 -EAGAIN */
+        return -error; /* return error, like -EAGAIN */
     }
     if (so->so_state & SS_CANTRCVMORE) {
         /* EOF notify*/
@@ -240,7 +238,6 @@ static int so_read(struct netbsd_handle *nh, struct iovec *iov, int iovcnt,
         m_freem(addr_mbuf);
     }
 
-    /* 计算实际读取字节数 */
     bytes = total - uio.uio_resid;
 
     return bytes;
@@ -284,7 +281,6 @@ static ssize_t so_send(struct netbsd_handle *nh, const struct iovec *iov,
         return -EPIPE;
     }
 
-    /* 对于 UDP，未连接时需要 to 参数；对于 TCP，忽略 to（依赖 SS_ISCONNECTED） */
     error = sosend(so, to ? (struct sockaddr *)to : NULL, &uio, NULL, NULL, flags,
             curlwp);
     if (error) {
