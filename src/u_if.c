@@ -241,12 +241,6 @@ void netbsd_freembuf(void *mbuf) {
 void *netbsd_mget_hdr(void *data, int len)
 {
     struct mbuf *m;
-    m = m_gethdr(M_NOWAIT, MT_DATA);
-    if (m == NULL) {
-        return NULL;
-    }
-    m->m_pkthdr.len = len;
-    m->m_pkthdr._rcvif.index =gl_vif->ifp->if_index;
     if (len > MHLEN) {
         m = m_getcl(M_NOWAIT, MT_DATA, M_PKTHDR);
         if (m->m_ext.ext_buf == NULL) {
@@ -255,9 +249,16 @@ void *netbsd_mget_hdr(void *data, int len)
         u_memcpy(m->m_data, data, len);
         m->m_len = len;
     } else {
+        m = m_gethdr(M_NOWAIT, MT_DATA);
+        if (m == NULL) {
+            return NULL;
+        }
+
         u_memcpy(m->m_data, data, len);
         m->m_len = len;
     }
+    m->m_pkthdr.len = len;
+    m->m_pkthdr._rcvif.index =gl_vif->ifp->if_index;
     return m;
 }
 

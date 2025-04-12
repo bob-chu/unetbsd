@@ -191,7 +191,7 @@ int netbsd_socket_error(struct netbsd_handle *nh) {
 static int so_read(struct netbsd_handle *nh, struct iovec *iov, int iovcnt,
         struct sockaddr *from) {
     struct uio uio;
-    ssize_t bytes, total;
+    ssize_t bytes = 0, total;
     int error;
     int flags = MSG_DONTWAIT;
     struct sockaddr_storage sa;
@@ -237,8 +237,6 @@ static int so_read(struct netbsd_handle *nh, struct iovec *iov, int iovcnt,
     } else if (addr_mbuf) {
         m_freem(addr_mbuf);
     }
-
-    bytes = total - uio.uio_resid;
 
     return bytes;
 }
