@@ -66,7 +66,7 @@ void netbsd_process_event() {
                 break;
             case POLLHUP:
                 if (nh->so && nh->close_cb) {
-                    nh->close_cb(nh);
+                    nh->close_cb(nh, events);
                 }
                 break;
             default:
@@ -296,7 +296,7 @@ int netbsd_write(struct netbsd_handle *nh, const struct iovec *iov,
     return so_send(nh, iov, iovcnt, NULL);
 }
 
-ssize_t netbsd_sendto(struct netbsd_handle *nh, const struct iovec *iov,
+int netbsd_sendto(struct netbsd_handle *nh, const struct iovec *iov,
         int iovcnt, const struct sockaddr *to) {
     return so_send(nh, iov, iovcnt, to);
 }

@@ -1,6 +1,6 @@
 import socket
 
-def tcp_echo_server(host='0.0.0.0', port=12345):
+def tcp_echo_server(host='0.0.0.0', port=80):
     """
     Start a TCP echo server that listens for connections and echoes back any received data.
     

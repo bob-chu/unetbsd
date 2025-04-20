@@ -1,5 +1,5 @@
 CC = gcc
-CFLAGS = -O2 -march=native -nostdinc -Wall -g \
+CFLAGS = -g -O2 -march=native -nostdinc -Wall -g \
         -Iinclude/opt \
         -Iinclude \
         -Inetbsd_src/sys \
@@ -15,8 +15,8 @@ CFLAGS = -O2 -march=native -nostdinc -Wall -g \
 AR = ar
 ARFLAGS = rcs
 
-LIBS += -lcrypto -lev
-#LIBS += -lev
+#LIBS += -lcrypto -lev
+LIBS += -lev -lpthread -lm
 
 DEFS = -D_KERNEL -D__NetBSD__ -DNET_MPSAFE -DSOSEND_NO_LOAN \
        -DTCP_DEBUG  -D_NETBSD_SOURCE -D_RUMPKERNEL  -DINET -D_NETBSD_SOURCE -D__BSD_VISIBLE
@@ -25,7 +25,11 @@ CFLAGS += $(DEFS)
 # userspace CFLAGS (remove -nostdinc)
 CFLAGS_USER = -g -O2 -frename-registers -funswitch-loops -fweb -Wno-format-truncation \
         -Iinclude \
-		-I/usr/include/openssl
+		-I/usr/include/openssl \
+
+CFLAGS += -Wno-warning-name -Wno-incompatible-function-pointer-types -Wno-deprecated-non-prototype \
+	  -Wno-implicit-function-declaration -Wno-implicit-int -Wno-int-conversion
+
 
 USE_DPDK ?= 0
 ifeq ($(USE_DPDK),1)
@@ -170,10 +174,10 @@ $(LIB_TARGET): $(LIB_OBJS)
 
 
 $(APP_DPDK_TARGET): $(APP_DPDK_OBJS) $(LIB_TARGET)
-	$(CC) $(CFLAGS_USER) -o $@ $(APP_DPDK_OBJS) $(LIB_TARGET) -L. -lnetbsdstack $(LIBS)
+	$(CC) $(CFLAGS_USER)  $(LDFLAGS) -o $@ $(APP_DPDK_OBJS) $(LIB_TARGET) -L. -lnetbsdstack $(LIBS) 
 
 $(APP_TARGET): $(APP_OBJS) $(LIB_TARGET)
-	$(CC) $(CFLAGS_USER) -o $@ $(APP_OBJS) $(LIB_TARGET) -L. -lnetbsdstack $(LIBS)
+	$(CC) $(CFLAGS_USER) $(LDFLAGS) -o $@ $(APP_OBJS) $(LIB_TARGET) -L. -lnetbsdstack $(LIBS) 
 # **auto create obj dir **
 $(OBJDIR):
 	mkdir -p $(OBJDIR)

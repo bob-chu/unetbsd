@@ -3,27 +3,26 @@
 
 #include <sys/queue.h>
 
-/* 回调函数类型 */
 typedef void (*netbsd_read_cb)(void *handle, int events);
-typedef void (*netbsd_write_cb)(void *handle, int error);
-typedef void (*netbsd_close_cb)(void *handle);
+typedef void (*netbsd_write_cb)(void *handle, int events);
+typedef void (*netbsd_close_cb)(void *handle, int events);
 
 enum proto_type {
     PROTO_TCP,
     PROTO_UDP,
 };
 
-/* socket 处理结构体 */
 struct netbsd_handle {
-    struct socket *so;              /* NetBSD socket */
-    int is_ipv4;                    /* 是否 IPv4 */
-    int type;                       /* socket 类型 (SOCK_STREAM, SOCK_DGRAM) */
-    enum proto_type proto;               /* 协议 (IPPROTO_TCP, IPPROTO_UDP) */
-    netbsd_read_cb read_cb;         /* 读取回调 */
-    netbsd_write_cb write_cb;       /* 写入回调 */
-    netbsd_close_cb close_cb;       /* 关闭回调 */
+    struct socket *so;
+    int is_ipv4;
+    int type;
+    enum proto_type proto;
+    netbsd_read_cb read_cb;
+    netbsd_write_cb write_cb;
+    netbsd_close_cb close_cb;
     void *data;
     int active;
+    int is_closing;
 };
 
 struct netbsd_event {
@@ -50,9 +49,11 @@ int netbsd_read(struct netbsd_handle *nh, struct iovec *iov, int iovcnt);
 int netbsd_write(struct netbsd_handle *nh, const struct iovec *iov, int iovcnt);
 
 int netbsd_recvfrom(struct netbsd_handle *nh, struct iovec *iov, int iovcnt, struct sockaddr *from);
-ssize_t netbsd_sendto(struct netbsd_handle *nh, const struct iovec *iov, int iovcnt, const struct sockaddr *to);
+int netbsd_sendto(struct netbsd_handle *nh, const struct iovec *iov, int iovcnt, const struct sockaddr *to);
 
 int netbsd_reuseaddr(struct netbsd_handle *nh, const void *optval, socklen_t optlen);
+int netbsd_reuseport(struct netbsd_handle *nh, const void *optval, socklen_t optlen);
+int netbsd_linger_set(struct netbsd_handle *nh, struct linger *l);
 
 void netbsd_process_event();
 #endif

@@ -63,3 +63,13 @@ void netbsd_init()
     setipaddr("lo0", 0x7f000001);
     updatetime();
 }
+
+extern int tcp_msl_local;
+
+void sysctl_tun(char *name, int val)
+{
+    if (strcmp(name, "tcp_msl_local") == 0) {
+        tcp_msl_local = val;
+    }
+}
+

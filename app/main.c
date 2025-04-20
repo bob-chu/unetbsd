@@ -47,7 +47,7 @@ static int total_accept_cls = 0;
 
 static void tcp_read_cb(void *handle, int events);
 static void tcp_write_cb(void *handle, int events);
-static void tcp_close_cb(void *handle);
+static void tcp_close_cb(void *handle, int events);
 static void tcp_client_read_cb(void *handle, int events);
 static void tcp_connect_cb(void *handle, int events);
 
@@ -393,7 +393,7 @@ static void tcp_write_cb(void *handle, int events) {
         }
      }
 }
-static void tcp_close_cb(void *handle) {
+static void tcp_close_cb(void *handle, int events) {
     netbsd_close(handle);
 }
 
