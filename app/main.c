@@ -102,7 +102,7 @@ static void generate_html()
              "Server: tg\r\n"
              "Date: %s\r\n"
              "Content-Type: text/html\r\n"
-             "Content-Length: %zu\r\n"
+             "Content-Length: %u\r\n"
              "Last-Modified: %s\r\n"
              "Connection: close\r\n"
              "Accept-Ranges: bytes\r\n"
@@ -138,7 +138,7 @@ static void generate_html()
 
     html[current_length] = '\0';
     html_len = current_length;
-    printf("html len: %d, content: %s\n", strlen(html), html);
+    printf("html len: %ld, content: %s\n", strlen(html), html);
 }
 
 static struct netbsd_handle *get_client() {

@@ -8,6 +8,7 @@ CFLAGS = -g -O2 -march=native -nostdinc -Wall -g \
         -Inetbsd_src/sys/kern \
         -Inetbsd_src/sys/net \
         -Inetbsd_src/sys/netinet \
+        -Inetbsd_src/sys/netinet6 \
         -Inetbsd_src/sys/dev \
         -Inetbsd_src/sys/rump/include/opt \
         -Inetbsd_src/common/include/
@@ -19,7 +20,7 @@ ARFLAGS = rcs
 LIBS += -lev -lpthread -lm
 
 DEFS = -D_KERNEL -D__NetBSD__ -DNET_MPSAFE -DSOSEND_NO_LOAN \
-       -DTCP_DEBUG  -D_NETBSD_SOURCE -D_RUMPKERNEL  -DINET -D_NETBSD_SOURCE -D__BSD_VISIBLE
+       -DTCP_DEBUG  -D_NETBSD_SOURCE -D_RUMPKERNEL  -DINET -DINET6 -D__BSD_VISIBLE
 CFLAGS += $(DEFS)
 
 # userspace CFLAGS (remove -nostdinc)
@@ -27,7 +28,7 @@ CFLAGS_USER = -g -O2 -frename-registers -funswitch-loops -fweb -Wno-format-trunc
         -Iinclude \
 		-I/usr/include/openssl \
 
-CFLAGS += -Wno-warning-name -Wno-incompatible-function-pointer-types -Wno-deprecated-non-prototype \
+CFLAGS += -Wno-builtin-declaration-mismatch -Wno-unused-value \
 	  -Wno-implicit-function-declaration -Wno-implicit-int -Wno-int-conversion
 
 
@@ -57,13 +58,39 @@ NETBSD_LIBKERN = \
 	netbsd_src/sys/lib/libkern/copystr.c
 
 NETBSD_V6 = \
-	    netbsd_src/sys/netinet6/in6_print.c  \
-	    netbsd_src/sys/netinet6/in6_proto.c
+	netbsd_src/sys/netinet6/dest6.c \
+	netbsd_src/sys/netinet6/frag6.c \
+	netbsd_src/sys/netinet6/icmp6.c \
+	netbsd_src/sys/netinet6/in6.c \
+	netbsd_src/sys/netinet6/in6_cksum.c \
+	netbsd_src/sys/netinet6/in6_ifattach.c \
+	netbsd_src/sys/netinet6/in6_pcb.c \
+	netbsd_src/sys/netinet6/in6_print.c \
+	netbsd_src/sys/netinet6/in6_proto.c \
+	netbsd_src/sys/netinet6/in6_src.c \
+	netbsd_src/sys/netinet6/in6_offload.c \
+	netbsd_src/sys/netinet6/ip6_flow.c \
+	netbsd_src/sys/netinet6/ip6_forward.c \
+	netbsd_src/sys/netinet6/ip6_input.c \
+	netbsd_src/sys/netinet6/ip6_output.c \
+	netbsd_src/sys/netinet6/ip6_mroute.c \
+	netbsd_src/sys/netinet6/mld6.c \
+	netbsd_src/sys/netinet6/nd6.c \
+	netbsd_src/sys/netinet6/nd6_nbr.c \
+	netbsd_src/sys/netinet6/nd6_rtr.c \
+	netbsd_src/sys/netinet6/raw_ip6.c \
+	netbsd_src/sys/netinet6/scope6.c \
+	netbsd_src/sys/netinet6/udp6_usrreq.c \
+	netbsd_src/sys/netinet6/route6.c
+
+# Also need nd.c from net, it's already there, but relevant for IPv6 NDP
+# Also need route.c, radix.c from net, already there
 
 # NetBSD kernel srouces（include init.c and stub.c）
 NETBSD_SRCS = \
 	$(NETBSD_STR) \
 	$(NETBSD_LIBKERN) \
+	${NETBSD_V6} \
     	netbsd_src/sys/netatalk/at_print.c \
     	netbsd_src/sys/kern/kern_sysctl.c \
     	netbsd_src/sys/kern/init_sysctl_base.c \

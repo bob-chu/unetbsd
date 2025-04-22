@@ -136,7 +136,10 @@ int af_packet_input(void *data, long unsigned int len, void *arg)
 int af_packet_output(void *data, long unsigned int len, void *arg)
 {
     print_packet((char *)data, len, false);
-    write(socket_fd, (char *)data, len);
+    int bytes = write(socket_fd, (char *)data, len);
+    if (bytes < 0) {
+        printf("write socket error\n");
+    }
     return 0;
 }
 
@@ -163,7 +166,10 @@ int af_packet_output_m(void *m, long unsigned int len, void *arg)
         offset += iov[i].iov_len; 
     }
     print_packet((char *)data_ptr, total_len, false);
-    write(socket_fd, (char *)data_ptr, total_len);
+    int bytes = write(socket_fd, (char *)data_ptr, total_len);
+    if (bytes < 0) {
+        printf("write socket error\n");
+    }
     free(data_ptr);
     return 0;
 }

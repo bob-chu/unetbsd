@@ -747,6 +747,14 @@ int rw_lock_held(krwlock_t *lock) {
 int rw_tryenter(krwlock_t *lock, const krw_t  mode) {
     return 1;  /* Success */
 }
+int rw_read_held(krwlock_t *lock) {
+    return 1;  /* Success */
+}
+int rw_write_held(krwlock_t *lock) {
+    return 1;  /* Success */
+}
+
+
 
 int rw_tryupgrade(krwlock_t *lock) { return 0; }
 
@@ -1062,6 +1070,7 @@ void *rtsock_iflist_50_hook = NULL;
 void *rtsock_oifmsg_14_hook = NULL;
 void *rtsock_oifmsg_50_hook = NULL;
 void *rtsock_newaddr_70_hook = NULL;
+void *net_inet6_nd_90_hook = NULL;
 
 bool module_hook_tryenter(bool *b, struct localcount *hook) { return 0; }  /* No hook available */
 void module_hook_exit(struct localcount *hook) {}
@@ -1112,6 +1121,7 @@ void pfil_run_addrhooks(pfil_head_t *ph, u_long cmd, struct ifaddr *ifa) {}
  */
 
 int carp_proto_input(struct mbuf *m, int *offp, int proto) { return 0; }
+int carp6_proto_input(struct mbuf *m, int *offp, int proto) { return 0; }
 void carp_init(void) {}
 
 #define	IF_STATS_SIZE	(sizeof(uint64_t) * IF_NSTATS)
@@ -1126,6 +1136,7 @@ void carp_carpdev_state(void *ifp) {}
 int carp_ourether(void *ifp, struct mbuf **mp, const uint8_t *dest) { return 0; }
 void carp_input(struct ifnet *ifp, struct mbuf **mp) {};
 int carp_iamatch(struct ifnet *ifp, const struct in_addr *addr) { return 0; }
+int carp_iamatch6(struct ifnet *ifp, const struct in_addr *addr) { return 0; }
 
 /* no soft interrupts */
 void softint_disestablish(void *si) {}
@@ -1261,7 +1272,7 @@ void *kern_cprng = NULL;
 void *cprng_strong = NULL;
 
 /* ipv6 related */
-int sin6_print(char *buf, size_t len, const void *v) { return 0; }
+//int sin6_print(char *buf, size_t len, const void *v) { return 0; }
 
 /* sys/crpto/cprng_fast/cprng_fastp.c */
 uint32_t cprng_fast32(void) {
