@@ -1,6 +1,6 @@
 import socket
 
-def tcp_echo_client(server_address, message="12345", iterations=1):
+def tcp_echo_client(server_address, message="12345", iterations=1000):
     """
 
     Args:
@@ -75,7 +75,7 @@ def tcp_echo_client(server_address, message="12345", iterations=1):
 
 if __name__ == "__main__":
     server_host = '192.168.1.2'
-    server_port = 80
+    server_port = 12345 
 
     server_address = (server_host, server_port)
 

@@ -51,7 +51,7 @@ static void tcp_close_cb(void *handle, int events);
 static void tcp_client_read_cb(void *handle, int events);
 static void tcp_connect_cb(void *handle, int events);
 
-#define TARGET_CONTENT_LENGTH 2000000
+#define TARGET_CONTENT_LENGTH 1000
 
 static char *html;
 static int html_len;
@@ -180,8 +180,7 @@ void cc_client_connect() {
     nh->write_cb = tcp_write_cb;
     nh->close_cb = tcp_close_cb;
     nh->is_ipv4 = 1;
-    nh->type = SOCK_STREAM;
-    nh->proto = IPPROTO_TCP;
+    nh->proto = PROTO_TCP;
     cli->connect_flag = 0;
 
     if (netbsd_socket(nh) < 0) {
@@ -399,8 +398,7 @@ static void tcp_close_cb(void *handle, int events) {
 
 static void udp_server_init() {
     udp_server.is_ipv4 = 1;
-    udp_server.type = SOCK_DGRAM;
-    udp_server.proto = IPPROTO_UDP;
+    udp_server.proto = PROTO_UDP;
     udp_server.read_cb = udp_read_cb;
     udp_server.active = 0;
     int ret = netbsd_socket(&udp_server);
@@ -429,8 +427,7 @@ static void tcp_server_init() {
     struct sockaddr_in addr;
 
     tcp_server.is_ipv4 = 1;
-    tcp_server.type = SOCK_STREAM;
-    tcp_server.proto = IPPROTO_TCP;
+    tcp_server.proto = PROTO_TCP;
     tcp_server.read_cb = tcp_read_cb;
     tcp_server.write_cb = tcp_write_cb;
     tcp_server.close_cb = tcp_close_cb;
