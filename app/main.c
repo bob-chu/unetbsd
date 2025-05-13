@@ -80,7 +80,7 @@ static void generate_html()
                   "<body>\r\n"
                   "<h1>Welcome to UnetStack!</h1>\r\n"
                   "<p>For online documentation and support please refer to\r\n"
-                  "<a href=\"http://unetstack.org/\">unetstack.org</a>.</p>\r\n"
+                  "<a href=\"http://unetstack.com/\">unetstack.com</a>.</p>\r\n"
                   "<p><em>Thank you for using UnetStack.</em></p>\r\n"
                   "</body>\r\n"
                   "</html>\r\n";

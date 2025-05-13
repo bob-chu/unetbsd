@@ -165,14 +165,46 @@ virt_if_add_addr4(struct virt_interface *vif, struct in_addr *addr, unsigned net
     return in_control(NULL, SIOCAIFADDR, (void *)&ifra, vif->ifp);
 }
 
+static int
+virt_if_add_addr6(struct virt_interface *vif, struct in6_addr *addr, unsigned netmask)
+{
+    struct in6_aliasreq ifra6;
+    struct sockaddr_in6 sin6, mask6;
+    struct in6_addrlifetime lifetime6;
+    vif = gl_vif;
+    if (vif == NULL || vif->ifp == NULL) {
+        return -1;
+    }
+
+    memset(&sin6, 0, sizeof(sin6));
+    sin6.sin6_len = sizeof(sin6);
+    sin6.sin6_family = AF_INET6;
+    memcpy(sin6.sin6_addr.s6_addr, addr->s6_addr, sizeof(addr->s6_addr));
+
+    memset(&mask6, 0, sizeof(mask6));
+    mask6.sin6_len = sizeof(mask6);
+    mask6.sin6_family = AF_INET6;
+    in6_prefixlen2mask(&mask6.sin6_addr, netmask);
+    lifetime6.ia6t_vltime = 0xffffffff;
+    lifetime6.ia6t_pltime = 0xffffffff;
+ 
+    memset(&ifra6, 0, sizeof(ifra6));
+    ifra6.ifra_addr = sin6;
+    ifra6.ifra_prefixmask = mask6;
+    ifra6.ifra_lifetime = lifetime6;
+
+    return in_control(NULL, SIOCAIFADDR, (void *)&ifra6, vif->ifp);
+}
+
+
+
 int
 virt_if_add_addr(struct virt_interface *vif, void *addr, unsigned netmask, int is_ipv4)
 {
     if (is_ipv4) {
         return virt_if_add_addr4(vif, (struct in_addr *)addr, netmask);
     } else {
-        printf("IPv6 address setting not implemented yet\n");
-        return -1;
+        return virt_if_add_addr6(vif, (struct in6_addr *)addr, netmask);
     }
 }
 
@@ -196,14 +228,35 @@ virt_if_add_gateway(struct virt_interface *vif, void *addr)
     struct sockaddr_in gw;
     struct sockaddr_in mask;
 
-    // 初始化地址结构
-    clear_sinaddr(&dst);   // 默认路由：0.0.0.0
-    clear_sinaddr(&mask);  // 默认掩码：0.0.0.0
-    clear_sinaddr(&gw);    // 网关地址
+    clear_sinaddr(&dst);
+    clear_sinaddr(&mask);
+    clear_sinaddr(&gw);
     gw.sin_addr = *gw_addr;
 
-    // 添加路由
-    //int error = rtrequest_fib(RTM_ADD, (struct sockaddr *)&dst, (struct sockaddr *)&gw,
+    int error = rtrequest(RTM_ADD, (struct sockaddr *)&dst, (struct sockaddr *)&gw,
+                            (struct sockaddr *)&mask, RTF_UP | RTF_GATEWAY | RTF_STATIC,
+                            NULL);
+    if (error != 0) {
+        printf("Failed to add gateway: error=%d\n", error);
+        return;
+    }
+}
+
+void
+virt_if_add_gateway6(struct virt_interface *vif, struct in6_addr *addr)
+{
+    struct sockaddr_in6 dst, mask, gw;
+
+    bzero(&dst, sizeof(dst));
+    bzero(&mask, sizeof(mask));
+    bzero(&gw, sizeof(gw));
+
+    dst.sin6_len = mask.sin6_len = gw.sin6_len =
+        sizeof(struct sockaddr_in6);
+    dst.sin6_family = gw.sin6_family = AF_INET6;
+
+    memcpy(gw.sin6_addr.s6_addr, addr->s6_addr, sizeof(addr->s6_addr));
+
     int error = rtrequest(RTM_ADD, (struct sockaddr *)&dst, (struct sockaddr *)&gw,
                             (struct sockaddr *)&mask, RTF_UP | RTF_GATEWAY | RTF_STATIC,
                             NULL);
