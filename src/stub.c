@@ -465,9 +465,15 @@ sysctl_relock(void)
 //////////////////////////////////////////////////////////////////////////////
 void panic(const char *fmt, ...)
 {
-	printf("panic: ");
-	// FIXME
-	exit(1);
+    printf("panic: ");
+    // FIXME
+    va_list args;
+    va_start(args, fmt);
+    vprintf(fmt, args);
+    va_end(args);
+    printf("\n");
+
+     exit(1);
 }
 
 /*
@@ -477,6 +483,11 @@ void panic(const char *fmt, ...)
  */
 void log(int level, const char *fmt, ...)
 {
+    va_list args;
+    va_start(args, fmt);
+    vprintf(fmt, args);
+    va_end(args);
+    printf("\n");
 }
 
 //////////////////////////////////////////////////////////////////////////////
@@ -609,7 +620,7 @@ void percpu_free(percpu_t *pc, size_t size)
 {
     free(pc);
 }
-
+static percpu_t *new_percpu;
 void *
 percpu_getref(percpu_t *pc)
 {
@@ -632,12 +643,14 @@ void percpu_traverse_exit(void) {}
 percpu_t *percpu_create(size_t size, percpu_callback_t ctor,
         percpu_callback_t dtor, void *cookie)
 {
-    return NULL;
+    new_percpu = (percpu_t *)calloc(16000, sizeof(struct percpu));
+    return &new_percpu;
 }
 
 void *percpu_getptr_remote(percpu_t *pc, struct cpu_info *ci) {
-    static struct cpu_info *cpu = &cpu0;
-    return &cpu;
+    //static struct cpu_info *cpu = &cpu0;
+    //return &cpu;
+    return &pc;
 }
 
 void percpu_foreach_xcall(percpu_t *pc, u_int xcflags, 
@@ -1034,9 +1047,27 @@ struct sockaddr_dl *sockaddr_dl_init(struct sockaddr_dl *sdl, socklen_t socklen,
         uint8_t type, const void *name, uint8_t namelen, const void *addr,
         uint8_t addrlen)
 {
-    return NULL;
-}
+    socklen_t len;
+    sdl->sdl_family = AF_LINK;
+    sdl->sdl_slen = 0;
 
+    len = sockaddr_dl_measure(namelen, addrlen);
+    sdl->sdl_len = len;
+    sdl->sdl_index = ifindex;
+    sdl->sdl_type = type;
+    memset(&sdl->sdl_data[0], 0, namelen + addrlen);
+    if (name != NULL) {
+        memcpy(&sdl->sdl_data[0], name, namelen);
+        sdl->sdl_nlen = namelen;
+    } else
+        sdl->sdl_nlen = 0;
+    if (addr != NULL) {
+        memcpy(&sdl->sdl_data[sdl->sdl_nlen], addr, addrlen);
+        sdl->sdl_alen = addrlen;
+    } else
+        sdl->sdl_alen = 0;
+    return sdl;
+}
 
 /*
  * uio related
@@ -1242,7 +1273,13 @@ int netstat_sysctl(percpu_t *stat, u_int ncounters, SYSCTLFN_ARGS) { return 0; }
 
 size_t coherency_unit = 64;
 
-int _init_once(once_t *o, int (*fn)(void)) { o->o_error = fn(); return 0; }
+int _init_once(once_t *o, int (*fn)(void))
+{
+    if (o->o_refcnt++ == 0) {
+        o->o_error = fn();
+    }
+    return 0;
+}
 
 /* ppsrate */
 int

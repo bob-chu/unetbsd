@@ -5,11 +5,10 @@
 #include <stddef.h>
 #include <time.h>
 
-#include <arpa/inet.h> /* htons */
+#include <arpa/inet.h> /* htons, inet_pton */
 #include <ev.h>
 #include <init.h>
-#include <netinet/in.h> /* IPPROTO_UDP, struct sockaddr_in, INADDR_ANY */
-//#include <openssl/md5.h>
+#include <netinet/in.h> /* IPPROTO_UDP, INADDR_ANY, IN6ADDR_ANY_INIT */
 #include <sys/socket.h>
 #include <u_if.h>
 #include <u_socket.h>
@@ -33,12 +32,12 @@ struct tcp_client {
     struct netbsd_handle handle;
     char *write_ptr;
     int write_sz;
+    int flag; /* 0: closed */
 };
 static struct netbsd_handle udp_server;
 static struct netbsd_handle tcp_server;
 static struct tcp_client s_tcp_client[MAX_CLIENTS];
 static struct tcp_client tcp_curr_client[CURRENT_CLIENTS];
-
 
 static int cli_idx = 0;
 static int cc_cli_count = 10;
@@ -51,7 +50,7 @@ static void tcp_close_cb(void *handle, int events);
 static void tcp_client_read_cb(void *handle, int events);
 static void tcp_connect_cb(void *handle, int events);
 
-#define TARGET_CONTENT_LENGTH 1000
+#define TARGET_CONTENT_LENGTH 700
 
 static char *html;
 static int html_len;
@@ -172,16 +171,16 @@ void cc_client_connect() {
     static int local_port = 2000;
 
     struct tcp_client *cli = &tcp_curr_client[cur_cc_idx];
-
     struct netbsd_handle *nh = &cli->handle;
 
     memset(nh, 0, sizeof(*nh));
     nh->read_cb = tcp_connect_cb;
     nh->write_cb = tcp_write_cb;
     nh->close_cb = tcp_close_cb;
-    nh->is_ipv4 = 1;
+    nh->is_ipv4 = 0; /* Set to 0 for IPv6; change to 1 for IPv4 if needed */
     nh->proto = PROTO_TCP;
     cli->connect_flag = 0;
+    cli->flag = 0;
 
     if (netbsd_socket(nh) < 0) {
         printf("Can not open socket.\n");
@@ -194,22 +193,31 @@ void cc_client_connect() {
         return;
     }
 
-    char *ip_str = "192.168.1.2";
-    char *server_str = "192.168.1.1";
-    struct sockaddr_in cli_addr, svr_addr;
-
-    inet_pton(AF_INET, ip_str, &cli_addr);
-    inet_pton(AF_INET, server_str, &svr_addr);
+    /* IPv6 addresses for client and server */
+    const char *ip_str = "2001:db8::2"; /* Client IPv6 address */
+    const char *server_str = "2001:db8::1"; /* Server IPv6 address */
+    struct sockaddr_storage cli_addr, svr_addr;
+    struct sockaddr_in6 *cli_addr6 = (struct sockaddr_in6 *)&cli_addr;
+    struct sockaddr_in6 *svr_addr6 = (struct sockaddr_in6 *)&svr_addr;
 
     memset(&cli_addr, 0, sizeof(cli_addr));
-    cli_addr.sin_family = AF_INET;
-    inet_pton(AF_INET, ip_str, &cli_addr.sin_addr);
-    cli_addr.sin_port = htons(local_port++);
+    cli_addr6->sin6_family = AF_INET6;
+    if (inet_pton(AF_INET6, ip_str, &cli_addr6->sin6_addr) != 1) {
+        printf("Invalid client IPv6 address: %s\n", ip_str);
+        netbsd_close(nh);
+        return;
+    }
+    cli_addr6->sin6_port = htons(local_port++);
 
     memset(&svr_addr, 0, sizeof(svr_addr));
-    svr_addr.sin_family = AF_INET;
-    inet_pton(AF_INET, server_str, &svr_addr.sin_addr);
-    svr_addr.sin_port = htons(12345);
+    svr_addr6->sin6_family = AF_INET6;
+    if (inet_pton(AF_INET6, server_str, &svr_addr6->sin6_addr) != 1) {
+        printf("Invalid server IPv6 address: %s\n", server_str);
+        netbsd_close(nh);
+        return;
+    }
+    svr_addr6->sin6_port = htons(PORT);
+
     if (local_port > 65000) {
         local_port = 2000;
     }
@@ -233,7 +241,6 @@ void cc_client_connect() {
 
 static void timer_1s_cb(EV_P_ ev_timer *w, int revents) {
     static int cc_count = 0;
-#if 1
     if (cc_count < cc_cli_count) {
         int i = 0;
         while (i < 1) {
@@ -248,13 +255,6 @@ static void timer_1s_cb(EV_P_ ev_timer *w, int revents) {
             ev_break(EV_A_ EVBREAK_ALL);
         }
     }
-#else
-    static int abc = 0;
-    abc++;
-    if (abc >= 200) {
-        ev_break(EV_A_ EVBREAK_ALL);
-    }
-#endif
 }
 
 static void idle_cb(struct ev_loop *loop, ev_idle *w, int revents) {
@@ -270,7 +270,6 @@ static void udp_read_cb(void *handle, int events) {
 
     bytes = netbsd_recvfrom(nh, &iov, 1, (struct sockaddr *)&from);
     if (bytes > 0) {
-
         iov.iov_len = bytes;
         ssize_t sent = netbsd_sendto(nh, &iov, 1, (struct sockaddr *)&from);
         if (sent < 0) {
@@ -295,7 +294,7 @@ static void tcp_accept(void *handle, int events) {
     tcp_client->read_cb = tcp_read_cb;
     tcp_client->write_cb = tcp_write_cb;
     tcp_client->close_cb = tcp_close_cb;
-    tcp_client->is_ipv4 = 1;
+    tcp_client->is_ipv4 = 0; /* Set to 0 for IPv6 */
     struct tcp_client *cli = container_of(tcp_client, struct tcp_client, handle);
 
     cli->write_ptr = html;
@@ -304,7 +303,7 @@ static void tcp_accept(void *handle, int events) {
         printf("Accept tcp client error\n");
         return;
     }
-    total_accept_cls ++;
+    total_accept_cls++;
     netbsd_io_start(tcp_client);
 }
 
@@ -318,12 +317,12 @@ static void tcp_connect_cb(void *handle, int events) {
 
     char *buffer = "1234";
     struct iovec iov = {
-        .iov_base = cli->write_ptr,
-        .iov_len = strlen(buffer)
+        .iov_base = buffer,
+        .iov_len = strlen(buffer),
     };
     int len = netbsd_write(tcp_client, &iov, 1);
     if (len < 0) {
-        printf("netbsd_write failed, close socket");
+        printf("netbsd_write failed, close socket\n");
         netbsd_close(tcp_client);
         return;
     }
@@ -332,34 +331,37 @@ static void tcp_connect_cb(void *handle, int events) {
 
 static void tcp_client_read_cb(void *handle, int events) {
     struct netbsd_handle *nh = (struct netbsd_handle *)handle;
-
     struct tcp_client *cli = container_of(handle, struct tcp_client, handle);
 
     char buffer[2048];
     struct iovec iov = {.iov_base = buffer, .iov_len = 2048};
     int bytes;
-    struct sockaddr_storage from;
+    if (cli->connect_flag == 0) return;
 
     bytes = netbsd_read(nh, &iov, 1);
     if (bytes > 0) {
-        //printf("read data: %lu: %s\n", iov.iov_len, (char *)iov.iov_base);
-        iov.iov_base = cli->write_ptr;;
-        iov.iov_len = cli->write_sz;;
-        //printf("write data: %lu: %s\n", iov.iov_len, (char *)iov.iov_base);
-        int sent = netbsd_write(nh, &iov, 1);
-        //printf("sent data: %lu\n", sent);
-        if (sent < 0) {
-            printf("failed to send: %d\n", (int)sent);
+        if (cli->write_sz > 0) {
+            iov.iov_base = cli->write_ptr;
+            iov.iov_len = cli->write_sz;
+            int sent = netbsd_write(nh, &iov, 1);
+            if (sent < 0) {
+                printf("failed to send: %d\n", (int)sent);
+                netbsd_close(nh);
+                return;
+            }
+            cli->write_ptr += sent;
+            cli->write_sz -= sent;
+        } else {
             netbsd_close(nh);
-            return;
+            cli->connect_flag = 0;
         }
-        cli->write_ptr += sent;
-        cli->write_sz -= sent;
     } else {
+        cli->connect_flag = 0;
         netbsd_close(nh);
         return;
     }
 }
+
 static void tcp_read_cb(void *handle, int events) {
     struct netbsd_handle *h = (struct netbsd_handle *)handle;
     if (h == &tcp_server) {
@@ -368,79 +370,87 @@ static void tcp_read_cb(void *handle, int events) {
         return tcp_client_read_cb(h, events);
     }
 }
+
 static void tcp_write_cb(void *handle, int events) {
     struct netbsd_handle *nh = (struct netbsd_handle *)handle;
     struct tcp_client *cli = container_of(handle, struct tcp_client, handle);
 
-     if (cli->write_sz > 0) {
-         struct iovec iov;;
-         iov.iov_base = cli->write_ptr;;
-         iov.iov_len = cli->write_sz;;
+    if (cli->connect_flag == 0) return;
+    if (cli->write_sz > 0) {
+        struct iovec iov;
+        iov.iov_base = cli->write_ptr;
+        iov.iov_len = cli->write_sz;
         int sent = netbsd_write(nh, &iov, 1);
-        //printf("sent data: %lu\n", sent);
         if (sent < 0) {
             printf("failed to send: %d\n", (int)sent);
+            cli->connect_flag = 0;
             netbsd_close(nh);
             return;
         }
         cli->write_ptr += sent;
         cli->write_sz -= sent;
-
+        /*
         if (cli->write_sz == 0) {
             printf("write done on one connection\n");
             netbsd_close(nh);
         }
-     }
+        */
+    }
 }
+
 static void tcp_close_cb(void *handle, int events) {
+    struct tcp_client *cli = container_of(handle, struct tcp_client, handle);
+    cli->connect_flag = 0;
     netbsd_close(handle);
 }
 
 static void udp_server_init() {
-    udp_server.is_ipv4 = 1;
+    udp_server.is_ipv4 = 0; /* Use IPv6 */
     udp_server.proto = PROTO_UDP;
     udp_server.read_cb = udp_read_cb;
     udp_server.active = 0;
     int ret = netbsd_socket(&udp_server);
     if (ret) {
         printf("netbsd create socket error: %d\n", ret);
+        return;
     }
     udp_server.active = 1;
 
-    struct sockaddr_in addr;
+    struct sockaddr_in6 addr;
     memset(&addr, 0, sizeof(addr));
-    addr.sin_family = AF_INET;
-    addr.sin_addr.s_addr = INADDR_ANY;
-    addr.sin_port = htons(12345);
+    addr.sin6_family = AF_INET6;
+    addr.sin6_addr = in6addr_any;
+    addr.sin6_port = htons(PORT);
 
     ret = netbsd_bind(&udp_server, (struct sockaddr *)&addr);
     if (ret) {
         printf("bind error: %d\n", ret);
         netbsd_close(&udp_server);
+        return;
     }
 
     netbsd_io_start(&udp_server);
-    printf("udp udp_server listening on port 12345\n");
+    printf("UDP server listening on port %d (IPv6)\n", PORT);
 }
 
 static void tcp_server_init() {
-    struct sockaddr_in addr;
+    struct sockaddr_in6 addr;
 
-    tcp_server.is_ipv4 = 1;
+    tcp_server.is_ipv4 = 0; /* Use IPv6 */
     tcp_server.proto = PROTO_TCP;
     tcp_server.read_cb = tcp_read_cb;
     tcp_server.write_cb = tcp_write_cb;
     tcp_server.close_cb = tcp_close_cb;
 
     if (netbsd_socket(&tcp_server)) {
-        printf("Failed to crete tcp server socket.\n");
+        printf("Failed to create tcp server socket.\n");
         return;
     }
 
     memset(&addr, 0, sizeof(addr));
-    addr.sin_family = AF_INET;
-    addr.sin_addr.s_addr = INADDR_ANY;
-    addr.sin_port = htons(80);
+    addr.sin6_family = AF_INET6;
+    addr.sin6_addr = in6addr_any;
+    addr.sin6_port = htons(80);
 
     if (netbsd_bind(&tcp_server, (struct sockaddr *)&addr)) {
         printf("TCP server bind addr failed\n");
@@ -449,13 +459,13 @@ static void tcp_server_init() {
     }
 
     if (netbsd_listen(&tcp_server, 5)) {
-        printf("TCP server listen  failed\n");
+        printf("TCP server listen failed\n");
         netbsd_close(&tcp_server);
+        return;
     }
 
     netbsd_io_start(&tcp_server);
-
-    printf("TCP echo server listening on port 12345\n");
+    printf("TCP server listening on port 80 (IPv6)\n");
 }
 
 int main() {
@@ -469,14 +479,12 @@ int main() {
         return -1;
     }
 
-    // 3. 初始化 libev 事件循环
     struct ev_loop *loop = EV_DEFAULT;
     ev_io tun_read_watcher;
     ev_idle idle_watcher;
     ev_timer timer_10ms_watcher;
     ev_timer timer_1s_watcher;
 
-    // 4. 初始化并配置读事件 watcher
     ev_io_init(&tun_read_watcher, tun_read_cb, tun_fd, EV_READ);
     ev_io_start(loop, &tun_read_watcher);
 
@@ -490,11 +498,11 @@ int main() {
     ev_idle_start(loop, &idle_watcher);
 
     printf("hello world\n");
-    // 5. 运行 libev 事件循环
     udp_server_init();
     tcp_server_init();
     ev_run(loop, 0);
 
     close_af_packet();
+    free(html);
     return 0;
 }

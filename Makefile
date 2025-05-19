@@ -1,5 +1,5 @@
 CC = gcc
-CFLAGS = -g -O2 -march=native -nostdinc -Wall -g \
+CFLAGS = -g -O0 -march=native -nostdinc -Wall -g \
         -Iinclude/opt \
         -Iinclude \
         -Inetbsd_src/sys \
@@ -20,7 +20,7 @@ ARFLAGS = rcs
 LIBS += -lev -lpthread -lm
 
 DEFS = -D_KERNEL -D__NetBSD__ -DNET_MPSAFE -DSOSEND_NO_LOAN \
-       -DTCP_DEBUG  -D_NETBSD_SOURCE -D_RUMPKERNEL  -DINET -DINET6 -D__BSD_VISIBLE
+       -DTCP_DEBUG  -D_NETBSD_SOURCE -D_RUMPKERNEL -DINET -DINET6 -D__BSD_VISIBLE
 CFLAGS += $(DEFS)
 
 # userspace CFLAGS (remove -nostdinc)
@@ -90,7 +90,6 @@ NETBSD_V6 = \
 NETBSD_SRCS = \
 	$(NETBSD_STR) \
 	$(NETBSD_LIBKERN) \
-	${NETBSD_V6} \
     	netbsd_src/sys/netatalk/at_print.c \
     	netbsd_src/sys/kern/kern_sysctl.c \
     	netbsd_src/sys/kern/init_sysctl_base.c \
@@ -151,6 +150,7 @@ NETBSD_SRCS = \
         netbsd_src/sys/netinet/tcp_congctl.c \
         netbsd_src/sys/netinet/tcp_vtw.c \
 	netbsd_src/sys/netinet/udp_usrreq.c \
+	${NETBSD_V6} \
         src/stub.c \
         src/init.c \
     	src/u_if.c \

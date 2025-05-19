@@ -53,7 +53,7 @@ ifioctl_virt(struct ifnet *ifp, u_long cmd, void *data)
 
 struct virt_interface *virt_if_create(const char *name)
 {
-    static if_index_t gl_if_index;
+    static if_index_t gl_if_index = 0;
 
     gl_vif = malloc(sizeof(struct virt_interface));
     if (!gl_vif) return NULL;
@@ -69,13 +69,14 @@ struct virt_interface *virt_if_create(const char *name)
     strlcpy(ifp->if_xname, "virt0", IFNAMSIZ);
     ifp->if_softc = gl_vif;
     ifp->if_mtu = ETHERMTU;
-    ifp->if_flags = IFF_BROADCAST | IFF_SIMPLEX | IFF_MULTICAST |IFF_UP | IFF_RUNNING;
+    ifp->if_flags = IFF_MULTICAST |IFF_UP | IFF_RUNNING ;
     ifp->if_init = virt_if_init;
     ifp->if_start = virt_if_start;
     ifp->if_type = IFT_ETHER;
     ifp->if_addrlen = ETHER_ADDR_LEN;
     ifp->if_hdrlen = ETHER_HDR_LEN;
-    ifp->if_index = gl_if_index++;
+    ifp->if_index = gl_if_index;
+    gl_if_index++;
     ifp->if_transmit = virt_transmit;
     ifp->if_ioctl = ifioctl_virt;
 
@@ -165,6 +166,7 @@ virt_if_add_addr4(struct virt_interface *vif, struct in_addr *addr, unsigned net
     return in_control(NULL, SIOCAIFADDR, (void *)&ifra, vif->ifp);
 }
 
+
 static int
 virt_if_add_addr6(struct virt_interface *vif, struct in6_addr *addr, unsigned netmask)
 {
@@ -193,7 +195,7 @@ virt_if_add_addr6(struct virt_interface *vif, struct in6_addr *addr, unsigned ne
     ifra6.ifra_prefixmask = mask6;
     ifra6.ifra_lifetime = lifetime6;
 
-    return in_control(NULL, SIOCAIFADDR, (void *)&ifra6, vif->ifp);
+    return in6_control(NULL, SIOCAIFADDR_IN6, (void *)&ifra6, vif->ifp);
 }
 
 
@@ -243,8 +245,10 @@ virt_if_add_gateway(struct virt_interface *vif, void *addr)
 }
 
 void
-virt_if_add_gateway6(struct virt_interface *vif, struct in6_addr *addr)
+virt_if_add_gateway6(struct virt_interface *vif, void *addr)
 {
+
+    struct in6_addr *gw_addr = (struct in6_addr *)addr;
     struct sockaddr_in6 dst, mask, gw;
 
     bzero(&dst, sizeof(dst));
@@ -255,7 +259,7 @@ virt_if_add_gateway6(struct virt_interface *vif, struct in6_addr *addr)
         sizeof(struct sockaddr_in6);
     dst.sin6_family = gw.sin6_family = AF_INET6;
 
-    memcpy(gw.sin6_addr.s6_addr, addr->s6_addr, sizeof(addr->s6_addr));
+    memcpy(gw.sin6_addr.s6_addr, gw_addr->s6_addr, sizeof(gw_addr->s6_addr));
 
     int error = rtrequest(RTM_ADD, (struct sockaddr *)&dst, (struct sockaddr *)&gw,
                             (struct sockaddr *)&mask, RTF_UP | RTF_GATEWAY | RTF_STATIC,
