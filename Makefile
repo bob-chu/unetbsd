@@ -162,7 +162,6 @@ NETBSD_OBJS = $(NETBSD_SRCS:%.c=$(OBJDIR)/%.o)
 
 # userspace
 USER_SRCS = \
-    src/utils.c
 
 USER_OBJS = $(USER_SRCS:src/%.c=$(OBJDIR)/%.o)
 
