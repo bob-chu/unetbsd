@@ -57,6 +57,37 @@ NETBSD_LIBKERN = \
 	netbsd_src/sys/lib/libkern/intoa.c \
 	netbsd_src/sys/lib/libkern/copystr.c
 
+NETBSD_V4 = \
+        netbsd_src/sys/netinet/if_arp.c \
+        netbsd_src/sys/netinet/igmp.c \
+        netbsd_src/sys/netinet/in.c \
+        netbsd_src/sys/netinet/in4_cksum.c \
+        netbsd_src/sys/netinet/in_print.c \
+        netbsd_src/sys/netinet/in_cksum.c \
+        netbsd_src/sys/netinet/cpu_in_cksum.c \
+        netbsd_src/sys/netinet/in_pcb.c \
+        netbsd_src/sys/netinet/in_proto.c \
+        netbsd_src/sys/netinet/in_offload.c \
+        netbsd_src/sys/netinet/ip_icmp.c \
+        netbsd_src/sys/netinet/ip_input.c \
+        netbsd_src/sys/netinet/ip_output.c \
+	netbsd_src/sys/netinet/ip_encap.c \
+	netbsd_src/sys/netinet/ip_reass.c \
+        netbsd_src/sys/netinet/raw_ip.c \
+        netbsd_src/sys/netinet/portalgo.c \
+        netbsd_src/sys/netinet/tcp_debug.c \
+        netbsd_src/sys/netinet/tcp_input.c \
+        netbsd_src/sys/netinet/tcp_syncache.c \
+        netbsd_src/sys/netinet/tcp_output.c \
+        netbsd_src/sys/netinet/tcp_subr.c \
+        netbsd_src/sys/netinet/tcp_sack.c \
+        netbsd_src/sys/netinet/tcp_timer.c \
+        netbsd_src/sys/netinet/tcp_usrreq.c \
+        netbsd_src/sys/netinet/tcp_congctl.c \
+        netbsd_src/sys/netinet/tcp_vtw.c \
+	netbsd_src/sys/netinet/udp_usrreq.c
+
+
 NETBSD_V6 = \
 	netbsd_src/sys/netinet6/dest6.c \
 	netbsd_src/sys/netinet6/frag6.c \
@@ -122,34 +153,7 @@ NETBSD_SRCS = \
         netbsd_src/sys/net/rtbl.c \
         netbsd_src/sys/net/rtsock.c \
 	netbsd_src/sys/net/raw_usrreq.c \
-        netbsd_src/sys/netinet/if_arp.c \
-        netbsd_src/sys/netinet/igmp.c \
-        netbsd_src/sys/netinet/in.c \
-        netbsd_src/sys/netinet/in4_cksum.c \
-        netbsd_src/sys/netinet/in_print.c \
-        netbsd_src/sys/netinet/in_cksum.c \
-        netbsd_src/sys/netinet/cpu_in_cksum.c \
-        netbsd_src/sys/netinet/in_pcb.c \
-        netbsd_src/sys/netinet/in_proto.c \
-        netbsd_src/sys/netinet/in_offload.c \
-        netbsd_src/sys/netinet/ip_icmp.c \
-        netbsd_src/sys/netinet/ip_input.c \
-        netbsd_src/sys/netinet/ip_output.c \
-	netbsd_src/sys/netinet/ip_encap.c \
-	netbsd_src/sys/netinet/ip_reass.c \
-        netbsd_src/sys/netinet/raw_ip.c \
-        netbsd_src/sys/netinet/portalgo.c \
-        netbsd_src/sys/netinet/tcp_debug.c \
-        netbsd_src/sys/netinet/tcp_input.c \
-        netbsd_src/sys/netinet/tcp_syncache.c \
-        netbsd_src/sys/netinet/tcp_output.c \
-        netbsd_src/sys/netinet/tcp_subr.c \
-        netbsd_src/sys/netinet/tcp_sack.c \
-        netbsd_src/sys/netinet/tcp_timer.c \
-        netbsd_src/sys/netinet/tcp_usrreq.c \
-        netbsd_src/sys/netinet/tcp_congctl.c \
-        netbsd_src/sys/netinet/tcp_vtw.c \
-	netbsd_src/sys/netinet/udp_usrreq.c \
+	${NETBSD_V4} \
 	${NETBSD_V6} \
         src/stub.c \
         src/init.c \
