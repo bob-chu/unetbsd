@@ -1,13 +1,14 @@
 #include <sys/param.h>
 #include <sys/systm.h>
 #include <sys/percpu.h>
-
-#include <sys/thmap.h>
 #include <sys/once.h>
+#include <sys/thmap.h>
+
 #include <sys/kernel.h>
 #include <sys/xcall.h>
 #include <sys/filedesc.h>
 #include <sys/proc.h>
+#include <sys/device.h>
 #include <sys/kauth.h>
 #include <sys/buf.h>
 #include <sys/acct.h>
@@ -582,6 +583,8 @@ get_expose_address(struct proc *p)
 {
     return true;
 }
+
+
 
 struct pgrp *pgrp_find(pid_t pgid) { return NULL; }
 
@@ -1417,3 +1420,13 @@ const char *cpu_getmodel(void) {
     return "Unknown CPU";
 }
 int ncpuonline = 1;
+
+/*device call*/
+devhandle_t dummy_devhandle;
+int		device_call_generic(device_t, devhandle_t,
+		    const struct device_call_generic *) {return 0;}
+devhandle_t	device_handle(device_t) { return dummy_devhandle;}
+
+ssize_t
+device_getprop_data(device_t dev, const char *prop, void *buf, size_t buflen)
+{ return 0; }
