@@ -7,12 +7,50 @@
 ** 4.4BSD based userspace tcp stack: User-land TCP/IP stack from 4.4BSD-Lite2 (https://github.com/chenshuo/4.4BSD-Lite2) 
 ## How to Build:
 
-1. Clone the repository: 
-    git clone https://github.com/bob-chu/unetbsd.git 
-2. Navigate to the project directory: 
-   cd unetbsd 
-3. Clone the NetBSD sources: 
-  git clone https://github.com/NetBSD/src.git netbsd_src
+This project can be built using either Make or Meson.
 
-4.Build the project: 
-  make clean; make
+### Building with Make:
+
+1.  **Clone the repository:**
+    ```bash
+    git clone https://github.com/bob-chu/unetbsd.git
+    cd unetbsd
+    ```
+2.  **Clone the NetBSD sources:**
+    ```bash
+    git clone https://github.com/NetBSD/src.git netbsd_src
+    ```
+3.  **Build the project:**
+    ```bash
+    make clean
+    make
+    ```
+
+### Building with Meson:
+
+1.  **Clone the repository:**
+    ```bash
+    git clone https://github.com/bob-chu/unetbsd.git
+    cd unetbsd
+    ```
+2.  **Clone the NetBSD sources:**
+    ```bash
+    git clone https://github.com/NetBSD/src.git netbsd_src
+    ```
+3.  **Prepare Docker Environment (Recommended):**
+    It is recommended to build within a Docker container to ensure all dependencies are met.
+    ```bash
+    docker build -t my_u24 .
+    docker run --rm -it --privileged --name my-ubuntu -v $(pwd):/app my_u24 bash
+    ```
+    Once inside the container, ensure you are in the `/app` directory.
+4.  **Configure and Build with Meson:**
+    ```bash
+    meson setup build
+    ninja -C build
+    ```
+    To enable DPDK support, configure Meson with the `use_dpdk` option:
+    ```bash
+    meson setup build -Duse_dpdk=true
+    ninja -C build
+    ```

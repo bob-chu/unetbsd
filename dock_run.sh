@@ -1,1 +1,1 @@
-docker run --rm -it --privileged --name my-ubuntu -v /home/ccb/prog/:/app  my_u18
+docker run --rm -it --privileged --name my-ubuntu -v .:/app  my_u24
