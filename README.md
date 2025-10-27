@@ -44,13 +44,30 @@ This project can be built using either Make or Meson.
     docker run --rm -it --privileged --name my-ubuntu -v $(pwd):/app my_u24 bash
     ```
     Once inside the container, ensure you are in the `/app` directory.
-4.  **Configure and Build with Meson:**
+
+4.  **Configure and Build without DPDK:**
     ```bash
     meson setup build
     ninja -C build
     ```
-    To enable DPDK support, configure Meson with the `use_dpdk` option:
+
+5.  **Configure and Build with DPDK:**
+
+    a. **Build and Install DPDK:**
+    First, you need to build and install DPDK in the container.
     ```bash
-    meson setup build -Duse_dpdk=true
+    cd deps/dpdk-stable-24.11.3
+    meson build
+    ninja -C build
+    ninja -C build install
+    ldconfig
+    cd ../..
+    ```
+
+    b. **Configure and Build the Application:**
+    To enable DPDK support, configure Meson with the `use_dpdk` option. You also need to set the `PKG_CONFIG_PATH` environment variable so that meson can find the installed DPDK libraries.
+    ```bash
+    export PKG_CONFIG_PATH=/usr/local/lib/x86_64-linux-gnu/pkgconfig
+    meson setup build -Duse_dpdk=true --reconfigure
     ninja -C build
     ```

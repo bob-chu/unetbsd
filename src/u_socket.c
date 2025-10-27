@@ -191,7 +191,7 @@ int netbsd_socket_error(struct netbsd_handle *nh) {
 static int so_read(struct netbsd_handle *nh, struct iovec *iov, int iovcnt,
         struct sockaddr *from) {
     struct uio uio;
-    ssize_t bytes = 0, total;
+    int total;
     int error;
     int flags = MSG_DONTWAIT;
     struct sockaddr_storage sa;
@@ -215,7 +215,6 @@ static int so_read(struct netbsd_handle *nh, struct iovec *iov, int iovcnt,
         uio.uio_resid += iov[i].iov_len;
     }
 
-    bytes = so->so_rcv.sb_cc;
     total = uio.uio_resid;
     if (total == 0) {
         return -1;
@@ -229,6 +228,7 @@ static int so_read(struct netbsd_handle *nh, struct iovec *iov, int iovcnt,
         /* EOF notify*/
         return -1;
     }
+    total -= uio.uio_resid;
     if (from && addr_mbuf) {
         int len = MIN(addr_mbuf->m_len, sizeof(struct sockaddr_storage));
         m_copydata(addr_mbuf, 0, len, (char *)&sa);
@@ -238,7 +238,7 @@ static int so_read(struct netbsd_handle *nh, struct iovec *iov, int iovcnt,
         m_freem(addr_mbuf);
     }
 
-    return bytes;
+    return total;
 }
 
 int netbsd_read(struct netbsd_handle *nh, struct iovec *iov, int iovcnt) {

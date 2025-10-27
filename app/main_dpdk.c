@@ -237,7 +237,7 @@ static void timer_1s_cb(EV_P_ ev_timer *w, int revents) {
 #else
     static int abc = 0;
     abc++;
-    if (abc >= 200) {
+    if (abc >= 2000) {
         ev_break(EV_A_ EVBREAK_ALL);
     }
 #endif
@@ -249,21 +249,29 @@ static void idle_cb(struct ev_loop *loop, ev_idle *w, int revents) {
 }
 
 static void udp_read_cb(void *handle, int events) {
+    printf("udp_read_cb called\n");
     struct netbsd_handle *nh = (struct netbsd_handle *)handle;
     char buffer[2048];
     struct iovec iov = {.iov_base = buffer, .iov_len = 2048};
     size_t bytes;
     struct sockaddr_storage from;
+    socklen_t fromlen = sizeof(from);
+    char ip_str[INET_ADDRSTRLEN];
+    uint16_t port;
 
     bytes = netbsd_recvfrom(nh, &iov, 1, (struct sockaddr *)&from);
     if (bytes > 0) {
+        struct sockaddr_in *sin = (struct sockaddr_in *)&from;
+        inet_ntop(AF_INET, &sin->sin_addr, ip_str, sizeof(ip_str));
+        port = ntohs(sin->sin_port);
+        printf("Received %zu bytes from %s:%u: %.*s\n", bytes, ip_str, port, (int)bytes, (char *)iov.iov_base);
 
         iov.iov_len = bytes;
         ssize_t sent = netbsd_sendto(nh, &iov, 1, (struct sockaddr *)&from);
         if (sent < 0) {
             printf("Failed to send: %d\n", (int)sent);
         } else {
-            printf("Sent %zd bytes back\n", sent);
+            printf("Sent %zd bytes back to %s:%u: %.*s\n", sent, ip_str, port, (int)sent, (char *)iov.iov_base);
         }
     } else if (bytes == 0) {
         printf("No data received\n");
@@ -389,8 +397,7 @@ static void tcp_close_cb(void *handle, int events) {
 
 static void udp_server_init() {
     udp_server.is_ipv4 = 1;
-    udp_server.type = SOCK_DGRAM;
-    udp_server.proto = IPPROTO_UDP;
+    udp_server.proto = PROTO_UDP;
     udp_server.read_cb = udp_read_cb;
     udp_server.active = 0;
     int ret = netbsd_socket(&udp_server);
@@ -419,8 +426,7 @@ static void tcp_server_init() {
     struct sockaddr_in addr;
 
     tcp_server.is_ipv4 = 1;
-    tcp_server.type = SOCK_STREAM;
-    tcp_server.proto = IPPROTO_TCP;
+    tcp_server.proto = PROTO_TCP;
     tcp_server.read_cb = tcp_read_cb;
     tcp_server.write_cb = tcp_write_cb;
     tcp_server.close_cb = tcp_close_cb;
@@ -454,7 +460,7 @@ static void tcp_server_init() {
 int main()
 {
     logger_init();
-    logger_set_level(LOG_LEVEL_WARN);  // Show all logs above DEBUG
+    logger_set_level(LOG_LEVEL_INFO);  // Show all logs above DEBUG
     logger_enable_colors(1);            // Enable colored output
 
     generate_html();
@@ -473,7 +479,7 @@ int main()
 
     netbsd_init();
 
-    dpdk_init(9, dpdk_str);
+    dpdk_init(10, dpdk_str);
     open_interface("veth1");
 
     struct ev_loop *loop = EV_DEFAULT;

@@ -26,10 +26,7 @@ cflags_user = [
 ]
 
 if get_option('use_dpdk')
-    dpdk_dep = dependency('libdpdk', static : true)
-    if not dpdk_dep.found()
-        error('DPDK dependency not found. Please ensure libdpdk is installed and pkg-config is configured correctly.')
-    endif
+    dpdk_dep = dependency('libdpdk', static : true, required : true)
 else
     dpdk_dep = dependency('', required : false)
 endif
