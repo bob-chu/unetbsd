@@ -18,9 +18,9 @@
 
 #ifndef container_of
 #define container_of(ptr, type, member) ({ \
-    const typeof( ((type *)0)->member ) *__mptr = (ptr); \
-    (type *)( (char *)__mptr - offsetof(type,member) ); \
-})
+        const typeof( ((type *)0)->member ) *__mptr = (ptr); \
+        (type *)( (char *)__mptr - offsetof(type,member) ); \
+        })
 #endif
 
 #define BUF_SIZE 9000
@@ -67,25 +67,25 @@ static void generate_html()
     html = malloc(TARGET_CONTENT_LENGTH + 1024);
 
     char body[] = "<!DOCTYPE html>\r\n"
-                  "<html lang=\"en\">\r\n"
-                  "<head>\r\n"
-                  "<meta charset=\"UTF-8\">\r\n"
-                  "<title>Welcome to UnetStack!</title>\r\n"
-                  "<style>\r\n"
-                  "    body {\r\n"
-                  "        width: 35em;\r\n"
-                  "        margin: 0 auto;\r\n"
-                  "        font-family: Tahoma, Verdana, Arial, sans-serif;\r\n"
-                  "    }\r\n"
-                  "</style>\r\n"
-                  "</head>\r\n"
-                  "<body>\r\n"
-                  "<h1>Welcome to UnetStack!</h1>\r\n"
-                  "<p>For online documentation and support please refer to\r\n"
-                  "<a href=\"http://unetstack.org/\">unetstack.org</a>.</p>\r\n"
-                  "<p><em>Thank you for using UnetStack.</em></p>\r\n"
-                  "</body>\r\n"
-                  "</html>\r\n";
+        "<html lang=\"en\">\r\n"
+        "<head>\r\n"
+        "<meta charset=\"UTF-8\">\r\n"
+        "<title>Welcome to UnetStack!</title>\r\n"
+        "<style>\r\n"
+        "    body {\r\n"
+        "        width: 35em;\r\n"
+        "        margin: 0 auto;\r\n"
+        "        font-family: Tahoma, Verdana, Arial, sans-serif;\r\n"
+        "    }\r\n"
+        "</style>\r\n"
+        "</head>\r\n"
+        "<body>\r\n"
+        "<h1>Welcome to UnetStack!</h1>\r\n"
+        "<p>For online documentation and support please refer to\r\n"
+        "<a href=\"http://unetstack.org/\">unetstack.org</a>.</p>\r\n"
+        "<p><em>Thank you for using UnetStack.</em></p>\r\n"
+        "</body>\r\n"
+        "</html>\r\n";
 
     char ending_string[] = "This is the end of the HTML body.\r\n";
     char padding_start[] = "<!-- Padding: ";
@@ -100,16 +100,16 @@ static void generate_html()
 
     char header[512];
     snprintf(header, sizeof(header),
-             "HTTP/1.1 200 OK\r\n"
-             "Server: tg\r\n"
-             "Date: %s\r\n"
-             "Content-Type: text/html\r\n"
-             "Content-Length: %zu\r\n"
-             "Last-Modified: %s\r\n"
-             "Connection: close\r\n"
-             "Accept-Ranges: bytes\r\n"
-             "\r\n",
-             date_str, TARGET_CONTENT_LENGTH, date_str);
+            "HTTP/1.1 200 OK\r\n"
+            "Server: tg\r\n"
+            "Date: %s\r\n"
+            "Content-Type: text/html\r\n"
+            "Content-Length: %zu\r\n"
+            "Last-Modified: %s\r\n"
+            "Connection: close\r\n"
+            "Accept-Ranges: bytes\r\n"
+            "\r\n",
+            date_str, TARGET_CONTENT_LENGTH, date_str);
 
     size_t header_length = strlen(header);
     size_t current_length = 0;
@@ -443,10 +443,10 @@ static void tcp_write_cb(void *handle, int events) {
     struct netbsd_handle *nh = (struct netbsd_handle *)handle;
     struct tcp_client *cli = container_of(handle, struct tcp_client, handle);
 
-     if (cli->write_sz > 0) {
-         struct iovec iov;;
-         iov.iov_base = cli->write_ptr;;
-         iov.iov_len = cli->write_sz;;
+    if (cli->write_sz > 0) {
+        struct iovec iov;;
+        iov.iov_base = cli->write_ptr;;
+        iov.iov_len = cli->write_sz;;
         int sent = netbsd_write(nh, &iov, 1);
         //printf("sent data: %lu\n", sent);
         if (sent < 0) {
@@ -461,7 +461,7 @@ static void tcp_write_cb(void *handle, int events) {
             printf("write done on one connection\n"); fflush(stdout);
             netbsd_close(nh);
         }
-     }
+    }
 }
 static void tcp_close_cb(void *handle, int events) {
     netbsd_close(handle);
@@ -538,16 +538,16 @@ int main()
 
     generate_html();
     char *dpdk_str[] = {
-       [0] =  "tt",
-       [1] = " -n4",
-       [2] =  "-c",
-       [3] = "0x3",
-       [4] = "-m",
-       [5] = "1024",
-       [6] = "--no-huge",
-       [7] = "--vdev=eth_af_packet0,iface=veth1,blocksz=4096,framesz=2048,framecnt=512,qpairs=1,qdisc_bypass=0",
-       [8] = "--proc-type=auto",
-       [9] = "--file-prefix=container-veth0",
+        [0] =  "tt",
+        [1] = " -n4",
+        [2] =  "-c",
+        [3] = "0x3",
+        [4] = "-m",
+        [5] = "1024",
+        [6] = "--no-huge",
+        [7] = "--vdev=eth_af_packet0,iface=veth1,blocksz=4096,framesz=2048,framecnt=512,qpairs=1,qdisc_bypass=0",
+        [8] = "--proc-type=auto",
+        [9] = "--file-prefix=container-veth0",
     };
 
     netbsd_init();
