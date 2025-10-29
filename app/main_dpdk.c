@@ -35,10 +35,12 @@ struct tcp_client {
     int write_sz;
 };
 static struct netbsd_handle udp_server;
+static struct netbsd_handle udp_client;
 static struct netbsd_handle tcp_server;
 static struct tcp_client s_tcp_client[MAX_CLIENTS];
 static struct tcp_client tcp_curr_client[CURRENT_CLIENTS];
 
+static struct ev_loop *loop;
 
 static int cli_idx = 0;
 static int cc_cli_count = 10;
@@ -217,30 +219,94 @@ void cc_client_connect() {
     cur_cc_idx %= CURRENT_CLIENTS;
 }
 
-static void timer_1s_cb(EV_P_ ev_timer *w, int revents) {
-    static int cc_count = 0;
-#if 0
-    if (cc_count < cc_cli_count) {
-        int i = 0;
-        while (i < 1) {
-            cc_client_connect();
-            i++;
-            cc_count++;
-        }
+static void udp_client_read_cb(void *handle, int events) {
+    struct netbsd_handle *nh = (struct netbsd_handle *)handle;
+    char buffer[2048];
+    struct iovec iov = {.iov_base = buffer, .iov_len = 2048};
+    size_t bytes;
+    struct sockaddr_storage from;
+    socklen_t fromlen = sizeof(from);
+    char ip_str[INET_ADDRSTRLEN];
+    uint16_t port;
+
+    bytes = netbsd_recvfrom(nh, &iov, 1, (struct sockaddr *)&from);
+    if (bytes > 0) {
+        struct sockaddr_in *sin = (struct sockaddr_in *)&from;
+        inet_ntop(AF_INET, &sin->sin_addr, ip_str, sizeof(ip_str));
+        port = ntohs(sin->sin_port);
+        printf("Received %zu bytes from %s:%u: %.*s\n", bytes, ip_str, port, (int)bytes, (char *)iov.iov_base);
+    } else if (bytes == 0) {
+        printf("No data received\n");
     } else {
-        static int abc = 0;
-        abc++;
-        if (abc >= 20) {
-            ev_break(EV_A_ EVBREAK_ALL);
-        }
+        printf("Read error: %zu\n", bytes);
+        netbsd_close(nh);
     }
-#else
-    static int abc = 0;
-    abc++;
-    if (abc >= 2000) {
+}
+
+static void udp_client_init() {
+    udp_client.is_ipv4 = 1;
+    udp_client.proto = PROTO_UDP;
+    udp_client.read_cb = udp_client_read_cb;
+    udp_client.active = 0;
+    int ret = netbsd_socket(&udp_client);
+    if (ret) {
+        printf("netbsd create socket error: %d\n", ret);
+    }
+    udp_client.active = 1;
+
+    struct sockaddr_in addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_family = AF_INET;
+    addr.sin_addr.s_addr = INADDR_ANY;
+    addr.sin_port = htons(12346); // Client port
+
+    ret = netbsd_bind(&udp_client, (struct sockaddr *)&addr);
+    if (ret) {
+        printf("bind error: %d\n", ret);
+        netbsd_close(&udp_client);
+    }
+
+    netbsd_io_start(&udp_client);
+    printf("udp client started\n");
+
+    struct sockaddr_in svr_addr;
+    memset(&svr_addr, 0, sizeof(svr_addr));
+    svr_addr.sin_family = AF_INET;
+    inet_pton(AF_INET, "192.168.1.1", &svr_addr.sin_addr);
+    svr_addr.sin_port = htons(12345);
+
+    if (netbsd_connect(&udp_client, (struct sockaddr *)&svr_addr)) {
+        printf("Can not connect to server\n");
+        netbsd_close(&udp_client);
+        return;
+    }
+}
+
+static void send_udp_message(int count) {
+    char buffer[128];
+    sprintf(buffer, "Hello from client %d", count);
+
+    struct iovec iov = {
+        .iov_base = buffer,
+        .iov_len = strlen(buffer),
+    };
+
+    ssize_t sent = netbsd_write(&udp_client, &iov, 1);
+    if (sent < 0) {
+        printf("Failed to send: %d\n", (int)sent);
+    } else {
+        printf("Sent %zd bytes\n", sent);
+    }
+}
+
+static void timer_1s_cb(EV_P_ ev_timer *w, int revents) {
+    static int count = 0;
+    if (count < 10) {
+        send_udp_message(count + 1);
+        count++;
+    } else {
         ev_break(EV_A_ EVBREAK_ALL);
     }
-#endif
 }
 
 static void idle_cb(struct ev_loop *loop, ev_idle *w, int revents) {
@@ -249,6 +315,7 @@ static void idle_cb(struct ev_loop *loop, ev_idle *w, int revents) {
 }
 
 static void udp_read_cb(void *handle, int events) {
+    static int udp_packet_count = 0;
     printf("udp_read_cb called\n");
     struct netbsd_handle *nh = (struct netbsd_handle *)handle;
     char buffer[2048];
@@ -272,6 +339,11 @@ static void udp_read_cb(void *handle, int events) {
             printf("Failed to send: %d\n", (int)sent);
         } else {
             printf("Sent %zd bytes back to %s:%u: %.*s\n", sent, ip_str, port, (int)sent, (char *)iov.iov_base);
+            udp_packet_count++;
+            if (udp_packet_count >= 100) {
+                printf("Received and echoed 100 UDP packets. Exiting.\n");
+                ev_break(loop, EVBREAK_ALL);
+            }
         }
     } else if (bytes == 0) {
         printf("No data received\n");
@@ -280,6 +352,7 @@ static void udp_read_cb(void *handle, int events) {
         netbsd_close(nh);
     }
 }
+
 
 static void tcp_accept(void *handle, int events) {
     struct netbsd_handle *tcp_client = get_client();
@@ -482,7 +555,7 @@ int main()
     dpdk_init(10, dpdk_str);
     open_interface("veth1");
 
-    struct ev_loop *loop = EV_DEFAULT;
+    loop = EV_DEFAULT;
     ev_io tun_read_watcher;
     ev_idle idle_watcher;
     ev_timer timer_10ms_watcher;
@@ -499,8 +572,9 @@ int main()
 
     printf("hello world\n");
 
-    udp_server_init();
-    tcp_server_init();
+    //udp_server_init();
+    //tcp_server_init();
+    udp_client_init();
     ev_run(loop, 0);
 
     return 0;
