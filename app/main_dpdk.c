@@ -340,9 +340,9 @@ static void udp_read_cb(void *handle, int events) {
         } else {
             printf("Sent %zd bytes back to %s:%u: %.*s\n", sent, ip_str, port, (int)sent, (char *)iov.iov_base);
             udp_packet_count++;
-            if (udp_packet_count >= 100) {
-                printf("Received and echoed 100 UDP packets. Exiting.\n");
-                ev_break(loop, EVBREAK_ALL);
+            if (udp_packet_count >= 10) {
+                printf("Received and echoed 10 UDP packets. Exiting.\n");
+                //ev_break(loop, EVBREAK_ALL);
             }
         }
     } else if (bytes == 0) {
@@ -369,7 +369,7 @@ static void tcp_accept(void *handle, int events) {
     cli->write_ptr = html;
     cli->write_sz = html_len;
     if (netbsd_accept(&tcp_server, tcp_client)) {
-        printf("Accept tcp client error\n");
+        printf("Accept tcp client error\n"); fflush(stdout);
         return;
     }
     total_accept_cls ++;
@@ -391,7 +391,7 @@ static void tcp_connect_cb(void *handle, int events) {
     };
     int len = netbsd_write(tcp_client, &iov, 1);
     if (len < 0) {
-        printf("netbsd_write failed, error: %d, close socket\n", len);
+        printf("netbsd_write failed, error: %d, close socket\n", len); fflush(stdout);
         netbsd_close(tcp_client);
         return;
     }
@@ -420,7 +420,7 @@ static void tcp_client_read_cb(void *handle, int events) {
         int sent = netbsd_write(nh, &iov, 1);
         //printf("sent data: %lu\n", sent);
         if (sent < 0) {
-            printf("failed to send: %d\n", (int)sent);
+            printf("failed to send: %d\n", (int)sent); fflush(stdout);
             netbsd_close(nh);
             return;
         }
@@ -450,7 +450,7 @@ static void tcp_write_cb(void *handle, int events) {
         int sent = netbsd_write(nh, &iov, 1);
         //printf("sent data: %lu\n", sent);
         if (sent < 0) {
-            printf("failed to send: %d\n", (int)sent);
+            printf("failed to send: %d\n", (int)sent); fflush(stdout);
             netbsd_close(nh);
             return;
         }
@@ -458,7 +458,7 @@ static void tcp_write_cb(void *handle, int events) {
         cli->write_sz -= sent;
 
         if (cli->write_sz == 0) {
-            printf("write done on one connection\n");
+            printf("write done on one connection\n"); fflush(stdout);
             netbsd_close(nh);
         }
      }
@@ -475,7 +475,7 @@ static void udp_server_init() {
     udp_server.active = 0;
     int ret = netbsd_socket(&udp_server);
     if (ret) {
-        printf("netbsd create socket error: %d\n", ret);
+        printf("netbsd create socket error: %d\n");
     }
     udp_server.active = 1;
 
@@ -487,7 +487,7 @@ static void udp_server_init() {
 
     ret = netbsd_bind(&udp_server, (struct sockaddr *)&addr);
     if (ret) {
-        printf("bind error: %d\n", ret);
+        printf("bind error: %d\n");
         netbsd_close(&udp_server);
     }
 
@@ -505,7 +505,7 @@ static void tcp_server_init() {
     tcp_server.close_cb = tcp_close_cb;
 
     if (netbsd_socket(&tcp_server)) {
-        printf("Failed to crete tcp server socket.\n");
+        printf("Failed to crete tcp server socket.\n"); fflush(stdout);
         return;
     }
 
@@ -515,19 +515,19 @@ static void tcp_server_init() {
     addr.sin_port = htons(80);
 
     if (netbsd_bind(&tcp_server, (struct sockaddr *)&addr)) {
-        printf("TCP server bind addr failed\n");
+        printf("TCP server bind addr failed\n"); fflush(stdout);
         netbsd_close(&tcp_server);
         return;
     }
 
     if (netbsd_listen(&tcp_server, 5)) {
-        printf("TCP server listen  failed\n");
+        printf("TCP server listen  failed\n"); fflush(stdout);
         netbsd_close(&tcp_server);
     }
 
     netbsd_io_start(&tcp_server);
 
-    printf("TCP echo server listening on port 12345\n");
+    printf("TCP echo server listening on port 12345\n"); fflush(stdout);
 }
 
 int main()
@@ -570,11 +570,11 @@ int main()
     ev_idle_init(&idle_watcher, idle_cb);
     ev_idle_start(loop, &idle_watcher);
 
-    printf("hello world\n");
+    printf("hello world\n"); fflush(stdout);
 
-    //udp_server_init();
+    udp_server_init();
     //tcp_server_init();
-    udp_client_init();
+    //udp_client_init();
     ev_run(loop, 0);
 
     return 0;
