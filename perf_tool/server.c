@@ -12,6 +12,7 @@
 #include "logger.h"
 #include "metrics.h"
 #include "scheduler.h"
+#include "deps/picohttpparser/picohttpparser.h"
 
 extern struct ev_loop *g_main_loop;
 
@@ -130,7 +131,7 @@ static void server_listen_read_cb(void *handle, int events) {
         }
         memset(client_data, 0, sizeof(client_data_t));
         client_data->config = config;
-        client_data->recv_buffer_size = config->client_payload.size; // Client payload size for TCP
+        client_data->recv_buffer_size = (strcmp(config->objective.type, "HTTP_REQUESTS") == 0) ? 2048 : config->client_payload.size; // Use a larger buffer for HTTP requests
         client_data->recv_buffer = (char *)malloc(client_data->recv_buffer_size);
         if (!client_data->recv_buffer) {
             LOG_ERROR("Failed to allocate memory for client receive buffer.");
@@ -161,11 +162,11 @@ static void server_listen_read_cb(void *handle, int events) {
     }
 }
 
-static void client_conn_read_cb(void *handle, int events) {
+static void client_conn_read_cb(void *handle, int events)
+{
     struct netbsd_handle *nh = (struct netbsd_handle *)handle;
     client_data_t *client_data = (client_data_t *)nh->data;
     perf_config_t *config = client_data->config;
-    LOG_INFO("TCP connect_reawd_cb: nh: %p\n.", nh);
 
     struct iovec iov;
     iov.iov_base = client_data->recv_buffer;
@@ -188,30 +189,72 @@ static void client_conn_read_cb(void *handle, int events) {
     if (bytes_read > 0) {
         LOG_DEBUG("Received %zd bytes.", bytes_read);
         scheduler_inc_stat(STAT_BYTES_RECEIVED, bytes_read);
-        scheduler_inc_stat(STAT_RESPONSES_RECEIVED, 1); // Treat client request as a response for server
 
-        // Prepare response
-        struct iovec response_iov;
-        response_iov.iov_base = config->server_response.data;
-        response_iov.iov_len = config->server_response.size;
+        const char *method, *path;
+        int pret, minor_version;
+        struct phr_header headers[100];
+        size_t method_len, path_len, num_headers;
 
-        ssize_t bytes_written;
-        if (nh->proto == PROTO_TCP) {
-            bytes_written = netbsd_write(nh, &response_iov, 1);
-        } else { // UDP
-            bytes_written = netbsd_sendto(nh, &response_iov, 1, (struct sockaddr *)&client_data->remote_addr);
-        }
+        num_headers = sizeof(headers) / sizeof(headers[0]);
+        pret = phr_parse_request(client_data->recv_buffer, bytes_read, &method, &method_len, &path, &path_len, &minor_version, headers, &num_headers, 0);
 
-        if (bytes_written > 0) {
-            LOG_DEBUG("Sent %zd bytes in response.", bytes_written);
-            scheduler_inc_stat(STAT_BYTES_SENT, bytes_written);
-            scheduler_inc_stat(STAT_REQUESTS_SENT, 1); // Treat server response as a request for client
-            metrics_inc_success(); // Increment success for a completed request-response cycle
-        } else if (bytes_written < 0) {
-            LOG_ERROR("Failed to write response: %s", strerror(errno));
+        LOG_DEBUG("phr parse ret: %d", pret);
+        if (pret > 0) { // successful parse
+            const char *response_body_1 = "<html><body><h1>Hello, World!</h1></body></html>";
+            const char *response_body_2 = "<html><body><h1>Another page</h1></body></html>";
+            const char *response_404 = "<html><body><h1>404 Not Found</h1></body></html>";
+
+            char response_header[256];
+            int content_length;
+            const char *response_body;
+            int status_code = 200;
+
+            if (strncmp(path, "/hello", path_len) == 0) {
+                response_body = response_body_1;
+                content_length = strlen(response_body_1);
+            } else if (strncmp(path, "/another", path_len) == 0) {
+                response_body = response_body_2;
+                content_length = strlen(response_body_2);
+            } else {
+                response_body = response_404;
+                content_length = strlen(response_404);
+                status_code = 404;
+            }
+
+            int header_len = snprintf(response_header, sizeof(response_header),
+                "HTTP/1.1 %d OK\r\n"
+                "Content-Type: text/html\r\n"
+                "Content-Length: %d\r\n"
+                "\r\n",
+                status_code, content_length);
+
+            struct iovec response_iov[2];
+            response_iov[0].iov_base = response_header;
+            response_iov[0].iov_len = header_len;
+            response_iov[1].iov_base = (void *)response_body;
+            response_iov[1].iov_len = content_length;
+
+            ssize_t bytes_written = netbsd_write(nh, response_iov, 2);
+
+            if (bytes_written > 0) {
+                LOG_DEBUG("Sent %zd bytes in response.", bytes_written);
+                scheduler_inc_stat(STAT_BYTES_SENT, bytes_written);
+                metrics_inc_success();
+            } else if (bytes_written < 0) {
+                LOG_ERROR("Failed to write response: %s", strerror(errno));
+                metrics_inc_failure();
+            }
+            server_conn_cleanup(client_data);
+        } else if (pret == -1) { // parse error
+            LOG_ERROR("HTTP parse error");
             metrics_inc_failure();
-            server_conn_cleanup(client_data); // Call cleanup
+            server_conn_cleanup(client_data);
+        } else { // incomplete request
+            LOG_DEBUG("Incomplete HTTP request");
+            // For this tool, we assume full request in one read and close
+            server_conn_cleanup(client_data);
         }
+
     } else if (bytes_read == 0) {
         LOG_INFO("Client closed connection.");
         server_conn_cleanup(client_data); // Call cleanup

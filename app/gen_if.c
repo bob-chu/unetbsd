@@ -191,7 +191,7 @@ void dump_mbuf_hex(struct rte_mbuf *mbuf)
 static inline int
 send_single_packet(struct rte_mbuf *m, uint8_t port)
 {
-    LOG_INFO("OUT to QUEUE  %d: <<<<\n", proc_id);
+    LOG_DEBUG("OUT to QUEUE  %d: <<<<\n", proc_id);
     dump_mbuf_hex(m);
     rte_eth_tx_buffer(0, proc_id, tx_buffer, m);
 
@@ -234,7 +234,7 @@ out:
 
 static void single_mbuf_input(struct rte_mbuf *pkt)
 {
-    LOG_INFO("IN from QUEUE: %d: >>>>\n", proc_id);
+    LOG_DEBUG("IN from QUEUE: %d: >>>>\n", proc_id);
     dump_mbuf_hex(pkt);
     void *data = rte_pktmbuf_mtod(pkt, void*);
     uint16_t len = rte_pktmbuf_data_len(pkt);
@@ -347,7 +347,7 @@ flush_rx_queue(uint16_t client)
 static inline void
 enqueue_rx_packet(uint8_t client, struct rte_mbuf *buf)
 {
-    LOG_INFO("send packet to rx_queue [%u]", client);
+    LOG_DEBUG("send packet to rx_queue [%u]", client);
     cl_rx_buf[client].buffer[cl_rx_buf[client].count++] = buf;
     if (cl_rx_buf[client].count > (BURST_SIZE-2)) {
         flush_rx_queue(client);
@@ -364,7 +364,7 @@ void port_read(uint8_t queue_id)
     if (unlikely(nb_rx == 0))
        return;
 
-    LOG_INFO("read packet [%d] from port [%d]", nb_rx, proc_id);
+    LOG_DEBUG("read packet [%d] from port [%d]", nb_rx, proc_id);
     for (int i = 0; i < nb_rx; i++) {
         struct rte_mbuf *pkt = bufs[i];
         rte_prefetch0(rte_pktmbuf_mtod(pkt, void *));
@@ -410,7 +410,7 @@ static void rx_ring_read()
             pkts, BURST_SIZE, NULL);
     if (unlikely(rx_pkts == 0)) return;
 
-    LOG_INFO("read packet [%d] from ring [%d]", rx_pkts, proc_id);
+    LOG_DEBUG("read packet [%d] from ring [%d]", rx_pkts, proc_id);
     for (i = 0; i < rx_pkts; i++) {
         struct rte_mbuf *buf = (struct rte_mbuf *)pkts[i];
         single_mbuf_input(buf);

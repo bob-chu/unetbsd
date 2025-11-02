@@ -13,6 +13,7 @@
 #include "logger.h"
 #include "metrics.h"
 #include "scheduler.h"
+#include "deps/picohttpparser/picohttpparser.h"
 
 extern struct ev_loop *g_main_loop;
 
@@ -56,8 +57,6 @@ static void client_conn_cleanup(struct ev_loop *loop, struct client_conn_data *c
 static void create_tcp_connection(struct ev_loop *loop, perf_config_t *config);
 static void send_udp_packet(struct ev_loop *loop, perf_config_t *config);
 
-// ... (rest of the file until client_request_timer_cb's definition)
-
 static void client_conn_timeout_cb(EV_P_ ev_timer *w, int revents) {
     struct client_conn_data *conn_data = (struct client_conn_data *)w->data;
     LOG_ERROR("Connection to %s:%d timed out.",
@@ -76,7 +75,7 @@ void run_client(struct ev_loop *loop, perf_config_t *config) {
     client_scheduler_watcher.data = config;
     ev_timer_start(loop, &client_scheduler_watcher);
 
-    if (strcmp(config->objective.type, "TCP_CONCURRENT") == 0 || strcmp(config->objective.type, "TOTAL_CONNECTIONS") == 0) {
+    if (strcmp(config->objective.type, "TCP_CONCURRENT") == 0 || strcmp(config->objective.type, "TOTAL_CONNECTIONS") == 0 || strcmp(config->objective.type, "HTTP_REQUESTS") == 0) {
         tcp_client_init(config);
     } else if (strcmp(config->objective.type, "UDP_STREAM") == 0) {
         udp_client_init(config);
@@ -110,7 +109,7 @@ static void client_scheduler_cb(EV_P_ ev_timer *w, int revents) {
             double progress = elapsed_in_phase / config->scheduler.ramp_up_duration_sec;
             if (progress > 1.0) progress = 1.0;
 
-            if (strcmp(config->objective.type, "TCP_CONCURRENT") == 0) {
+            if (strcmp(config->objective.type, "TCP_CONCURRENT") == 0 || strcmp(config->objective.type, "HTTP_REQUESTS") == 0) {
                 g_current_target_connections = (int)(config->objective.value * progress);
                 if (scheduler_get_stats()->concurrent_connections < g_current_target_connections) {
                     create_tcp_connection(EV_A_ config);
@@ -164,7 +163,9 @@ static void client_scheduler_cb(EV_P_ ev_timer *w, int revents) {
             }
             break;
         case PHASE_FINISHED:
+            LOG_INFO("Client scheduler received PHASE_FINISHED. Stopping client scheduler watcher and breaking event loop.");
             ev_timer_stop(EV_A_ w);
+            ev_break(EV_A_ EVBREAK_ALL); // Stop the event loop
             break;
     }
 }
@@ -185,14 +186,15 @@ static void create_tcp_connection(struct ev_loop *loop, perf_config_t *config) {
     conn_data->conn_timeout_timer.data = conn_data;
     ev_timer_start(g_main_loop, &conn_data->conn_timeout_timer);
 
-    conn_data->send_buffer_size = config->client_payload.size;
-    conn_data->send_buffer = (char *)malloc(conn_data->send_buffer_size);
+    const char *request_path = config->http_config.client_request_path;
+    conn_data->send_buffer_size = snprintf(NULL, 0, "GET %s HTTP/1.1\r\nHost: %s\r\n\r\n", request_path, config->network.dst_ip_start);
+    conn_data->send_buffer = (char *)malloc(conn_data->send_buffer_size + 1);
     if (!conn_data->send_buffer) {
         LOG_ERROR("Failed to allocate memory for client send buffer.");
         free(conn_data);
         return;
     }
-    memcpy(conn_data->send_buffer, config->client_payload.data, conn_data->send_buffer_size);
+    snprintf(conn_data->send_buffer, conn_data->send_buffer_size + 1, "GET %s HTTP/1.1\r\nHost: %s\r\n\r\n", request_path, config->network.dst_ip_start);
 
     conn_data->recv_buffer_size = config->server_response.size;
     conn_data->recv_buffer = (char *)malloc(conn_data->recv_buffer_size);
@@ -336,10 +338,11 @@ static void client_conn_cleanup(struct ev_loop *loop, struct client_conn_data *c
 }
 
 static void client_conn_connect_cb(void *handle, int events) {
-    LOG_DEBUG("client_conn_connect_cb: Entry.");
     struct netbsd_handle *nh = (struct netbsd_handle *)handle;
     struct client_conn_data *conn_data = (struct client_conn_data *)nh->data;
     perf_config_t *config = conn_data->config;
+    LOG_DEBUG("client_conn_connect_cb: Entry.nh: %p, so: %p",
+              nh, nh->so);
 
     if (netbsd_socket_error(nh) == 0) {
         LOG_INFO("Successfully connected to %s:%d", config->network.dst_ip_start, config->network.dst_port_start);
@@ -353,8 +356,9 @@ static void client_conn_connect_cb(void *handle, int events) {
         nh->read_cb = client_conn_read_cb;
         nh->write_cb = client_conn_write_cb;
         nh->close_cb = client_conn_close_cb;
-        // Trigger a write to send initial data
-        client_conn_write_cb(nh, 0); // Call write callback directly to send data
+        // Start timer to send the first request
+        ev_timer_set(&conn_data->request_timer, 0., 0.);
+        ev_timer_start(g_main_loop, &conn_data->request_timer);
     } else {
         LOG_ERROR("Failed to connect to %s:%d: %s",
                   config->network.dst_ip_start, config->network.dst_port_start, strerror(errno));
@@ -372,14 +376,20 @@ static void client_conn_connect_cb(void *handle, int events) {
 }
 
 static void client_conn_write_cb(void *handle, int events) {
-    LOG_DEBUG("client_conn_write_cb: Entry.");
     struct netbsd_handle *nh = (struct netbsd_handle *)handle;
     struct client_conn_data *conn_data = (struct client_conn_data *)nh->data;
+    LOG_INFO("client_conn_write_cb: Entry. nh: %p, so: %p",
+             nh, nh->so);
 
     if (!conn_data || conn_data->cleaning_up) {
         return; // Connection is being cleaned up
     }
 
+    perf_config_t *config = conn_data->config;
+    if (config->objective.requests_per_connection > 0 &&
+        conn_data->requests_sent_on_connection >= config->objective.requests_per_connection) {
+        return; 
+    }
     if (conn_data->sent_size == 0) { // First part of a new request
         conn_data->request_send_time = ev_now(g_main_loop);
     }
@@ -393,10 +403,10 @@ static void client_conn_write_cb(void *handle, int events) {
     if (bytes_written > 0) {
         conn_data->sent_size += bytes_written;
         scheduler_inc_stat(STAT_BYTES_SENT, bytes_written);
-        LOG_DEBUG("client_conn_write_cb: Sent %zd bytes (total %zu/%zu).", bytes_written, conn_data->sent_size, conn_data->send_buffer_size);
+        LOG_INFO("client_conn_write_cb: Sent %zd bytes (total %zu/%zu).", bytes_written, conn_data->sent_size, conn_data->send_buffer_size);
 
         if (conn_data->sent_size == conn_data->send_buffer_size) {
-            LOG_DEBUG("client_conn_write_cb: Full request sent.");
+            LOG_INFO("client_conn_write_cb: Full request sent.");
             scheduler_inc_stat(STAT_REQUESTS_SENT, 1);
             conn_data->requests_sent_on_connection++; // Increment here
             conn_data->sent_size = 0; // Reset for the next request on this connection.
@@ -425,9 +435,10 @@ static void client_conn_write_cb(void *handle, int events) {
 }
 
 static void client_conn_read_cb(void *handle, int events) {
-    LOG_DEBUG("client_conn_read_cb: Entry.");
     struct netbsd_handle *nh = (struct netbsd_handle *)handle;
     struct client_conn_data *conn_data = (struct client_conn_data *)nh->data;
+    LOG_DEBUG("client_conn_read_cb: Entry. nh: %p, so: %p",
+              nh, nh->so);
 
     if (!conn_data || conn_data->cleaning_up) {
         return; // Connection is being cleaned up
@@ -453,13 +464,23 @@ static void client_conn_read_cb(void *handle, int events) {
         scheduler_inc_stat(STAT_BYTES_RECEIVED, bytes_read);
         scheduler_inc_stat(STAT_RESPONSES_RECEIVED, 1);
 
-        double response_recv_time = ev_now(g_main_loop); // loop is not available here
-        uint64_t latency_ms = (uint64_t)((response_recv_time - conn_data->request_send_time) * 1000);
-        metrics_add_latency(latency_ms);
-        metrics_inc_success(); // Increment success for a completed request-response cycle
+        int pret, minor_version, status;
+        const char *msg;
+        size_t msg_len;
+        struct phr_header headers[100];
+        size_t num_headers;
 
-        // For TCP, send another request. For UDP, send another packet.
-        if (conn_data->nh.proto == PROTO_TCP) {
+        num_headers = sizeof(headers) / sizeof(headers[0]);
+        pret = phr_parse_response(conn_data->recv_buffer, bytes_read, &minor_version, &status, &msg, &msg_len, headers, &num_headers, 0);
+
+        if (pret > 0) { // successful parse
+            LOG_INFO("HTTP Response: %d %.*s", status, (int)msg_len, msg);
+
+            double response_recv_time = ev_now(g_main_loop);
+            uint64_t latency_ms = (uint64_t)((response_recv_time - conn_data->request_send_time) * 1000);
+            metrics_add_latency(latency_ms);
+            metrics_inc_success(); // Increment success for a completed request-response cycle
+
             if (config->objective.requests_per_connection > 0 &&
                 conn_data->requests_sent_on_connection >= config->objective.requests_per_connection) {
                 LOG_INFO("client_conn_read_cb: Reached requests_per_connection limit (%d). Closing connection.",
@@ -482,38 +503,32 @@ static void client_conn_read_cb(void *handle, int events) {
                 ev_timer_set(&conn_data->request_timer, delay, 0.);
                 ev_timer_start(g_main_loop, &conn_data->request_timer);
             }
-
-        } else { // UDP
-            LOG_DEBUG("client_conn_read_cb: UDP, closing socket and sending new packet.");
-            // For UDP, after receiving a response, we can send another packet.
-            // This needs to be controlled by the scheduler/objective.
-            // For now, just close the socket and send another packet.
-            netbsd_close(nh);
-            free(conn_data->recv_buffer);
-            free(conn_data->send_buffer);
-            free(conn_data);
-            send_udp_packet(g_main_loop, config);
+        } else if (pret == -1) { // parse error
+            LOG_ERROR("HTTP parse error in response");
+            metrics_inc_failure();
+            client_conn_cleanup(g_main_loop, conn_data);
+        } else { // incomplete response
+            LOG_DEBUG("Incomplete HTTP response");
+            // For this tool, we assume full response in one read and close
+            client_conn_cleanup(g_main_loop, conn_data);
         }
     } else if (bytes_read == 0) {
                     LOG_INFO("client_conn_read_cb: Server closed connection.");
                     LOG_DEBUG("client_conn_read_cb: Calling cleanup.");
                     ev_timer_stop(g_main_loop, &conn_data->request_timer); // Stop timer on close
                     metrics_inc_failure(); // Increment failure if server closes connection
-                    client_conn_cleanup(g_main_loop, conn_data); // loop is not needed here
-                    // Try to create another connection if objective is TCP_CONCURRENT
+                    client_conn_cleanup(g_main_loop, conn_data);
                     if (strcmp(config->objective.type, "TCP_CONCURRENT") == 0) {
-                        create_tcp_connection(g_main_loop, config); // loop is not needed here
+                        create_tcp_connection(g_main_loop, config);
                     }    } else {
         if (bytes_read == -EAGAIN || bytes_read == -EWOULDBLOCK) {
-            // This is not a fatal error, just no data to read right now.
             return;
         }
-        LOG_ERROR("client_conn_read_cb: Failed to read from socket: %s (errno: %d, bytes_read: %zd)", strerror(-bytes_read), -bytes_read, bytes_read);
+        //LOG_ERROR("client_conn_read_cb: Failed to read from socket: %s (errno: %d, bytes_read: %zd)", strerror(-bytes_read), -bytes_read, bytes_read);
         metrics_inc_failure();
         LOG_DEBUG("client_conn_read_cb: Calling cleanup on read error.");
         ev_timer_stop(g_main_loop, &conn_data->request_timer); // Stop timer on error
         client_conn_cleanup(g_main_loop, conn_data);
-        // Try to create another connection if objective is TCP_CONCURRENT
         if (strcmp(config->objective.type, "TCP_CONCURRENT") == 0) {
             create_tcp_connection(g_main_loop, config);
         }

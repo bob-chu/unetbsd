@@ -32,6 +32,18 @@ static void soupcall_clear(struct socket *so)
 
 static void enqueue_event(struct netbsd_handle *nh, int events)
 {
+#if 0
+    printf("enqueue_event: nh=%p, so=%p, events=%s%s%s%s%s%s%s%s\n",
+           (void *)nh, (void *)nh->so,
+           (events & POLLIN) ? "POLLIN " : "",
+           (events & POLLOUT) ? "POLLOUT " : "",
+           (events & POLLRDNORM) ? "POLLRDNORM " : "",
+           (events & POLLWRNORM) ? "POLLWRNORM " : "",
+           (events & POLLERR) ? "POLLERR " : "",
+           (events & POLLHUP) ? "POLLHUP " : "",
+           (events & POLLNVAL) ? "POLLNVAL " : "",
+           (events & POLLPRI) ? "POLLPRI " : "");
+#endif
     struct netbsd_event *ev;
 
     nh->events |= events;
@@ -68,6 +80,18 @@ void netbsd_process_event()
         TAILQ_REMOVE(&event_queue, ev, next);
         nh->on_event_queue = 0;
         events = nh->events;
+#if 0
+        printf("netbsd_process_event: nh=%p, so=%p, events=%s%s%s%s%s%s%s%s\n",
+               (void *)nh, (void *)nh->so,
+               (events & POLLIN) ? "POLLIN " : "",
+               (events & POLLOUT) ? "POLLOUT " : "",
+               (events & POLLRDNORM) ? "POLLRDNORM " : "",
+               (events & POLLWRNORM) ? "POLLWRNORM " : "",
+               (events & POLLERR) ? "POLLERR " : "",
+               (events & POLLHUP) ? "POLLHUP " : "",
+               (events & POLLNVAL) ? "POLLNVAL " : "",
+               (events & POLLPRI) ? "POLLPRI " : "");
+#endif
         nh->events = 0;
 
         if (events & (POLLIN | POLLRDNORM)) {
@@ -169,12 +193,10 @@ int netbsd_accept(struct netbsd_handle *nh_server,
         return error;
     }
     nh_client->so = so2;
-    /*
     netbsd_io_start(nh_client);
     if (so2->so_rcv.sb_cc > 0) {
         soupcall_cb(so2, nh_client, POLLIN | POLLRDNORM, 0);
     }
-    */
     return 0;
 }
 

@@ -129,6 +129,13 @@ void scheduler_check_phase_transition(const char *role) {
             ev_break(g_loop, EVBREAK_ALL);
             return; // Exit early
         }
+    } else if (strcmp(g_config->objective.type, "HTTP_REQUESTS") == 0) {
+        if (g_stats.responses_received >= g_config->objective.value) {
+            LOG_INFO("HTTP_REQUESTS objective reached. Test finished. Stopping event loop.");
+            g_current_phase = PHASE_FINISHED;
+            ev_break(g_loop, EVBREAK_ALL);
+            return; // Exit early
+        }
     }
 
     if (g_current_phase == PHASE_PREPARE && total_elapsed_time >= g_config->scheduler.prepare_duration_sec) {

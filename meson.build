@@ -216,20 +216,21 @@ endif
 perf_tool_srcs = [
     'perf_tool/main.c',
     'perf_tool/config.c',
-    'perf_tool/cjson/cJSON.c',
+    'perf_tool/deps/cjson/cJSON.c',
     'app/gen_if.c',
     'app/log.c',
     'perf_tool/server.c',
     'perf_tool/client.c',
     'perf_tool/scheduler.c',
-    'perf_tool/metrics.c'
+    'perf_tool/metrics.c',
+    'perf_tool/deps/picohttpparser/picohttpparser.c'
 ]
 
 executable(
     'perf_tool',
     perf_tool_srcs,
     c_args : cflags_user + ['-I/usr/local/include'],
-    include_directories : [include_directories('perf_tool'), include_directories('perf_tool/cjson'), include_directories('include'), include_directories('app')],
+    include_directories : [include_directories('perf_tool'), include_directories('perf_tool/deps/cjson'), include_directories('perf_tool/deps/picohttpparser'), include_directories('include'), include_directories('app')],
     link_with : libnetbsdstack,
     dependencies : [dpdk_dep, libev_dep, pthread_dep],
     install : true

@@ -40,6 +40,11 @@ typedef struct {
     int size;
 } payload_config_t;
 
+// Struct for HTTP configuration
+typedef struct {
+    char *client_request_path;
+} http_config_t;
+
 // Main performance test configuration struct
 typedef struct {
     scheduler_config_t scheduler;
@@ -47,6 +52,7 @@ typedef struct {
     network_config_t network;
     payload_config_t client_payload;
     payload_config_t server_response;
+    http_config_t http_config;
 } perf_config_t;
 
 // Function to parse the configuration file

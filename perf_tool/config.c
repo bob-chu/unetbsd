@@ -2,7 +2,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "config.h"
-#include "cjson/cJSON.h"
+#include "cJSON.h"
 
 // Helper function to safely get a string from a cJSON object
 static char* get_string_from_json(cJSON *json, const char *key) {
@@ -105,6 +105,12 @@ int parse_config(const char *file_path, perf_config_t *config) {
         config->server_response.size = get_int_from_json(server_response_json, "size");
     }
 
+    // Parse http config
+    cJSON *http_config_json = cJSON_GetObjectItemCaseSensitive(json, "http_config");
+    if (http_config_json) {
+        config->http_config.client_request_path = get_string_from_json(http_config_json, "client_request_path");
+    }
+
     cJSON_Delete(json);
     return 0;
 }
@@ -120,5 +126,6 @@ void free_config(perf_config_t *config) {
         free(config->network.protocol);
         free(config->client_payload.data);
         free(config->server_response.data);
+        free(config->http_config.client_request_path);
     }
 }
