@@ -14,71 +14,86 @@ static struct netbsd_event_queue event_queue =
 TAILQ_HEAD_INITIALIZER(event_queue);
 
 static void soupcall_set(struct socket *so, void *arg,
-        void (*so_upcall)(struct socket *, void *, int, int)) {
+    void (*so_upcall)(struct socket *, void *, int, int))
+{
     so->so_upcallarg = arg;
     so->so_upcall = so_upcall;
     so->so_rcv.sb_flags |= SB_UPCALL;
     so->so_snd.sb_flags |= SB_UPCALL;
 }
 
-static void soupcall_clear(struct socket *so) {
+static void soupcall_clear(struct socket *so)
+{
     so->so_rcv.sb_flags &= ~SB_UPCALL;
     so->so_snd.sb_flags &= ~SB_UPCALL;
     so->so_upcallarg = NULL;
     so->so_upcall = NULL;
 }
 
-static void soupcall_cb(struct socket *so, void *arg, int events,
-        int waitflag) {
-    struct netbsd_handle *nh = (struct netbsd_handle *)arg;
+static void enqueue_event(struct netbsd_handle *nh, int events)
+{
     struct netbsd_event *ev;
+
+    nh->events |= events;
+
+    if (nh->on_event_queue) {
+        return;
+    }
 
     ev = malloc(sizeof(*ev), M_TEMP, M_NOWAIT);
     if (ev == NULL) {
-        printf("Failed to alloce event.\n");
+        printf("Failed to allocate event.\n");
         return;
     }
     ev->nh = nh;
-    ev->events = events;
+    nh->on_event_queue = 1;
     TAILQ_INSERT_TAIL(&event_queue, ev, next);
+}
 
+static void soupcall_cb(struct socket *so, void *arg, int events, int waitflag)
+{
+    struct netbsd_handle *nh = (struct netbsd_handle *)arg;
+
+    enqueue_event(nh, events);
     so->so_rcv.sb_flags |= SB_UPCALL;
     so->so_snd.sb_flags |= SB_UPCALL;
 }
 
-void netbsd_process_event() {
+void netbsd_process_event()
+{
     struct netbsd_event *ev;
     while ((ev = TAILQ_FIRST(&event_queue)) != NULL) {
         struct netbsd_handle *nh = ev->nh;
-        int events = ev->events;
+        int events;
         TAILQ_REMOVE(&event_queue, ev, next);
+        nh->on_event_queue = 0;
+        events = nh->events;
+        nh->events = 0;
 
-        switch (events) {
-            case POLLIN | POLLRDNORM:
-                if (nh->read_cb && nh->so) {
-                    nh->read_cb(nh, events);
-                }
-                break;
-            case POLLOUT | POLLWRNORM:
-                if (nh->write_cb && nh->so) {
-                    nh->write_cb(nh, nh->so->so_error);
-                }
-                break;
-            case POLLHUP:
-                if (nh->so && nh->close_cb) {
-                    nh->close_cb(nh, events);
-                }
-                break;
-            default:
-                break;
+        if (events & (POLLIN | POLLRDNORM)) {
+            if (nh->read_cb && nh->so) {
+                nh->read_cb(nh, events);
+            }
+        }
+        if (events & (POLLOUT | POLLWRNORM)) {
+            if (nh->write_cb && nh->so) {
+                nh->write_cb(nh, nh->so->so_error);
+            }
+        }
+        if (events & POLLHUP) {
+            if (nh->so && nh->close_cb) {
+                nh->close_cb(nh, events);
+            }
         }
         free(ev, M_TEMP);
     }
 }
 
-int netbsd_socket(struct netbsd_handle *nh) {
+int netbsd_socket(struct netbsd_handle *nh)
+{
     int error;
     int type, proto;
+
     if (nh->proto == PROTO_TCP) {
         proto = IPPROTO_TCP;
         type = SOCK_STREAM;
@@ -90,14 +105,19 @@ int netbsd_socket(struct netbsd_handle *nh) {
     }
     error = socreate(nh->is_ipv4 ? AF_INET : AF_INET6, &nh->so, type,
             proto, curlwp, NULL);
+    if (error) {
+        printf("socreate failed with error: %d\n", error);
+    }
     return error;
 }
 
-void netbsd_io_start(struct netbsd_handle *nh) {
+void netbsd_io_start(struct netbsd_handle *nh)
+{
     soupcall_set(nh->so, nh, soupcall_cb);
 }
 
-int netbsd_bind(struct netbsd_handle *nh, const struct sockaddr *addr) {
+int netbsd_bind(struct netbsd_handle *nh, const struct sockaddr *addr)
+{
     struct sockaddr_storage sa;
     int len =
         nh->is_ipv4 ? sizeof(struct sockaddr_in) : sizeof(struct sockaddr_in6);
@@ -114,12 +134,14 @@ int netbsd_bind(struct netbsd_handle *nh, const struct sockaddr *addr) {
     return sobind(nh->so, (struct sockaddr *)&sa, curlwp);
 }
 
-int netbsd_listen(struct netbsd_handle *nh, int backlog) {
+int netbsd_listen(struct netbsd_handle *nh, int backlog)
+{
     return solisten(nh->so, backlog, curlwp);
 }
 
 int netbsd_accept(struct netbsd_handle *nh_server,
-        struct netbsd_handle *nh_client) {
+        struct netbsd_handle *nh_client)
+{
     struct socket *so, *so2, *new_so;
     struct sockaddr sa;
     int error;
@@ -139,7 +161,7 @@ int netbsd_accept(struct netbsd_handle *nh_server,
 
     so2 = TAILQ_FIRST(&so->so_q);
     if (soqremque(so2, 1) == 0) {
-        panic("netbsd_accept: soqremque failed");
+        return EAGAIN; // Avoid panic, just return and try again
     }
 
     error = soaccept(so, &sa);
@@ -147,14 +169,17 @@ int netbsd_accept(struct netbsd_handle *nh_server,
         return error;
     }
     nh_client->so = so2;
+    /*
     netbsd_io_start(nh_client);
     if (so2->so_rcv.sb_cc > 0) {
         soupcall_cb(so2, nh_client, POLLIN | POLLRDNORM, 0);
     }
+    */
     return 0;
 }
 
-int netbsd_connect(struct netbsd_handle *nh, struct sockaddr *addr) {
+int netbsd_connect(struct netbsd_handle *nh, struct sockaddr *addr)
+{
     struct sockaddr_storage sa;
     int len =
         nh->is_ipv4 ? sizeof(struct sockaddr_in) : sizeof(struct sockaddr_in6);
@@ -175,21 +200,25 @@ int netbsd_connect(struct netbsd_handle *nh, struct sockaddr *addr) {
     return ret;
 }
 
-int netbsd_close(struct netbsd_handle *nh) {
+int netbsd_close(struct netbsd_handle *nh)
+{
     if (nh->so) {
-        soclose(nh->so);
         soupcall_clear(nh->so);
+        soclose(nh->so);
         nh->so = NULL;
+        enqueue_event(nh, POLLHUP);
     }
     return 0;
 }
 
-int netbsd_socket_error(struct netbsd_handle *nh) {
+int netbsd_socket_error(struct netbsd_handle *nh)
+{
     return nh->so ? nh->so->so_error : 0;
 }
 
 static int so_read(struct netbsd_handle *nh, struct iovec *iov, int iovcnt,
-        struct sockaddr *from) {
+        struct sockaddr *from)
+{
     struct uio uio;
     int total;
     int error;
@@ -241,17 +270,20 @@ static int so_read(struct netbsd_handle *nh, struct iovec *iov, int iovcnt,
     return total;
 }
 
-int netbsd_read(struct netbsd_handle *nh, struct iovec *iov, int iovcnt) {
+int netbsd_read(struct netbsd_handle *nh, struct iovec *iov, int iovcnt)
+{
     return so_read(nh, iov, iovcnt, NULL);
 }
 
 int netbsd_recvfrom(struct netbsd_handle *nh, struct iovec *iov, int iovcnt,
-        struct sockaddr *from) {
+        struct sockaddr *from)
+{
     return so_read(nh, iov, iovcnt, from);
 }
 
 static ssize_t so_send(struct netbsd_handle *nh, const struct iovec *iov,
-        int iovcnt, const struct sockaddr *to) {
+        int iovcnt, const struct sockaddr *to)
+{
     struct uio uio = {0};
     ssize_t bytes = 0;
     int error;
@@ -292,12 +324,14 @@ static ssize_t so_send(struct netbsd_handle *nh, const struct iovec *iov,
 }
 
 int netbsd_write(struct netbsd_handle *nh, const struct iovec *iov,
-        int iovcnt) {
+        int iovcnt)
+{
     return so_send(nh, iov, iovcnt, NULL);
 }
 
 int netbsd_sendto(struct netbsd_handle *nh, const struct iovec *iov,
-        int iovcnt, const struct sockaddr *to) {
+        int iovcnt, const struct sockaddr *to)
+{
     return so_send(nh, iov, iovcnt, to);
 }
 
@@ -322,4 +356,3 @@ int netbsd_reuseaddr(struct netbsd_handle *nh, const void *optval, socklen_t opt
     }
     return error;
 }
-

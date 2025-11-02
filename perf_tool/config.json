@@ -1,0 +1,35 @@
+{
+  "scheduler": {
+    "prepare_duration_sec": 1,
+    "ramp_up_duration_sec": 2,
+    "sustain_duration_sec": 10,
+    "ramp_down_duration_sec": 0,
+    "close_duration_sec": 1
+  },
+  "objective": {
+    "type": "TOTAL_CONNECTIONS",
+    "value": 100,
+    "requests_per_second": 1000,
+    "requests_per_connection": 1
+  },
+  "network": {
+    "mac_address": "00:00:00:00:00:00",
+    "src_ip_start": "192.168.1.10",
+    "src_ip_end": "192.168.1.10",
+    "dst_ip_start": "192.168.1.1",
+    "dst_ip_end": "192.168.1.1",
+    "protocol": "TCP",
+    "src_port_start": 10000,
+    "src_port_end": 10000,
+    "dst_port_start": 12345,
+    "dst_port_end": 12345
+  },
+  "client_payload": {
+    "data": "Hello from client!",
+    "size": 18
+  },
+  "server_response": {
+    "data": "Hello from server!",
+    "size": 18
+  }
+}

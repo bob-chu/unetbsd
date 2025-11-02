@@ -401,7 +401,6 @@ static void tcp_write_cb(void *handle, int events) {
 static void tcp_close_cb(void *handle, int events) {
     struct tcp_client *cli = container_of(handle, struct tcp_client, handle);
     cli->connect_flag = 0;
-    netbsd_close(handle);
 }
 
 static void udp_server_init() {
@@ -468,7 +467,7 @@ static void tcp_server_init() {
     printf("TCP server listening on port 80 (IPv6)\n");
 }
 
-int main() {
+int main(int argc, char *argv[]) { struct ev_loop *g_main_loop = EV_DEFAULT;
     int tun_fd = -1;
     generate_html();
 

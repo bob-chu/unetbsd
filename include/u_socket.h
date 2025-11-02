@@ -23,11 +23,12 @@ struct netbsd_handle {
     void *data;
     int active;
     int is_closing;
+    int events;
+    int on_event_queue;
 };
 
 struct netbsd_event {
     struct netbsd_handle *nh;
-    int events;
     TAILQ_ENTRY(netbsd_event) next;
 };
 

@@ -540,16 +540,14 @@ void open_interface(char *if_name)
     virt_if_attach(v_if, (const uint8_t *)&addr);
 
     virt_if_register_callbacks(v_if, gen_if_output, NULL);
+}
 
-    char *ip_str = "192.168.1.2";
-    char *netmask_str = "255.255.255.0";
-    char *gateway_str = "192.168.1.1";
-
+void configure_interface(char *ip_addr, char *gateway_addr)
+{
     struct in_addr addr, gw;
-    inet_pton(AF_INET, ip_str, &addr);
-    inet_pton(AF_INET, gateway_str, &gw);
-    unsigned netmask = 24;
-    //inet_pton(AF_INET, netmask_str, &netmask);
+    inet_pton(AF_INET, ip_addr, &addr);
+    inet_pton(AF_INET, gateway_addr, &gw);
+    unsigned netmask = 24; // Assuming /24 netmask
     virt_if_add_addr(v_if, &addr, netmask, 1);
     virt_if_add_gateway(v_if, &gw);
 }

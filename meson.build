@@ -18,7 +18,7 @@ add_project_arguments(
 
 cflags_user = [
   '-g',
-  '-O2',
+  '-O0',
   '-frename-registers',
   '-funswitch-loops',
   '-fweb',
@@ -205,10 +205,32 @@ if get_option('use_dpdk')
     executable(
         'us_netbsd_dpdk',
         app_dpdk_srcs,
-        c_args : cflags_user,
+        c_args : cflags_user + ['-I/usr/local/include'],
         include_directories : [include_directories(app_include_dirs), include_directories('include', is_system : true)],
         link_with : libnetbsdstack,
         dependencies : [dpdk_dep, libev_dep, pthread_dep],
         install : true
     )
 endif
+
+perf_tool_srcs = [
+    'perf_tool/main.c',
+    'perf_tool/config.c',
+    'perf_tool/cjson/cJSON.c',
+    'app/gen_if.c',
+    'app/log.c',
+    'perf_tool/server.c',
+    'perf_tool/client.c',
+    'perf_tool/scheduler.c',
+    'perf_tool/metrics.c'
+]
+
+executable(
+    'perf_tool',
+    perf_tool_srcs,
+    c_args : cflags_user + ['-I/usr/local/include'],
+    include_directories : [include_directories('perf_tool'), include_directories('perf_tool/cjson'), include_directories('include'), include_directories('app')],
+    link_with : libnetbsdstack,
+    dependencies : [dpdk_dep, libev_dep, pthread_dep],
+    install : true
+)

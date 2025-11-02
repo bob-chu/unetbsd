@@ -464,7 +464,6 @@ static void tcp_write_cb(void *handle, int events) {
     }
 }
 static void tcp_close_cb(void *handle, int events) {
-    netbsd_close(handle);
     // printf("tcp close_cb.\n");
 }
 

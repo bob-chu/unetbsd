@@ -9,6 +9,7 @@ void gen_run(loop_func_t loop, void *arg);
 int gen_if_up(void);
 int dpdk_init(int argc, char **argv);
 void open_interface(char *if_name);
+void configure_interface(char *ip_addr, char *gateway_addr);
 void dpdk_read();
 
 struct client_ring {
