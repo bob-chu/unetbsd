@@ -105,7 +105,7 @@ void netbsd_process_event()
             }
         }
         if (events & POLLHUP) {
-            if (nh->so && nh->close_cb) {
+            if (nh->close_cb) {
                 nh->close_cb(nh, events);
             }
         }

@@ -1,15 +1,15 @@
 {
   "scheduler": {
-    "prepare_duration_sec": 1,
-    "ramp_up_duration_sec": 2,
-    "sustain_duration_sec": 10,
-    "ramp_down_duration_sec": 0,
+    "prepare_duration_sec": 3,
+    "ramp_up_duration_sec": 10,
+    "sustain_duration_sec": 30,
+    "ramp_down_duration_sec": 10,
     "close_duration_sec": 1
   },
   "objective": {
     "type": "HTTP_REQUESTS",
-    "value": 1,
-    "requests_per_second": 1,
+    "value": 1000,
+    "requests_per_second": 1000,
     "requests_per_connection": 1
   },
   "http_config": {

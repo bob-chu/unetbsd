@@ -1,6 +1,7 @@
 #include "scheduler.h"
 #include "logger.h"
 #include "metrics.h"
+#include "client.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -47,10 +48,12 @@ void scheduler_update_stats(void) {
     // For now, we'll just log them at phase transitions.
 }
 
+uint64_t g_concurrent_connections = 0;
+
 void scheduler_inc_stat(int stat, int value) {
     switch (stat) {
         case STAT_CONCURRENT_CONNECTIONS:
-            g_stats.concurrent_connections += value;
+            g_concurrent_connections += value;
             break;
         case STAT_CONNECTIONS_OPENED:
             g_stats.connections_opened += value;
@@ -80,6 +83,10 @@ test_phase_t scheduler_get_current_phase(void) {
     return g_current_phase;
 }
 
+void scheduler_set_current_phase(test_phase_t new_phase) {
+    g_current_phase = new_phase;
+}
+
 const scheduler_stats_t *scheduler_get_stats(void) {
     return &g_stats;
 }
@@ -99,18 +106,19 @@ void scheduler_check_phase_transition(const char *role) {
     metrics_t current_metrics = metrics_get_snapshot();
     const scheduler_stats_t *current_stats = scheduler_get_stats();
 
-    uint64_t connections_per_second = current_stats->connections_opened - last_stats.connections_opened;
-    uint64_t requests_per_second = current_stats->requests_sent - last_stats.requests_sent;
-    uint64_t bytes_sent_per_second = current_stats->bytes_sent - last_stats.bytes_sent;
-    uint64_t bytes_received_per_second = current_stats->bytes_received - last_stats.bytes_received;
-    uint64_t success_per_second = current_metrics.success_count - last_metrics.success_count;
-    uint64_t failure_per_second = current_metrics.failure_count - last_metrics.failure_count;
+    uint64_t connections_per_second = (current_stats->connections_opened - last_stats.connections_opened);
+    uint64_t requests_per_second = (current_stats->requests_sent - last_stats.requests_sent);
+    uint64_t bytes_sent_per_second = (current_stats->bytes_sent - last_stats.bytes_sent);
+    uint64_t bytes_received_per_second = (current_stats->bytes_received - last_stats.bytes_received);
+    uint64_t success_per_second = (current_metrics.success_count - last_metrics.success_count);
+    uint64_t failure_per_second = (current_metrics.failure_count - last_metrics.failure_count);
 
-    printf("[%s] [ %ds], %s, Concurrent Conns: %lu, CPS: %lu, RPS: %lu, BpsS: %lu, BpsR: %lu, Succ: %lu, Fail: %lu\n",
+    printf("[%s] [ %ds], %s (Target: %d), Concurrent Conns: %lu, CPS: %lu, RPS: %lu, BpsS: %lu, BpsR: %lu, Succ: %lu, Fail: %lu\n",
            role,
            time_index,
            phase_names[g_current_phase],
-           current_stats->concurrent_connections,
+           client_get_current_target_connections(),
+           g_concurrent_connections,
            connections_per_second,
            requests_per_second,
            bytes_sent_per_second,
@@ -124,17 +132,17 @@ void scheduler_check_phase_transition(const char *role) {
 
     if (strcmp(g_config->objective.type, "TOTAL_CONNECTIONS") == 0) {
         if (g_stats.connections_opened >= g_config->objective.value) {
-            LOG_INFO("TOTAL_CONNECTIONS objective reached. Test finished. Stopping event loop.");
-            g_current_phase = PHASE_FINISHED;
-            ev_break(g_loop, EVBREAK_ALL);
-            return; // Exit early
+            //LOG_INFO("TOTAL_CONNECTIONS objective reached. Test finished. Stopping event loop.");
+            //g_current_phase = PHASE_FINISHED;
+            //ev_break(g_loop, EVBREAK_ALL);
+            //return; // Exit early
         }
     } else if (strcmp(g_config->objective.type, "HTTP_REQUESTS") == 0) {
         if (g_stats.responses_received >= g_config->objective.value) {
-            LOG_INFO("HTTP_REQUESTS objective reached. Test finished. Stopping event loop.");
-            g_current_phase = PHASE_FINISHED;
-            ev_break(g_loop, EVBREAK_ALL);
-            return; // Exit early
+            //LOG_INFO("HTTP_REQUESTS objective reached. Test finished. Stopping event loop.");
+            //g_current_phase = PHASE_FINISHED;
+            //ev_break(g_loop, EVBREAK_ALL);
+            //return; // Exit early
         }
     }
 

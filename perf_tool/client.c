@@ -36,13 +36,17 @@ struct client_conn_data {
 };
 
 static int g_current_target_connections = 0;
+static int g_current_target_total_connections = 0;
 static double g_current_send_rate = 0.0; // packets per second
 
 // List to keep track of active TCP connections
 static TAILQ_HEAD(tcp_conn_list_head, client_conn_data) g_tcp_conn_list;
 
 static ev_timer client_scheduler_watcher;
+static ev_timer client_idle_watcher;
 static void client_scheduler_cb(EV_P_ ev_timer *w, int revents);
+static void client_idle_cb(EV_P_ ev_timer *w, int revents);
+
 
 // Forward declarations for event callbacks
 static void client_conn_connect_cb(void *handle, int events);
@@ -57,13 +61,15 @@ static void client_conn_cleanup(struct ev_loop *loop, struct client_conn_data *c
 static void create_tcp_connection(struct ev_loop *loop, perf_config_t *config);
 static void send_udp_packet(struct ev_loop *loop, perf_config_t *config);
 
+#include "client.h"
+
 static void client_conn_timeout_cb(EV_P_ ev_timer *w, int revents) {
     struct client_conn_data *conn_data = (struct client_conn_data *)w->data;
-    LOG_ERROR("Connection to %s:%d timed out.",
+    LOG_INFO("Connection to %s:%d timed out.",
               conn_data->config->network.dst_ip_start, conn_data->config->network.dst_port_start);
     metrics_inc_failure();
     scheduler_inc_stat(STAT_CONCURRENT_CONNECTIONS, -1);
-    LOG_DEBUG("client_conn_timeout_cb: STAT_CONCURRENT_CONNECTIONS decremented (timeout). Current: %lu", scheduler_get_stats()->concurrent_connections);
+    LOG_DEBUG("client_conn_timeout_cb: STAT_CONCURRENT_CONNECTIONS decremented (timeout). Current: %lu", g_concurrent_connections);
     client_conn_cleanup(EV_A_ conn_data);
 }
 void run_client(struct ev_loop *loop, perf_config_t *config) {
@@ -74,6 +80,10 @@ void run_client(struct ev_loop *loop, perf_config_t *config) {
     ev_timer_init(&client_scheduler_watcher, client_scheduler_cb, 0., 0.1); // Check every 100ms
     client_scheduler_watcher.data = config;
     ev_timer_start(loop, &client_scheduler_watcher);
+
+    ev_timer_init(&client_idle_watcher, client_idle_cb, 0.1, 0.1); // Check every 100ms
+    client_idle_watcher.data = config;
+    ev_timer_start(loop, &client_idle_watcher);
 
     if (strcmp(config->objective.type, "TCP_CONCURRENT") == 0 || strcmp(config->objective.type, "TOTAL_CONNECTIONS") == 0 || strcmp(config->objective.type, "HTTP_REQUESTS") == 0) {
         tcp_client_init(config);
@@ -103,27 +113,37 @@ static void client_scheduler_cb(EV_P_ ev_timer *w, int revents) {
         case PHASE_PREPARE:
             // Do nothing, just wait
             break;
-        case PHASE_RAMP_UP:
-        case PHASE_SUSTAIN: {
+        case PHASE_RAMP_UP: {
             double elapsed_in_phase = scheduler_get_current_time() - scheduler_get_current_phase_start_time();
             double progress = elapsed_in_phase / config->scheduler.ramp_up_duration_sec;
             if (progress > 1.0) progress = 1.0;
 
             if (strcmp(config->objective.type, "TCP_CONCURRENT") == 0 || strcmp(config->objective.type, "HTTP_REQUESTS") == 0) {
                 g_current_target_connections = (int)(config->objective.value * progress);
-                if (scheduler_get_stats()->concurrent_connections < g_current_target_connections) {
-                    create_tcp_connection(EV_A_ config);
-                }
             } else if (strcmp(config->objective.type, "TOTAL_CONNECTIONS") == 0) {
-                if (scheduler_get_stats()->connections_opened < config->objective.value) {
-                    create_tcp_connection(EV_A_ config);
-                } else {
-                    LOG_INFO("TOTAL_CONNECTIONS objective reached. Stopping client.");
-                    ev_timer_stop(EV_A_ w);
-                    ev_break(EV_A_ EVBREAK_ALL); // Stop the event loop
-                }
+                g_current_target_total_connections = (int)(config->objective.value * progress);
             } else if (strcmp(config->objective.type, "UDP_STREAM") == 0) {
                 g_current_send_rate = config->objective.value * progress; // packets per second
+                // Calculate number of packets to send in this interval
+                double interval = ev_timer_remaining(EV_A_ &client_scheduler_watcher);
+                int packets_to_send = (int)(g_current_send_rate * interval);
+                for (int i = 0; i < packets_to_send; ++i) {
+                    send_udp_packet(EV_A_ config);
+                }
+            }
+            break;
+        }
+        case PHASE_SUSTAIN: {
+            if (strcmp(config->objective.type, "TCP_CONCURRENT") == 0 || strcmp(config->objective.type, "HTTP_REQUESTS") == 0) {
+                g_current_target_connections = config->objective.value;
+            } else if (strcmp(config->objective.type, "TOTAL_CONNECTIONS") == 0) {
+                g_current_target_total_connections = config->objective.value;
+                if (scheduler_get_stats()->connections_opened >= g_current_target_total_connections) {
+                    LOG_INFO("TOTAL_CONNECTIONS objective reached. Stopping client.");
+                    scheduler_set_current_phase(PHASE_CLOSE);
+                }
+            } else if (strcmp(config->objective.type, "UDP_STREAM") == 0) {
+                g_current_send_rate = config->objective.value; // packets per second
                 // Calculate number of packets to send in this interval
                 double interval = ev_timer_remaining(EV_A_ &client_scheduler_watcher);
                 int packets_to_send = (int)(g_current_send_rate * interval);
@@ -141,7 +161,7 @@ static void client_scheduler_cb(EV_P_ ev_timer *w, int revents) {
             if (strcmp(config->objective.type, "TCP_CONCURRENT") == 0) {
                 g_current_target_connections = (int)(config->objective.value * (1.0 - progress));
                 // Logic to close connections if current > target
-                while (scheduler_get_stats()->concurrent_connections > g_current_target_connections && !TAILQ_EMPTY(&g_tcp_conn_list)) {
+                while (g_concurrent_connections > g_current_target_connections && !TAILQ_EMPTY(&g_tcp_conn_list)) {
                     struct client_conn_data *conn_to_close = TAILQ_FIRST(&g_tcp_conn_list);
                     LOG_INFO("Closing TCP connection during RAMP_DOWN.");
                     client_conn_cleanup(EV_A_ conn_to_close);
@@ -165,8 +185,22 @@ static void client_scheduler_cb(EV_P_ ev_timer *w, int revents) {
         case PHASE_FINISHED:
             LOG_INFO("Client scheduler received PHASE_FINISHED. Stopping client scheduler watcher and breaking event loop.");
             ev_timer_stop(EV_A_ w);
+            ev_timer_stop(EV_A_ &client_idle_watcher);
             ev_break(EV_A_ EVBREAK_ALL); // Stop the event loop
             break;
+    }
+}
+
+static void client_idle_cb(EV_P_ ev_timer *w, int revents) {
+    perf_config_t *config = (perf_config_t *)w->data;
+    if (strcmp(config->objective.type, "TCP_CONCURRENT") == 0 || strcmp(config->objective.type, "HTTP_REQUESTS") == 0) {
+        while (g_concurrent_connections < g_current_target_connections) {
+            create_tcp_connection(EV_A_ config);
+        }
+    } else if (strcmp(config->objective.type, "TOTAL_CONNECTIONS") == 0) {
+        while (scheduler_get_stats()->connections_opened < g_current_target_total_connections) {
+            create_tcp_connection(EV_A_ config);
+        }
     }
 }
 
@@ -182,7 +216,7 @@ static void create_tcp_connection(struct ev_loop *loop, perf_config_t *config) {
     conn_data->request_timer.data = conn_data; // Set timer data to conn_data
     conn_data->requests_sent_on_connection = 0; // Initialize requests_sent_on_connection
 
-    ev_timer_init(&conn_data->conn_timeout_timer, client_conn_timeout_cb, 5., 0.); // 5 second timeout
+    ev_timer_init(&conn_data->conn_timeout_timer, client_conn_timeout_cb, 10., 0.); // 5 second timeout
     conn_data->conn_timeout_timer.data = conn_data;
     ev_timer_start(g_main_loop, &conn_data->conn_timeout_timer);
 
@@ -238,9 +272,7 @@ static void create_tcp_connection(struct ev_loop *loop, perf_config_t *config) {
     conn_data->nh.write_cb = client_conn_connect_cb;
     netbsd_io_start(&conn_data->nh);
     scheduler_inc_stat(STAT_CONCURRENT_CONNECTIONS, 1);
-    LOG_DEBUG("create_tcp_connection: STAT_CONCURRENT_CONNECTIONS incremented. Current: %lu", scheduler_get_stats()->concurrent_connections);
-
-    LOG_DEBUG("Attempting to connect to %s:%d", config->network.dst_ip_start, config->network.dst_port_start);
+    LOG_DEBUG("create_tcp_connection: STAT_CONCURRENT_CONNECTIONS incremented. Current: %lu", g_concurrent_connections);
 }
 
 static void send_udp_packet(struct ev_loop *loop, perf_config_t *config) {
@@ -324,10 +356,9 @@ static void client_conn_cleanup(struct ev_loop *loop, struct client_conn_data *c
     LOG_DEBUG("client_conn_cleanup: Entry point.");
     if (conn_data->nh.proto == PROTO_TCP) {
         if (conn_data->is_connected) { // Only remove if it was successfully connected
-            LOG_DEBUG("client_conn_cleanup: Removing from TCP connection list.");
             TAILQ_REMOVE(&g_tcp_conn_list, conn_data, entries);
             scheduler_inc_stat(STAT_CONCURRENT_CONNECTIONS, -1);
-            LOG_DEBUG("client_conn_cleanup: STAT_CONCURRENT_CONNECTIONS decremented (cleanup). Current: %lu", scheduler_get_stats()->concurrent_connections);
+            LOG_DEBUG("client_conn_cleanup: STAT_CONCURRENT_CONNECTIONS decremented (cleanup). Current: %lu", g_concurrent_connections);
         }
         scheduler_inc_stat(STAT_CONNECTIONS_CLOSED, 1);
     }
@@ -364,8 +395,7 @@ static void client_conn_connect_cb(void *handle, int events) {
                   config->network.dst_ip_start, config->network.dst_port_start, strerror(errno));
         metrics_inc_failure();
         scheduler_inc_stat(STAT_CONCURRENT_CONNECTIONS, -1); // Decrement for failed connection
-        LOG_DEBUG("client_conn_connect_cb: STAT_CONCURRENT_CONNECTIONS decremented (failed connect). Current: %lu", scheduler_get_stats()->concurrent_connections);
-        LOG_DEBUG("client_conn_connect_cb: Connection failed, calling cleanup.");
+        LOG_DEBUG("client_conn_connect_cb: STAT_CONCURRENT_CONNECTIONS decremented (failed connect). Current: %lu", g_concurrent_connections);
         client_conn_cleanup(g_main_loop, conn_data); // loop is not needed here
         // Try to create another connection if objective is TCP_CONCURRENT
         if (strcmp(config->objective.type, "TCP_CONCURRENT") == 0) {
@@ -455,7 +485,6 @@ static void client_conn_read_cb(void *handle, int events) {
         bytes_read = netbsd_read(nh, &iov, 1);
     } else { // UDP
         struct sockaddr_in server_addr;
-        socklen_t server_addr_len = sizeof(server_addr);
         bytes_read = netbsd_recvfrom(nh, &iov, 1, (struct sockaddr *)&server_addr);
     }
 
@@ -481,27 +510,20 @@ static void client_conn_read_cb(void *handle, int events) {
             metrics_add_latency(latency_ms);
             metrics_inc_success(); // Increment success for a completed request-response cycle
 
-            if (config->objective.requests_per_connection > 0 &&
-                conn_data->requests_sent_on_connection >= config->objective.requests_per_connection) {
+            // Check if we should keep the connection busy for HTTP requests
+            if (strcmp(config->objective.type, "HTTP_REQUESTS") == 0 && config->objective.requests_per_connection == 0) {
+                // Reset for next request and immediately send another one
+                conn_data->sent_size = 0;
+                conn_data->requests_sent_on_connection++;
+                client_conn_write_cb(&conn_data->nh, 0);
+            } else if (config->objective.requests_per_connection > 0 &&
+                       conn_data->requests_sent_on_connection >= config->objective.requests_per_connection) {
                 LOG_INFO("client_conn_read_cb: Reached requests_per_connection limit (%d). Closing connection.",
                          config->objective.requests_per_connection);
-                ev_timer_stop(g_main_loop, &conn_data->request_timer); // Stop timer
                 client_conn_cleanup(g_main_loop, conn_data);
             } else {
-                LOG_DEBUG("client_conn_read_cb: TCP, received response, scheduling next request.");
-
-                // Stop any existing timer
-                ev_timer_stop(g_main_loop, &conn_data->request_timer);
-
-                // Calculate delay
-                double delay = 0.0;
-                if (config->objective.requests_per_second > 0) {
-                    delay = 1.0 / config->objective.requests_per_second;
-                }
-
-                // Start timer to send next request
-                ev_timer_set(&conn_data->request_timer, delay, 0.);
-                ev_timer_start(g_main_loop, &conn_data->request_timer);
+                // For other objectives or if requests_per_connection is not met, close the connection.
+                client_conn_cleanup(g_main_loop, conn_data);
             }
         } else if (pret == -1) { // parse error
             LOG_ERROR("HTTP parse error in response");
@@ -574,4 +596,8 @@ static void client_request_timer_cb(EV_P_ ev_timer *w, int revents) {
         // Call client_conn_write_cb to send the next request
         client_conn_write_cb(&conn_data->nh, 0);
     }
+}
+
+int client_get_current_target_connections(void) {
+    return g_current_target_connections;
 }

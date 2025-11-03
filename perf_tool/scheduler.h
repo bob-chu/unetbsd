@@ -25,7 +25,6 @@ typedef enum {
 } test_phase_t;
 
 typedef struct {
-    uint64_t concurrent_connections;
     uint64_t connections_opened;
     uint64_t connections_closed;
     uint64_t requests_sent;
@@ -33,6 +32,8 @@ typedef struct {
     uint64_t bytes_sent;
     uint64_t bytes_received;
 } scheduler_stats_t;
+
+extern uint64_t g_concurrent_connections;
 
 void scheduler_init(struct ev_loop *loop, perf_config_t *config);
 void scheduler_update_stats(void);

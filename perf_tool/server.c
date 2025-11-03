@@ -146,7 +146,8 @@ static void server_listen_read_cb(void *handle, int events) {
             /*
             if (ret != EWOULDBLOCK && ret != EAGAIN) {
                 LOG_ERROR("Failed to accept new connection: %s", strerror(errno));
-            }*/
+            }
+            */
             break; // No more connections or an error occurred
         }
 
@@ -287,12 +288,9 @@ static void client_conn_close_cb(void *handle, int events) {
 
 static void server_conn_cleanup(client_data_t *client_data) {
     if (!client_data || client_data->cleaning_up) {
-        LOG_DEBUG("server_conn_cleanup: Already cleaning up or invalid client_data.");
         return;
     }
     client_data->cleaning_up = 1; // Set flag
 
-    LOG_DEBUG("server_conn_cleanup: Entry point.");
     netbsd_close(&client_data->nh); // Close the netbsd handle
-    LOG_DEBUG("server_conn_cleanup: Exit.");
 }
