@@ -45,78 +45,108 @@ void run_server(struct ev_loop *loop, perf_config_t *config) {
 
     scheduler_init(loop, config);
 
-    listen_watcher_data_t *listen_data = (listen_watcher_data_t *)malloc(sizeof(listen_watcher_data_t));
-    if (!listen_data) {
-        LOG_ERROR("Failed to allocate memory for listen data.");
+    // Calculate the number of ports in the range
+    int port_count = config->network.dst_port_end - config->network.dst_port_start + 1;
+    listen_watcher_data_t *listen_data_array = (listen_watcher_data_t *)malloc(sizeof(listen_watcher_data_t) * port_count);
+    if (!listen_data_array) {
+        LOG_ERROR("Failed to allocate memory for listen data array.");
         return;
     }
-    memset(listen_data, 0, sizeof(listen_watcher_data_t));
-    listen_data->config = config;
+    memset(listen_data_array, 0, sizeof(listen_watcher_data_t) * port_count);
 
-    listen_data->listen_nh.proto = (strcmp(config->network.protocol, "TCP") == 0) ? PROTO_TCP : PROTO_UDP;
-    listen_data->listen_nh.type = SOCK_STREAM; // For TCP, will be SOCK_DGRAM for UDP
-    listen_data->listen_nh.is_ipv4 = 1; // Assuming IPv4 for now
-
-    if (netbsd_socket(&listen_data->listen_nh) != 0) {
-        LOG_ERROR("Failed to create listen socket: %s", strerror(errno));
-        free(listen_data);
-        return;
-    }
-    LOG_DEBUG("listen socket: nh: %p, so: %p\n", &listen_data->listen_nh, listen_data->listen_nh.so);
     struct sockaddr_in server_addr;
     memset(&server_addr, 0, sizeof(server_addr));
     server_addr.sin_family = AF_INET;
-    server_addr.sin_port = htons(config->network.dst_port_start);
     inet_pton(AF_INET, config->network.dst_ip_start, &server_addr.sin_addr);
 
-    if (netbsd_bind(&listen_data->listen_nh, (struct sockaddr *)&server_addr) != 0) {
-        LOG_ERROR("Failed to bind listen socket to %s:%d: %s",
-                  config->network.dst_ip_start, config->network.dst_port_start, strerror(errno));
-        netbsd_close(&listen_data->listen_nh);
-        free(listen_data);
-        return;
-    }
+    enum proto_type proto = (strcmp(config->network.protocol, "TCP") == 0) ? PROTO_TCP : PROTO_UDP;
+    int type = (proto == PROTO_TCP) ? SOCK_STREAM : SOCK_DGRAM;
 
-    if (listen_data->listen_nh.proto == PROTO_TCP) {
-        if (netbsd_listen(&listen_data->listen_nh, 128) != 0) { // Backlog of 128
-            LOG_ERROR("Failed to listen on socket: %s", strerror(errno));
-            netbsd_close(&listen_data->listen_nh);
-            free(listen_data);
+    for (int i = 0; i < port_count; i++) {
+        int port = config->network.dst_port_start + i;
+        listen_watcher_data_t *listen_data = &listen_data_array[i];
+        listen_data->config = config;
+        listen_data->listen_nh.proto = proto;
+        listen_data->listen_nh.type = type;
+        listen_data->listen_nh.is_ipv4 = 1; // Assuming IPv4 for now
+
+        if (netbsd_socket(&listen_data->listen_nh) != 0) {
+            LOG_ERROR("Failed to create listen socket for port %d: %s", port, strerror(errno));
+            // Clean up previously created sockets
+            for (int j = 0; j < i; j++) {
+                netbsd_close(&listen_data_array[j].listen_nh);
+            }
+            free(listen_data_array);
             return;
         }
-        LOG_INFO("Server listening on %s:%d (TCP)", config->network.dst_ip_start, config->network.dst_port_start);
-        listen_data->listen_nh.read_cb = server_listen_read_cb;
-        listen_data->listen_nh.data = listen_data;
-        netbsd_io_start(&listen_data->listen_nh);
-    } else { // UDP
-        LOG_INFO("Server listening on %s:%d (UDP)", config->network.dst_ip_start, config->network.dst_port_start);
-        // For UDP, the listen socket is also the data socket.
-        client_data_t *udp_client_data = (client_data_t *)malloc(sizeof(client_data_t));
-        if (!udp_client_data) {
-            LOG_ERROR("Failed to allocate memory for UDP client data.");
+        LOG_DEBUG("listen socket for port %d: nh: %p, so: %p\n", port, &listen_data->listen_nh, listen_data->listen_nh.so);
+
+        server_addr.sin_port = htons(port);
+        if (netbsd_bind(&listen_data->listen_nh, (struct sockaddr *)&server_addr) != 0) {
+            LOG_ERROR("Failed to bind listen socket to %s:%d: %s", config->network.dst_ip_start, port, strerror(errno));
             netbsd_close(&listen_data->listen_nh);
-            free(listen_data);
+            // Clean up previously created sockets
+            for (int j = 0; j < i; j++) {
+                netbsd_close(&listen_data_array[j].listen_nh);
+            }
+            free(listen_data_array);
             return;
         }
-        memset(udp_client_data, 0, sizeof(client_data_t));
-        memcpy(&udp_client_data->nh, &listen_data->listen_nh, sizeof(struct netbsd_handle));
-        udp_client_data->config = config;
-        udp_client_data->recv_buffer_size = (config->client_payload.size > config->server_response.size ?
-                                             config->client_payload.size : config->server_response.size) < 2048 ?
-                                             2048 : (config->client_payload.size > config->server_response.size ?
-                                                     config->client_payload.size : config->server_response.size); // Ensure minimum 2K buffer
-        udp_client_data->recv_buffer = (char *)malloc(udp_client_data->recv_buffer_size);
-        if (!udp_client_data->recv_buffer) {
-            LOG_ERROR("Failed to allocate memory for UDP receive buffer.");
-            free(udp_client_data);
-            netbsd_close(&listen_data->listen_nh);
-            free(listen_data);
-            return;
+
+        if (proto == PROTO_TCP) {
+            if (netbsd_listen(&listen_data->listen_nh, 128) != 0) {
+                LOG_ERROR("Failed to listen on socket for port %d: %s", port, strerror(errno));
+                netbsd_close(&listen_data->listen_nh);
+                // Clean up previously created sockets
+                for (int j = 0; j < i; j++) {
+                    netbsd_close(&listen_data_array[j].listen_nh);
+                }
+                free(listen_data_array);
+                return;
+            }
+            LOG_INFO("Server listening on %s:%d (TCP)", config->network.dst_ip_start, port);
+            listen_data->listen_nh.read_cb = server_listen_read_cb;
+            listen_data->listen_nh.data = listen_data;
+            netbsd_io_start(&listen_data->listen_nh);
+        } else { // UDP
+            LOG_INFO("Server listening on %s:%d (UDP)", config->network.dst_ip_start, port);
+            // For UDP, the listen socket is also the data socket.
+            client_data_t *udp_client_data = (client_data_t *)malloc(sizeof(client_data_t));
+            if (!udp_client_data) {
+                LOG_ERROR("Failed to allocate memory for UDP client data on port %d.", port);
+                netbsd_close(&listen_data->listen_nh);
+                // Clean up previously created sockets
+                for (int j = 0; j < i; j++) {
+                    netbsd_close(&listen_data_array[j].listen_nh);
+                }
+                free(listen_data_array);
+                return;
+            }
+            memset(udp_client_data, 0, sizeof(client_data_t));
+            memcpy(&udp_client_data->nh, &listen_data->listen_nh, sizeof(struct netbsd_handle));
+            udp_client_data->config = config;
+            udp_client_data->recv_buffer_size = (config->client_payload.size > config->server_response.size ?
+                                                 config->client_payload.size : config->server_response.size) < 2048 ?
+                                                 2048 : (config->client_payload.size > config->server_response.size ?
+                                                         config->client_payload.size : config->server_response.size); // Ensure minimum 2K buffer
+            udp_client_data->recv_buffer = (char *)malloc(udp_client_data->recv_buffer_size);
+            if (!udp_client_data->recv_buffer) {
+                LOG_ERROR("Failed to allocate memory for UDP receive buffer on port %d.", port);
+                free(udp_client_data);
+                netbsd_close(&listen_data->listen_nh);
+                // Clean up previously created sockets
+                for (int j = 0; j < i; j++) {
+                    netbsd_close(&listen_data_array[j].listen_nh);
+                }
+                free(listen_data_array);
+                return;
+            }
+            udp_client_data->nh.data = udp_client_data; // Self-reference for callbacks
+            udp_client_data->nh.read_cb = client_conn_read_cb;
+            netbsd_io_start(&udp_client_data->nh);
         }
-        udp_client_data->nh.data = udp_client_data; // Self-reference for callbacks
-        udp_client_data->nh.read_cb = client_conn_read_cb;
-        netbsd_io_start(&udp_client_data->nh);
     }
+    LOG_INFO("Server setup complete for port range %d-%d", config->network.dst_port_start, config->network.dst_port_end);
 }
 
 static void server_listen_read_cb(void *handle, int events) {

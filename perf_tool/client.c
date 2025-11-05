@@ -29,18 +29,28 @@ struct client_conn_data {
     double request_send_time;
     int is_connected;
     int cleaning_up; // New flag
+    int local_port; // Assigned local port
     TAILQ_ENTRY(client_conn_data) entries;
     ev_timer request_timer;
-    int requests_sent_on_connection; // Add this line
-    ev_timer conn_timeout_timer; // Add this line
+    int requests_sent_on_connection;
+    ev_timer conn_timeout_timer;
 };
 
 static int g_current_target_connections = 0;
 static int g_current_target_total_connections = 0;
 static double g_current_send_rate = 0.0; // packets per second
+static int g_current_server_port_index = 0; // To cycle through server ports
+static int g_server_port_count = 0; // Total number of server ports
+static int *g_server_ports = NULL; // Array of server ports
 
 // List to keep track of active TCP connections
 static TAILQ_HEAD(tcp_conn_list_head, client_conn_data) g_tcp_conn_list;
+
+static int *g_local_ports = NULL;
+static int g_local_port_count = 0;
+static int g_local_port_used = 0; // Number of ports currently in use
+static int g_current_port_index = 0; // Current index for port allocation
+static double g_last_port_stats_log_time = 0.0; // Last time port stats were logged
 
 static ev_timer client_scheduler_watcher;
 static ev_timer client_idle_watcher;
@@ -60,6 +70,9 @@ static void client_conn_cleanup(struct ev_loop *loop, struct client_conn_data *c
 
 static void create_tcp_connection(struct ev_loop *loop, perf_config_t *config);
 static void send_udp_packet(struct ev_loop *loop, perf_config_t *config);
+static void init_local_port_pool(perf_config_t *config);
+static int get_local_port(void);
+static void return_local_port(int port);
 
 #include "client.h"
 
@@ -99,10 +112,12 @@ void run_client(struct ev_loop *loop, perf_config_t *config) {
 void tcp_client_init(perf_config_t *config) {
     LOG_INFO("TCP Client initialized.");
     TAILQ_INIT(&g_tcp_conn_list);
+    init_local_port_pool(config);
 }
 
 void udp_client_init(perf_config_t *config) {
     LOG_INFO("UDP Client initialized.");
+    init_local_port_pool(config);
 }
 
 static void client_scheduler_cb(EV_P_ ev_timer *w, int revents) {
@@ -193,6 +208,16 @@ static void client_scheduler_cb(EV_P_ ev_timer *w, int revents) {
 
 static void client_idle_cb(EV_P_ ev_timer *w, int revents) {
     perf_config_t *config = (perf_config_t *)w->data;
+    double current_time = ev_now(EV_A);
+    if (current_time - g_last_port_stats_log_time >= 1.0) { // Log every second
+        if (g_local_port_used > g_local_port_count * 0.8) { // Warn if 80% of ports are used
+            LOG_WARN("High local port usage: %d out of %d ports in use.", g_local_port_used, g_local_port_count);
+        } else {
+            LOG_DEBUG("Local port usage: %d out of %d ports in use.", g_local_port_used, g_local_port_count);
+        }
+        metrics_update_port_usage(g_local_port_used, g_local_port_count);
+        g_last_port_stats_log_time = current_time;
+    }
     if (strcmp(config->objective.type, "TCP_CONCURRENT") == 0 || strcmp(config->objective.type, "HTTP_REQUESTS") == 0) {
         while (g_concurrent_connections < g_current_target_connections) {
             create_tcp_connection(EV_A_ config);
@@ -212,11 +237,17 @@ static void create_tcp_connection(struct ev_loop *loop, perf_config_t *config) {
     }
     memset(conn_data, 0, sizeof(struct client_conn_data));
     conn_data->config = config;
+    conn_data->local_port = get_local_port();
+    if (conn_data->local_port == -1) {
+        LOG_ERROR("No available local ports for new connection.");
+        free(conn_data);
+        return;
+    }
     ev_timer_init(&conn_data->request_timer, client_request_timer_cb, 0., 0.); // Initialize timer
     conn_data->request_timer.data = conn_data; // Set timer data to conn_data
     conn_data->requests_sent_on_connection = 0; // Initialize requests_sent_on_connection
 
-    ev_timer_init(&conn_data->conn_timeout_timer, client_conn_timeout_cb, 10., 0.); // 5 second timeout
+    ev_timer_init(&conn_data->conn_timeout_timer, client_conn_timeout_cb, 10., 0.); // 10 second timeout
     conn_data->conn_timeout_timer.data = conn_data;
     ev_timer_start(g_main_loop, &conn_data->conn_timeout_timer);
 
@@ -253,22 +284,46 @@ static void create_tcp_connection(struct ev_loop *loop, perf_config_t *config) {
 
     int optval = 1;
     if (netbsd_reuseaddr(&conn_data->nh, &optval, sizeof(optval))) {
-        LOG_ERROR("Set reuseaddr option failed.\n");
-        //netbsd_close(nh);
+        LOG_ERROR("Set reuseaddr option failed.");
+        netbsd_close(&conn_data->nh);
+        free(conn_data->recv_buffer);
+        free(conn_data->send_buffer);
+        free(conn_data);
         return;
     }
+
+    // Bind to local port
+    struct sockaddr_in local_addr;
+    memset(&local_addr, 0, sizeof(local_addr));
+    local_addr.sin_family = AF_INET;
+    local_addr.sin_port = htons(conn_data->local_port);
+    local_addr.sin_addr.s_addr = INADDR_ANY;
+    if (netbsd_bind(&conn_data->nh, (struct sockaddr *)&local_addr) != 0) {
+        LOG_ERROR("Failed to bind to local port %d: %s", conn_data->local_port, strerror(errno));
+        netbsd_close(&conn_data->nh);
+        free(conn_data->recv_buffer);
+        free(conn_data->send_buffer);
+        free(conn_data);
+        return;
+    }
+    LOG_DEBUG("Bound to local port %d", conn_data->local_port);
 
     struct sockaddr_in server_addr;
     memset(&server_addr, 0, sizeof(server_addr));
     server_addr.sin_family = AF_INET;
-    server_addr.sin_port = htons(config->network.dst_port_start);
+    int server_port = g_server_ports[g_current_server_port_index];
+    server_addr.sin_port = htons(server_port);
     inet_pton(AF_INET, config->network.dst_ip_start, &server_addr.sin_addr);
+
+    // Update the current server port index for the next connection
+    g_current_server_port_index = (g_current_server_port_index + 1) % g_server_port_count;
+    LOG_DEBUG("Connecting to server port %d", server_port);
 
     // Non-blocking connect
     int ret = netbsd_connect(&conn_data->nh, (struct sockaddr *)&server_addr);
     if (ret != 0 && ret != EINPROGRESS) {
-        LOG_ERROR("Failed to connect to %s:%d: %d:%s",
-                  config->network.dst_ip_start, config->network.dst_port_start, ret, strerror(ret));
+        LOG_ERROR("Failed to connect from: %d to %s:%d: %d:%s", conn_data->local_port,
+                  config->network.dst_ip_start, server_port, ret, strerror(ret));
         netbsd_close(&conn_data->nh);
         free(conn_data->recv_buffer);
         free(conn_data->send_buffer);
@@ -290,6 +345,12 @@ static void send_udp_packet(struct ev_loop *loop, perf_config_t *config) {
     }
     memset(conn_data, 0, sizeof(struct client_conn_data));
     conn_data->config = config;
+    conn_data->local_port = get_local_port();
+    if (conn_data->local_port == -1) {
+        LOG_ERROR("No available local ports for UDP packet.");
+        free(conn_data);
+        return;
+    }
     conn_data->send_buffer_size = config->client_payload.size;
     conn_data->send_buffer = (char *)malloc(conn_data->send_buffer_size);
     if (!conn_data->send_buffer) {
@@ -320,11 +381,32 @@ static void send_udp_packet(struct ev_loop *loop, perf_config_t *config) {
         return;
     }
 
+    // Bind to local port for UDP
+    struct sockaddr_in local_addr;
+    memset(&local_addr, 0, sizeof(local_addr));
+    local_addr.sin_family = AF_INET;
+    local_addr.sin_port = htons(conn_data->local_port);
+    local_addr.sin_addr.s_addr = INADDR_ANY;
+    if (netbsd_bind(&conn_data->nh, (struct sockaddr *)&local_addr) != 0) {
+        LOG_ERROR("Failed to bind UDP socket to local port %d: %s", conn_data->local_port, strerror(errno));
+        netbsd_close(&conn_data->nh);
+        free(conn_data->recv_buffer);
+        free(conn_data->send_buffer);
+        free(conn_data);
+        return;
+    }
+    LOG_DEBUG("UDP bound to local port %d", conn_data->local_port);
+
     struct sockaddr_in server_addr;
     memset(&server_addr, 0, sizeof(server_addr));
     server_addr.sin_family = AF_INET;
-    server_addr.sin_port = htons(config->network.dst_port_start);
+    int server_port = g_server_ports[g_current_server_port_index];
+    server_addr.sin_port = htons(server_port);
     inet_pton(AF_INET, config->network.dst_ip_start, &server_addr.sin_addr);
+
+    // Update the current server port index for the next connection
+    g_current_server_port_index = (g_current_server_port_index + 1) % g_server_port_count;
+    LOG_DEBUG("Sending UDP packet to server port %d", server_port);
 
     struct iovec iov;
     iov.iov_base = conn_data->send_buffer;
@@ -599,6 +681,8 @@ static void client_conn_close_cb(void *handle, int events) {
         free(conn_data->send_buffer);
     }
     ev_timer_stop(g_main_loop, &conn_data->request_timer); // Stop timer
+    return_local_port(conn_data->local_port); // Return the local port to the pool
+    LOG_DEBUG("Returned local port %d to pool", conn_data->local_port);
     free(conn_data);
     LOG_DEBUG("client_conn_close_cb: Exit.");
 }
@@ -614,4 +698,70 @@ static void client_request_timer_cb(EV_P_ ev_timer *w, int revents) {
 
 int client_get_current_target_connections(void) {
     return g_current_target_connections;
+}
+
+uint64_t client_get_local_ports_used(void) {
+    return g_local_port_used;
+}
+
+uint64_t client_get_total_local_ports(void) {
+    return g_local_port_count;
+}
+
+static void init_local_port_pool(perf_config_t *config) {
+    int start_port = config->network.src_port_start;
+    int end_port = config->network.src_port_end;
+    g_local_port_count = end_port - start_port + 1;
+    
+    // Allocate an array for local ports
+    g_local_ports = (int *)malloc(g_local_port_count * sizeof(int));
+    if (!g_local_ports) {
+        LOG_ERROR("Failed to allocate memory for local ports array.");
+        g_local_port_count = 0;
+        return;
+    }
+    
+    for (int i = 0; i < g_local_port_count; i++) {
+        g_local_ports[i] = start_port + i;
+    }
+    g_local_port_used = 0;
+    g_current_port_index = 0;
+    g_last_port_stats_log_time = 0.0;
+    LOG_INFO("Initialized local port pool with %d ports (%d to %d).", g_local_port_count, start_port, end_port);
+
+    // Initialize server ports array
+    g_server_port_count = config->network.dst_port_end - config->network.dst_port_start + 1;
+    g_server_ports = (int *)malloc(g_server_port_count * sizeof(int));
+    if (!g_server_ports) {
+        LOG_ERROR("Failed to allocate memory for server ports array.");
+        g_server_port_count = 0;
+        return;
+    }
+    for (int i = 0; i < g_server_port_count; i++) {
+        g_server_ports[i] = config->network.dst_port_start + i;
+    }
+    LOG_INFO("Initialized server port pool with %d ports (%d to %d).", g_server_port_count, config->network.dst_port_start, config->network.dst_port_end);
+}
+
+static int get_local_port(void) {
+    if (g_local_port_used >= g_local_port_count) {
+        LOG_WARN("No more local ports available in pool, reusing ports.");
+        // Reset the index to allow reuse of ports
+        g_current_port_index = 0;
+        g_local_port_used = 0;
+    }
+    int port = g_local_ports[g_current_port_index];
+    LOG_DEBUG("Getting port %d from pool (index %d)", port, g_current_port_index);
+    g_current_port_index = (g_current_port_index + 1) % g_local_port_count;
+    g_local_port_used++;
+    return port;
+}
+
+static void return_local_port(int port) {
+    if (g_local_port_used <= 0) {
+        LOG_WARN("Returning port %d to pool, but no ports are in use.", port);
+        return;
+    }
+    LOG_DEBUG("Returning port %d to pool", port);
+    g_local_port_used--;
 }

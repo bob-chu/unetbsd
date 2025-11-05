@@ -113,18 +113,35 @@ void scheduler_check_phase_transition(const char *role) {
     uint64_t success_per_second = (current_metrics.success_count - last_metrics.success_count);
     uint64_t failure_per_second = (current_metrics.failure_count - last_metrics.failure_count);
 
-    printf("[%s] [ %ds], %s (Target: %d), Concurrent Conns: %lu, CPS: %lu, RPS: %lu, BpsS: %lu, BpsR: %lu, Succ: %lu, Fail: %lu\n",
-           role,
-           time_index,
-           phase_names[g_current_phase],
-           client_get_current_target_connections(),
-           g_concurrent_connections,
-           connections_per_second,
-           requests_per_second,
-           bytes_sent_per_second,
-           bytes_received_per_second,
-           success_per_second,
-           failure_per_second);
+    if (strcmp(role, "client") == 0) {
+        printf("[%s] [ %ds], %s (Target: %d), Concurrent Conns: %lu, CPS: %lu, RPS: %lu, BpsS: %lu, BpsR: %lu, Succ: %lu, Fail: %lu, Ports Used: %lu/%lu\n",
+               role,
+               time_index,
+               phase_names[g_current_phase],
+               client_get_current_target_connections(),
+               g_concurrent_connections,
+               connections_per_second,
+               requests_per_second,
+               bytes_sent_per_second,
+               bytes_received_per_second,
+               success_per_second,
+               failure_per_second,
+               current_metrics.ports_used,
+               current_metrics.total_ports);
+    } else {
+        printf("[%s] [ %ds], %s (Target: %d), Concurrent Conns: %lu, CPS: %lu, RPS: %lu, BpsS: %lu, BpsR: %lu, Succ: %lu, Fail: %lu\n",
+               role,
+               time_index,
+               phase_names[g_current_phase],
+               client_get_current_target_connections(),
+               g_concurrent_connections,
+               connections_per_second,
+               requests_per_second,
+               bytes_sent_per_second,
+               bytes_received_per_second,
+               success_per_second,
+               failure_per_second);
+    }
 
     last_stats = *current_stats;
     last_metrics = current_metrics;

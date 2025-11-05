@@ -11,6 +11,8 @@ typedef struct {
     uint64_t min_latency_ms;
     uint64_t max_latency_ms;
     uint64_t avg_latency_ms;
+    uint64_t ports_used;
+    uint64_t total_ports;
 } metrics_t;
 
 void metrics_init(void);
@@ -19,5 +21,6 @@ void metrics_inc_success(void);
 void metrics_inc_failure(void);
 void metrics_add_latency(uint64_t latency_ms);
 metrics_t metrics_get_snapshot(void);
+void metrics_update_port_usage(uint64_t ports_used, uint64_t total_ports);
 
 #endif // METRICS_H

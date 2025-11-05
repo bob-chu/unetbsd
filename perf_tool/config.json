@@ -2,7 +2,7 @@
   "scheduler": {
     "prepare_duration_sec": 3,
     "ramp_up_duration_sec": 10,
-    "sustain_duration_sec": 10,
+    "sustain_duration_sec": 300,
     "ramp_down_duration_sec": 5,
     "close_duration_sec": 1
   },
@@ -22,10 +22,10 @@
     "dst_ip_start": "192.168.1.1",
     "dst_ip_end": "192.168.1.1",
     "protocol": "TCP",
-    "src_port_start": 10000,
-    "src_port_end": 10000,
-    "dst_port_start": 12345,
-    "dst_port_end": 12345
+    "src_port_start": 1000,
+    "src_port_end": 65000,
+    "dst_port_start": 8000,
+    "dst_port_end": 8010 
   },
   "client_payload": {
     "data": "Hello from client!",
