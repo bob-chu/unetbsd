@@ -134,6 +134,7 @@ netbsd_srcs = [
     'netbsd_src/sys/kern/subr_hash.c',
     'netbsd_src/sys/kern/subr_pserialize.c',
     'netbsd_src/sys/kern/uipc_mbuf.c',
+    'netbsd_src/sys/kern/sys_socket.c',
     'netbsd_src/sys/kern/uipc_socket.c',
     'netbsd_src/sys/kern/uipc_socket2.c',
     'netbsd_src/sys/net/dl_print.c',

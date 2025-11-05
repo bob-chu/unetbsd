@@ -216,6 +216,9 @@ int netbsd_connect(struct netbsd_handle *nh, struct sockaddr *addr)
     }
 
     int ret = soconnect(nh->so, (struct sockaddr *)&sa, curlwp);
+    if (ret != 0) {
+        printf("soconnect failed with error: %d\n", ret);
+    }
     /* enable debug */
     //nh->so->so_options |= SO_DEBUG;
 
@@ -277,7 +280,7 @@ static int so_read(struct netbsd_handle *nh, struct iovec *iov, int iovcnt,
     }
     if (so->so_state & SS_CANTRCVMORE) {
         /* EOF notify*/
-        return -1;
+        return -EPIPE;
     }
     total -= uio.uio_resid;
     if (from && addr_mbuf) {
@@ -339,6 +342,7 @@ static ssize_t so_send(struct netbsd_handle *nh, const struct iovec *iov,
         if (error != EWOULDBLOCK) {
             return -error;
         }
+        return -error;
     }
 
     bytes = bytes - uio.uio_resid;

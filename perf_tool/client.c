@@ -230,7 +230,7 @@ static void create_tcp_connection(struct ev_loop *loop, perf_config_t *config) {
     }
     snprintf(conn_data->send_buffer, conn_data->send_buffer_size + 1, "GET %s HTTP/1.1\r\nHost: %s\r\n\r\n", request_path, config->network.dst_ip_start);
 
-    conn_data->recv_buffer_size = config->server_response.size;
+    conn_data->recv_buffer_size = 2048; // 2K buffer for receiving data
     conn_data->recv_buffer = (char *)malloc(conn_data->recv_buffer_size);
     if (!conn_data->recv_buffer) {
         LOG_ERROR("Failed to allocate memory for client recv buffer.");
@@ -251,6 +251,13 @@ static void create_tcp_connection(struct ev_loop *loop, perf_config_t *config) {
         return;
     }
 
+    int optval = 1;
+    if (netbsd_reuseaddr(&conn_data->nh, &optval, sizeof(optval))) {
+        LOG_ERROR("Set reuseaddr option failed.\n");
+        //netbsd_close(nh);
+        return;
+    }
+
     struct sockaddr_in server_addr;
     memset(&server_addr, 0, sizeof(server_addr));
     server_addr.sin_family = AF_INET;
@@ -259,9 +266,9 @@ static void create_tcp_connection(struct ev_loop *loop, perf_config_t *config) {
 
     // Non-blocking connect
     int ret = netbsd_connect(&conn_data->nh, (struct sockaddr *)&server_addr);
-    if (ret != 0 && errno != EINPROGRESS) {
-        LOG_ERROR("Failed to connect to %s:%d: %s",
-                  config->network.dst_ip_start, config->network.dst_port_start, strerror(errno));
+    if (ret != 0 && ret != EINPROGRESS) {
+        LOG_ERROR("Failed to connect to %s:%d: %d:%s",
+                  config->network.dst_ip_start, config->network.dst_port_start, ret, strerror(ret));
         netbsd_close(&conn_data->nh);
         free(conn_data->recv_buffer);
         free(conn_data->send_buffer);
@@ -292,7 +299,7 @@ static void send_udp_packet(struct ev_loop *loop, perf_config_t *config) {
     }
     memcpy(conn_data->send_buffer, config->client_payload.data, conn_data->send_buffer_size);
 
-    conn_data->recv_buffer_size = config->server_response.size;
+    conn_data->recv_buffer_size = 2048; // 2K buffer for receiving data
     conn_data->recv_buffer = (char *)malloc(conn_data->recv_buffer_size);
     if (!conn_data->recv_buffer) {
         LOG_ERROR("Failed to allocate memory for UDP recv buffer.");
@@ -449,8 +456,10 @@ static void client_conn_write_cb(void *handle, int events) {
             // The event loop will trigger us again when the socket is writable.
         }
     } else if (bytes_written < 0) {
-        LOG_ERROR("client_conn_write_cb: Failed to write to socket: %s (errno: %d, bytes_written: %zd)", strerror(errno), errno, bytes_written);
-        metrics_inc_failure();
+        if (bytes_written != -EPIPE) {
+            LOG_ERROR("client_conn_write_cb: Failed to write to socket: %s (errno: %d, bytes_written: %zd)", strerror(errno), errno, bytes_written);
+            metrics_inc_failure();
+        }
         LOG_DEBUG("client_conn_write_cb: Write failed, calling cleanup.");
         perf_config_t *config = conn_data->config;
         client_conn_cleanup(g_main_loop, conn_data);
@@ -489,7 +498,7 @@ static void client_conn_read_cb(void *handle, int events) {
     }
 
     if (bytes_read > 0) {
-        LOG_DEBUG("client_conn_read_cb: Received %zd bytes.", bytes_read);
+        LOG_INFO("client_conn_read_cb: Received %zd bytes: %s.", bytes_read, conn_data->recv_buffer);
         scheduler_inc_stat(STAT_BYTES_RECEIVED, bytes_read);
         scheduler_inc_stat(STAT_RESPONSES_RECEIVED, 1);
 
@@ -535,19 +544,24 @@ static void client_conn_read_cb(void *handle, int events) {
             client_conn_cleanup(g_main_loop, conn_data);
         }
     } else if (bytes_read == 0) {
-                    LOG_INFO("client_conn_read_cb: Server closed connection.");
-                    LOG_DEBUG("client_conn_read_cb: Calling cleanup.");
-                    ev_timer_stop(g_main_loop, &conn_data->request_timer); // Stop timer on close
-                    metrics_inc_failure(); // Increment failure if server closes connection
-                    client_conn_cleanup(g_main_loop, conn_data);
-                    if (strcmp(config->objective.type, "TCP_CONCURRENT") == 0) {
-                        create_tcp_connection(g_main_loop, config);
-                    }    } else {
+        LOG_INFO("client_conn_read_cb: Server closed connection.");
+        LOG_DEBUG("client_conn_read_cb: Calling cleanup.");
+        ev_timer_stop(g_main_loop, &conn_data->request_timer); // Stop timer on close
+        //metrics_inc_failure(); // Increment failure if server closes connection
+        client_conn_cleanup(g_main_loop, conn_data);
+        if (strcmp(config->objective.type, "TCP_CONCURRENT") == 0) {
+            create_tcp_connection(g_main_loop, config);
+        }
+    } else {
+        /*
         if (bytes_read == -EAGAIN || bytes_read == -EWOULDBLOCK) {
             return;
         }
+        */
         //LOG_ERROR("client_conn_read_cb: Failed to read from socket: %s (errno: %d, bytes_read: %zd)", strerror(-bytes_read), -bytes_read, bytes_read);
-        metrics_inc_failure();
+        if (bytes_read != -EPIPE) {
+            metrics_inc_failure();
+        }
         LOG_DEBUG("client_conn_read_cb: Calling cleanup on read error.");
         ev_timer_stop(g_main_loop, &conn_data->request_timer); // Stop timer on error
         client_conn_cleanup(g_main_loop, conn_data);

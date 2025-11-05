@@ -101,8 +101,10 @@ void run_server(struct ev_loop *loop, perf_config_t *config) {
         memset(udp_client_data, 0, sizeof(client_data_t));
         memcpy(&udp_client_data->nh, &listen_data->listen_nh, sizeof(struct netbsd_handle));
         udp_client_data->config = config;
-        udp_client_data->recv_buffer_size = config->client_payload.size > config->server_response.size ?
-                                             config->client_payload.size : config->server_response.size;
+        udp_client_data->recv_buffer_size = (config->client_payload.size > config->server_response.size ?
+                                             config->client_payload.size : config->server_response.size) < 2048 ?
+                                             2048 : (config->client_payload.size > config->server_response.size ?
+                                                     config->client_payload.size : config->server_response.size); // Ensure minimum 2K buffer
         udp_client_data->recv_buffer = (char *)malloc(udp_client_data->recv_buffer_size);
         if (!udp_client_data->recv_buffer) {
             LOG_ERROR("Failed to allocate memory for UDP receive buffer.");
@@ -131,7 +133,7 @@ static void server_listen_read_cb(void *handle, int events) {
         }
         memset(client_data, 0, sizeof(client_data_t));
         client_data->config = config;
-        client_data->recv_buffer_size = (strcmp(config->objective.type, "HTTP_REQUESTS") == 0) ? 2048 : config->client_payload.size; // Use a larger buffer for HTTP requests
+        client_data->recv_buffer_size = (strcmp(config->objective.type, "HTTP_REQUESTS") == 0 || config->client_payload.size < 2048) ? 2048 : config->client_payload.size; // Ensure minimum 2K buffer
         client_data->recv_buffer = (char *)malloc(client_data->recv_buffer_size);
         if (!client_data->recv_buffer) {
             LOG_ERROR("Failed to allocate memory for client receive buffer.");
@@ -173,7 +175,7 @@ static void client_conn_read_cb(void *handle, int events)
     iov.iov_base = client_data->recv_buffer;
     iov.iov_len = client_data->recv_buffer_size;
 
-    ssize_t bytes_read;
+    int bytes_read;
     if (nh->proto == PROTO_TCP) {
         bytes_read = netbsd_read(nh, &iov, 1);
     } else { // UDP
@@ -188,7 +190,7 @@ static void client_conn_read_cb(void *handle, int events)
     }
 
     if (bytes_read > 0) {
-        LOG_DEBUG("Received %zd bytes.", bytes_read);
+        LOG_INFO("Received %zd bytes.", bytes_read);
         scheduler_inc_stat(STAT_BYTES_RECEIVED, bytes_read);
 
         const char *method, *path;
@@ -199,7 +201,7 @@ static void client_conn_read_cb(void *handle, int events)
         num_headers = sizeof(headers) / sizeof(headers[0]);
         pret = phr_parse_request(client_data->recv_buffer, bytes_read, &method, &method_len, &path, &path_len, &minor_version, headers, &num_headers, 0);
 
-        LOG_DEBUG("phr parse ret: %d", pret);
+        LOG_INFO("phr parse ret: %d", pret);
         if (pret > 0) { // successful parse
             const char *response_body_1 = "<html><body><h1>Hello, World!</h1></body></html>";
             const char *response_body_2 = "<html><body><h1>Another page</h1></body></html>";
@@ -238,12 +240,16 @@ static void client_conn_read_cb(void *handle, int events)
             ssize_t bytes_written = netbsd_write(nh, response_iov, 2);
 
             if (bytes_written > 0) {
-                LOG_DEBUG("Sent %zd bytes in response.", bytes_written);
+                LOG_INFO("Sent %zd bytes in response.", bytes_written);
                 scheduler_inc_stat(STAT_BYTES_SENT, bytes_written);
                 metrics_inc_success();
+                // return, wait for client side close it
+                return;
             } else if (bytes_written < 0) {
-                LOG_ERROR("Failed to write response: %s", strerror(errno));
-                metrics_inc_failure();
+                if (bytes_written != -EPIPE) {
+                    LOG_ERROR("Failed to write response: %s", strerror(errno));
+                    metrics_inc_failure();
+                }
             }
             server_conn_cleanup(client_data);
         } else if (pret == -1) { // parse error
@@ -261,7 +267,10 @@ static void client_conn_read_cb(void *handle, int events)
         server_conn_cleanup(client_data); // Call cleanup
     } else {
         //LOG_ERROR("Failed to read from socket: %s", strerror(errno));
-        metrics_inc_failure();
+        if (bytes_read != -EPIPE) {
+            /* closed by other side */
+            metrics_inc_failure();
+        }
         server_conn_cleanup(client_data); // Call cleanup
     }
 }

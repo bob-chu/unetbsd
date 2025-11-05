@@ -1076,16 +1076,38 @@ struct sockaddr_dl *sockaddr_dl_init(struct sockaddr_dl *sdl, socklen_t socklen,
  * uio related
  */
 int uiomove(void *buf, size_t len, struct uio *uio) {
-    if (uio->uio_rw == UIO_READ) {
-        memcpy(uio->uio_iov->iov_base + uio->uio_offset, buf, len);
-    } else {
-        memcpy(buf, uio->uio_iov->iov_base + uio->uio_offset, len);
+    struct iovec *iov;
+    size_t cnt;
+    char *cp = buf;
+    int error = 0;
+
+    while (len > 0 && uio->uio_resid > 0) {
+        iov = uio->uio_iov;
+        cnt = iov->iov_len;
+        if (cnt == 0) {
+            uio->uio_iov++;
+            uio->uio_iovcnt--;
+            continue;
+        }
+        if (cnt > len)
+            cnt = len;
+        if (cnt > uio->uio_resid)
+            cnt = uio->uio_resid;
+
+        if (uio->uio_rw == UIO_READ) {
+            memcpy((char *)iov->iov_base + uio->uio_offset, cp, cnt);
+        } else {
+            memcpy(cp, (char *)iov->iov_base + uio->uio_offset, cnt);
+        }
+
+        cp += cnt;
+        len -= cnt;
+        iov->iov_len -= cnt;
+        uio->uio_resid -= cnt;
+        uio->uio_offset += cnt;
     }
-    //memcpy(buf, uio->uio_iov->iov_base, len);
-    uio->uio_iov->iov_len -= len;
-    uio->uio_resid -= len;
-    uio->uio_offset += len;
-    return 0;
+
+    return error;
 }
 
 /* module hook stub */
@@ -1423,9 +1445,9 @@ int ncpuonline = 1;
 
 /*device call*/
 devhandle_t dummy_devhandle;
-int		device_call_generic(device_t, devhandle_t,
-		    const struct device_call_generic *) {return 0;}
-devhandle_t	device_handle(device_t) { return dummy_devhandle;}
+int		device_call_generic(device_t dev, devhandle_t handle,
+		    const struct device_call_generic *dcg) {return 0;}
+devhandle_t	device_handle(device_t dev) { return dummy_devhandle;}
 
 ssize_t
 device_getprop_data(device_t dev, const char *prop, void *buf, size_t buflen)
