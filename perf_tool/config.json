@@ -9,7 +9,6 @@
   "objective": {
     "type": "HTTP_REQUESTS",
     "value": 1000,
-    "requests_per_second": 2000,
     "requests_per_connection": 1
   },
   "http_config": {

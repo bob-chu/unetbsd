@@ -46,6 +46,14 @@ static int *g_server_ports = NULL; // Array of server ports
 // List to keep track of active TCP connections
 static TAILQ_HEAD(tcp_conn_list_head, client_conn_data) g_tcp_conn_list;
 
+// Pool for preallocated client_conn_data structures
+#define CLIENT_CONN_POOL_SIZE 8192
+static struct client_conn_data *g_client_conn_pool = NULL;
+static int g_client_conn_pool_used = 0;
+
+// List to keep track of available client_conn_data in the pool
+static TAILQ_HEAD(client_conn_pool_head, client_conn_data) g_client_conn_pool_list;
+
 static int *g_local_ports = NULL;
 static int g_local_port_count = 0;
 static int g_local_port_used = 0; // Number of ports currently in use
@@ -112,6 +120,21 @@ void run_client(struct ev_loop *loop, perf_config_t *config) {
 void tcp_client_init(perf_config_t *config) {
     LOG_INFO("TCP Client initialized.");
     TAILQ_INIT(&g_tcp_conn_list);
+    TAILQ_INIT(&g_client_conn_pool_list);
+
+    // Preallocate client_conn_data pool
+    g_client_conn_pool = (struct client_conn_data *)calloc(CLIENT_CONN_POOL_SIZE, sizeof(struct client_conn_data));
+    if (!g_client_conn_pool) {
+        LOG_ERROR("Failed to allocate memory for client connection pool.");
+        return;
+    }
+
+    for (int i = 0; i < CLIENT_CONN_POOL_SIZE; i++) {
+        TAILQ_INSERT_TAIL(&g_client_conn_pool_list, &g_client_conn_pool[i], entries);
+    }
+    g_client_conn_pool_used = 0;
+    LOG_INFO("Preallocated %d client connection structures.", CLIENT_CONN_POOL_SIZE);
+
     init_local_port_pool(config);
 }
 
@@ -173,7 +196,7 @@ static void client_scheduler_cb(EV_P_ ev_timer *w, int revents) {
             double progress = elapsed_in_phase / config->scheduler.ramp_down_duration_sec;
             if (progress > 1.0) progress = 1.0;
 
-            if (strcmp(config->objective.type, "TCP_CONCURRENT") == 0) {
+            if (strcmp(config->objective.type, "TCP_CONCURRENT") == 0 || strcmp(config->objective.type, "HTTP_REQUESTS") == 0) {
                 g_current_target_connections = (int)(config->objective.value * (1.0 - progress));
                 // Logic to close connections if current > target
                 while (g_concurrent_connections > g_current_target_connections && !TAILQ_EMPTY(&g_tcp_conn_list)) {
@@ -230,24 +253,41 @@ static void client_idle_cb(EV_P_ ev_timer *w, int revents) {
 }
 
 static void create_tcp_connection(struct ev_loop *loop, perf_config_t *config) {
-    struct client_conn_data *conn_data = (struct client_conn_data *)malloc(sizeof(struct client_conn_data));
-    if (!conn_data) {
-        LOG_ERROR("Failed to allocate memory for client connection data.");
-        return;
+    struct client_conn_data *conn_data = NULL;
+    
+    if (!TAILQ_EMPTY(&g_client_conn_pool_list)) {
+        conn_data = TAILQ_FIRST(&g_client_conn_pool_list);
+        TAILQ_REMOVE(&g_client_conn_pool_list, conn_data, entries);
+        g_client_conn_pool_used++;
+        memset(conn_data, 0, sizeof(struct client_conn_data));
+        LOG_DEBUG("Reusing client_conn_data from pool. Used: %d/%d", g_client_conn_pool_used, CLIENT_CONN_POOL_SIZE);
+    } else {
+        LOG_WARN("No available client_conn_data in pool, allocating new. Used: %d/%d", g_client_conn_pool_used, CLIENT_CONN_POOL_SIZE);
+        conn_data = (struct client_conn_data *)malloc(sizeof(struct client_conn_data));
+        if (!conn_data) {
+            LOG_ERROR("Failed to allocate memory for client connection data.");
+            return;
+        }
+        memset(conn_data, 0, sizeof(struct client_conn_data));
     }
-    memset(conn_data, 0, sizeof(struct client_conn_data));
+
     conn_data->config = config;
     conn_data->local_port = get_local_port();
     if (conn_data->local_port == -1) {
         LOG_ERROR("No available local ports for new connection.");
-        free(conn_data);
+        if (g_client_conn_pool_used < CLIENT_CONN_POOL_SIZE) {
+            TAILQ_INSERT_TAIL(&g_client_conn_pool_list, conn_data, entries);
+            g_client_conn_pool_used--;
+        } else {
+            free(conn_data);
+        }
         return;
     }
-    ev_timer_init(&conn_data->request_timer, client_request_timer_cb, 0., 0.); // Initialize timer
-    conn_data->request_timer.data = conn_data; // Set timer data to conn_data
-    conn_data->requests_sent_on_connection = 0; // Initialize requests_sent_on_connection
+    ev_timer_init(&conn_data->request_timer, client_request_timer_cb, 0., 0.);
+    conn_data->request_timer.data = conn_data;
+    conn_data->requests_sent_on_connection = 0;
 
-    ev_timer_init(&conn_data->conn_timeout_timer, client_conn_timeout_cb, 10., 0.); // 10 second timeout
+    ev_timer_init(&conn_data->conn_timeout_timer, client_conn_timeout_cb, 10., 0.);
     conn_data->conn_timeout_timer.data = conn_data;
     ev_timer_start(g_main_loop, &conn_data->conn_timeout_timer);
 
@@ -440,11 +480,11 @@ static void client_conn_cleanup(struct ev_loop *loop, struct client_conn_data *c
         LOG_DEBUG("client_conn_cleanup: Already cleaning up or invalid conn_data.");
         return;
     }
-    conn_data->cleaning_up = 1; // Set flag
+    conn_data->cleaning_up = 1;
 
     LOG_DEBUG("client_conn_cleanup: Entry point.");
     if (conn_data->nh.proto == PROTO_TCP) {
-        if (conn_data->is_connected) { // Only remove if it was successfully connected
+        if (conn_data->is_connected) {
             TAILQ_REMOVE(&g_tcp_conn_list, conn_data, entries);
             scheduler_inc_stat(STAT_CONCURRENT_CONNECTIONS, -1);
             LOG_DEBUG("client_conn_cleanup: STAT_CONCURRENT_CONNECTIONS decremented (cleanup). Current: %lu", g_concurrent_connections);
@@ -453,8 +493,8 @@ static void client_conn_cleanup(struct ev_loop *loop, struct client_conn_data *c
     }
     LOG_DEBUG("client_conn_cleanup: Closing netbsd handle.");
     netbsd_close(&conn_data->nh);
-    ev_timer_stop(g_main_loop, &conn_data->request_timer); // Stop request timer
-    ev_timer_stop(g_main_loop, &conn_data->conn_timeout_timer); // Stop connection timeout timer
+    ev_timer_stop(g_main_loop, &conn_data->request_timer);
+    ev_timer_stop(g_main_loop, &conn_data->conn_timeout_timer);
 }
 
 static void client_conn_connect_cb(void *handle, int events) {
@@ -676,14 +716,25 @@ static void client_conn_close_cb(void *handle, int events) {
     LOG_DEBUG("client_conn_close_cb: Freeing resources");
     if (conn_data->recv_buffer) {
         free(conn_data->recv_buffer);
+        conn_data->recv_buffer = NULL;
     }
     if (conn_data->send_buffer) {
         free(conn_data->send_buffer);
+        conn_data->send_buffer = NULL;
     }
-    ev_timer_stop(g_main_loop, &conn_data->request_timer); // Stop timer
-    return_local_port(conn_data->local_port); // Return the local port to the pool
+    ev_timer_stop(g_main_loop, &conn_data->request_timer);
+    return_local_port(conn_data->local_port);
     LOG_DEBUG("Returned local port %d to pool", conn_data->local_port);
-    free(conn_data);
+
+    // Return conn_data to pool if within pool bounds
+    if (conn_data >= g_client_conn_pool && conn_data < g_client_conn_pool + CLIENT_CONN_POOL_SIZE) {
+        TAILQ_INSERT_TAIL(&g_client_conn_pool_list, conn_data, entries);
+        g_client_conn_pool_used--;
+        LOG_DEBUG("Returned client_conn_data to pool. Used: %d/%d", g_client_conn_pool_used, CLIENT_CONN_POOL_SIZE);
+    } else {
+        LOG_DEBUG("Freeing client_conn_data not from pool.");
+        free(conn_data);
+    }
     LOG_DEBUG("client_conn_close_cb: Exit.");
 }
 

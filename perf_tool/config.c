@@ -72,7 +72,6 @@ int parse_config(const char *file_path, perf_config_t *config) {
     if (objective_json) {
         config->objective.type = get_string_from_json(objective_json, "type");
         config->objective.value = get_int_from_json(objective_json, "value");
-        config->objective.requests_per_second = get_int_from_json(objective_json, "requests_per_second");
         config->objective.requests_per_connection = get_int_from_json(objective_json, "requests_per_connection");
     }
 
