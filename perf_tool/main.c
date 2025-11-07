@@ -131,6 +131,7 @@ int main(int argc, char *argv[]) {
     metrics_report();
     dpdk_cleanup();
     free_config(&config);
+    free_response_buffers();
 
     return 0;
 }

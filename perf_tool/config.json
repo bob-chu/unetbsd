@@ -2,17 +2,20 @@
   "scheduler": {
     "prepare_duration_sec": 3,
     "ramp_up_duration_sec": 10,
-    "sustain_duration_sec": 300,
-    "ramp_down_duration_sec": 5,
+    "sustain_duration_sec": 30,
+    "ramp_down_duration_sec": 10,
     "close_duration_sec": 1
   },
   "objective": {
     "type": "HTTP_REQUESTS",
-    "value": 1000,
+    "value": 2,
     "requests_per_connection": 1
   },
   "http_config": {
-    "client_request_path": "/hello"
+    "client_request_path": "/hello",
+    "response_size_hello": 500000, 
+    "response_size_another": 5242880,
+    "response_size_default": 1024
   },
   "network": {
     "mac_address": "00:00:00:00:00:00",

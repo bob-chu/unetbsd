@@ -43,6 +43,9 @@ typedef struct {
 // Struct for HTTP configuration
 typedef struct {
     char *client_request_path;
+    int response_size_hello;    // Response size for /hello path
+    int response_size_another;  // Response size for /another path
+    int response_size_default;  // Default response size for other paths
 } http_config_t;
 
 // Main performance test configuration struct

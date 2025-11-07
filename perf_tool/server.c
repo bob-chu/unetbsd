@@ -3,6 +3,7 @@
 #include <string.h>
 #include <errno.h>
 #include <arpa/inet.h>
+#include <time.h>
 
 #include <ev.h>
 #include <u_socket.h>
@@ -22,6 +23,16 @@ static void client_conn_read_cb(void *handle, int events);
 static void client_conn_write_cb(void *handle, int events);
 static void client_conn_close_cb(void *handle, int events);
 
+// Preallocated response buffers for different paths
+static char *response_buffer_hello = NULL;
+static char *response_buffer_another = NULL;
+static char *response_buffer_default = NULL;
+static size_t response_size_hello = 0;
+static size_t response_size_another = 0;
+static size_t response_size_default = 0;
+
+#define RESPONSE_BUFFER 2048
+#define MAX_SEND_SIZE 2048
 // Structure to hold client-specific data
 typedef struct {
     struct netbsd_handle nh;
@@ -31,6 +42,12 @@ typedef struct {
     struct sockaddr_in remote_addr;
     socklen_t remote_addr_len;
     int cleaning_up; // New flag
+    char *response_buffer;      // Pointer to the response buffer to send
+    size_t response_size;       // Total size of response to send
+    size_t response_sent;       // Bytes already sent
+    char response_header[RESPONSE_BUFFER];  // Buffer for response header
+    size_t header_size;         // Size of the header
+    int header_sent;            // Flag to indicate if header is sent
 } client_data_t;
 
 typedef struct {
@@ -40,10 +57,138 @@ typedef struct {
 
 static void server_conn_cleanup(client_data_t *client_data);
 
+void init_response_buffers(perf_config_t *config) {
+    // Seed random number generator
+    srand(time(NULL));
+    
+    // Define signature sizes
+    const size_t HEADER_SIG_SIZE = 16;
+    const size_t FOOTER_SIG_SIZE = 16;
+    
+    // A simple list of words to create human-readable random text
+    const char *words[] = {
+        "hello", "world", "random", "text", "human", "readable", "response", "server", "data", "content",
+        "network", "performance", "test", "tool", "connection", "protocol", "internet", "message", "information", "system"
+    };
+    const int word_count = sizeof(words) / sizeof(words[0]);
+    
+    // Allocate and fill response buffers with human-readable random text and signatures
+    response_size_hello = config->http_config.response_size_hello;
+    if (response_size_hello > 0) {
+        // Adjust size to account for signatures (if content size is significant)
+        size_t content_size = response_size_hello;
+        size_t total_size = content_size;
+        response_buffer_hello = malloc(total_size);
+        if (response_buffer_hello) {
+            // Add header signature
+            memcpy(response_buffer_hello, "HEAD_SIG_HELLO!!", HEADER_SIG_SIZE);
+            // Fill middle with random human-readable text
+            size_t pos = HEADER_SIG_SIZE;
+            size_t content_end = total_size - FOOTER_SIG_SIZE;
+            while (pos < content_end) {
+                int word_index = rand() % word_count;
+                size_t word_len = strlen(words[word_index]);
+                if (pos + word_len + 1 <= content_end) {
+                    memcpy(response_buffer_hello + pos, words[word_index], word_len);
+                    pos += word_len;
+                    response_buffer_hello[pos++] = ' ';
+                } else {
+                    // Fill remaining space with spaces if needed
+                    while (pos < content_end) {
+                        response_buffer_hello[pos++] = ' ';
+                    }
+                    break;
+                }
+            }
+            // Add footer signature
+            memcpy(response_buffer_hello + total_size - FOOTER_SIG_SIZE, "FOOT_SIG_HELLO!!", FOOTER_SIG_SIZE);
+            response_size_hello = total_size;
+            LOG_INFO("Allocated response buffer for /hello: %zu bytes (including signatures)", total_size);
+        }
+    }
+    
+    response_size_another = config->http_config.response_size_another;
+    if (response_size_another > 0) {
+        size_t content_size = response_size_another;
+        size_t total_size = content_size + HEADER_SIG_SIZE + FOOTER_SIG_SIZE;
+        response_buffer_another = malloc(total_size);
+        if (response_buffer_another) {
+            memcpy(response_buffer_another, "HEAD_SIG_ANOTHR!", HEADER_SIG_SIZE);
+            size_t pos = HEADER_SIG_SIZE;
+            size_t content_end = total_size - FOOTER_SIG_SIZE;
+            while (pos < content_end) {
+                int word_index = rand() % word_count;
+                size_t word_len = strlen(words[word_index]);
+                if (pos + word_len + 1 <= content_end) {
+                    memcpy(response_buffer_another + pos, words[word_index], word_len);
+                    pos += word_len;
+                    response_buffer_another[pos++] = ' ';
+                } else {
+                    while (pos < content_end) {
+                        response_buffer_another[pos++] = ' ';
+                    }
+                    break;
+                }
+            }
+            memcpy(response_buffer_another + total_size - FOOTER_SIG_SIZE, "FOOT_SIG_ANOTHR!", FOOTER_SIG_SIZE);
+            response_size_another = total_size;
+            LOG_INFO("Allocated response buffer for /another: %zu bytes (including signatures)", total_size);
+        }
+    }
+    
+    response_size_default = config->http_config.response_size_default;
+    if (response_size_default > 0) {
+        size_t content_size = response_size_default;
+        size_t total_size = content_size + HEADER_SIG_SIZE + FOOTER_SIG_SIZE;
+        response_buffer_default = malloc(total_size);
+        if (response_buffer_default) {
+            memcpy(response_buffer_default, "HEAD_SIG_DEFLT!!", HEADER_SIG_SIZE);
+            size_t pos = HEADER_SIG_SIZE;
+            size_t content_end = total_size - FOOTER_SIG_SIZE;
+            while (pos < content_end) {
+                int word_index = rand() % word_count;
+                size_t word_len = strlen(words[word_index]);
+                if (pos + word_len + 1 <= content_end) {
+                    memcpy(response_buffer_default + pos, words[word_index], word_len);
+                    pos += word_len;
+                    response_buffer_default[pos++] = ' ';
+                } else {
+                    while (pos < content_end) {
+                        response_buffer_default[pos++] = ' ';
+                    }
+                    break;
+                }
+            }
+            memcpy(response_buffer_default + total_size - FOOTER_SIG_SIZE, "FOOT_SIG_DEFLT!!", FOOTER_SIG_SIZE);
+            response_size_default = total_size;
+            LOG_INFO("Allocated response buffer for default: %zu bytes (including signatures)", total_size);
+        }
+    }
+}
+
+void free_response_buffers(void) {
+    if (response_buffer_hello) {
+        free(response_buffer_hello);
+        response_buffer_hello = NULL;
+    }
+    if (response_buffer_another) {
+        free(response_buffer_another);
+        response_buffer_another = NULL;
+    }
+    if (response_buffer_default) {
+        free(response_buffer_default);
+        response_buffer_default = NULL;
+    }
+    LOG_INFO("Freed response buffers");
+}
+
 void run_server(struct ev_loop *loop, perf_config_t *config) {
     LOG_INFO("Starting server setup...");
 
     scheduler_init(loop, config);
+    
+    // Initialize response buffers
+    init_response_buffers(config);
 
     // Calculate the number of ports in the range
     int port_count = config->network.dst_port_end - config->network.dst_port_start + 1;
@@ -201,11 +346,15 @@ static void client_conn_read_cb(void *handle, int events)
     client_data_t *client_data = (client_data_t *)nh->data;
     perf_config_t *config = client_data->config;
 
+    if (client_data->cleaning_up) {
+        return; // Connection is being cleaned up
+    }
+
     struct iovec iov;
     iov.iov_base = client_data->recv_buffer;
     iov.iov_len = client_data->recv_buffer_size;
 
-    int bytes_read;
+    ssize_t bytes_read = 0;
     if (nh->proto == PROTO_TCP) {
         bytes_read = netbsd_read(nh, &iov, 1);
     } else { // UDP
@@ -233,55 +382,51 @@ static void client_conn_read_cb(void *handle, int events)
 
         LOG_INFO("phr parse ret: %d", pret);
         if (pret > 0) { // successful parse
-            const char *response_body_1 = "<html><body><h1>Hello, World!</h1></body></html>";
-            const char *response_body_2 = "<html><body><h1>Another page</h1></body></html>";
-            const char *response_404 = "<html><body><h1>404 Not Found</h1></body></html>";
-
-            char response_header[256];
-            int content_length;
-            const char *response_body;
             int status_code = 200;
+            client_data->response_sent = 0;
+            client_data->header_sent = 0;
 
-            if (strncmp(path, "/hello", path_len) == 0) {
-                response_body = response_body_1;
-                content_length = strlen(response_body_1);
-            } else if (strncmp(path, "/another", path_len) == 0) {
-                response_body = response_body_2;
-                content_length = strlen(response_body_2);
+            if (strncmp(path, "/hello", path_len) == 0 && response_buffer_hello) {
+                client_data->response_buffer = response_buffer_hello;
+                client_data->response_size = response_size_hello;
+            } else if (strncmp(path, "/another", path_len) == 0 && response_buffer_another) {
+                client_data->response_buffer = response_buffer_another;
+                client_data->response_size = response_size_another;
             } else {
-                response_body = response_404;
-                content_length = strlen(response_404);
+                client_data->response_buffer = response_buffer_default;
+                client_data->response_size = response_size_default;
                 status_code = 404;
             }
 
-            int header_len = snprintf(response_header, sizeof(response_header),
-                "HTTP/1.1 %d OK\r\n"
-                "Content-Type: text/html\r\n"
-                "Content-Length: %d\r\n"
-                "\r\n",
-                status_code, content_length);
-
-            struct iovec response_iov[2];
-            response_iov[0].iov_base = response_header;
-            response_iov[0].iov_len = header_len;
-            response_iov[1].iov_base = (void *)response_body;
-            response_iov[1].iov_len = content_length;
-
-            ssize_t bytes_written = netbsd_write(nh, response_iov, 2);
-
-            if (bytes_written > 0) {
-                LOG_INFO("Sent %zd bytes in response.", bytes_written);
-                scheduler_inc_stat(STAT_BYTES_SENT, bytes_written);
-                metrics_inc_success();
-                // return, wait for client side close it
-                return;
-            } else if (bytes_written < 0) {
-                if (bytes_written != -EPIPE) {
-                    LOG_ERROR("Failed to write response: %s", strerror(errno));
-                    metrics_inc_failure();
-                }
+            // If no response buffer is set, use a small default message
+            if (!client_data->response_buffer) {
+                static char default_msg[] = "<html><body><h1>404 Not Found</h1></body></html>";
+                client_data->response_buffer = default_msg;
+                client_data->response_size = strlen(default_msg);
+                status_code = 404;
             }
-            server_conn_cleanup(client_data);
+
+            // Set Content-Length as per the configuration, excluding signatures
+            size_t content_length = 0;
+            if (strncmp(path, "/hello", path_len) == 0) {
+                content_length = config->http_config.response_size_hello;
+            } else if (strncmp(path, "/another", path_len) == 0) {
+                content_length = config->http_config.response_size_another;
+            } else {
+                content_length = config->http_config.response_size_default;
+            }
+
+            client_data->header_size = snprintf(client_data->response_header, sizeof(client_data->response_header),
+                "HTTP/1.1 %d %s\r\n"
+                "Content-Type: text/plain\r\n"
+                "Content-Length: %zu\r\n"
+                "\r\n",
+                status_code, status_code == 200 ? "OK" : "Not Found", content_length);
+
+            // Trigger the write callback to start sending the response
+            metrics_inc_success();
+            client_conn_write_cb(handle, events);
+            return;
         } else if (pret == -1) { // parse error
             LOG_ERROR("HTTP parse error");
             metrics_inc_failure();
@@ -291,24 +436,103 @@ static void client_conn_read_cb(void *handle, int events)
             // For this tool, we assume full request in one read and close
             server_conn_cleanup(client_data);
         }
-
     } else if (bytes_read == 0) {
         LOG_INFO("Client closed connection.");
         server_conn_cleanup(client_data); // Call cleanup
     } else {
-        //LOG_ERROR("Failed to read from socket: %s", strerror(errno));
-        if (bytes_read != -EPIPE) {
-            /* closed by other side */
-            metrics_inc_failure();
+        if (bytes_read == -EAGAIN || bytes_read == -EWOULDBLOCK) {
+            LOG_DEBUG("EAGAIN/EWOULDBLOCK during read, will retry.");
+        } else {
+            if (bytes_read != -EPIPE) {
+                LOG_ERROR("Failed to read from socket: %s (errno: %d)", strerror(errno), errno);
+                metrics_inc_failure();
+            }
+            server_conn_cleanup(client_data); // Call cleanup
         }
-        server_conn_cleanup(client_data); // Call cleanup
     }
 }
 
 static void client_conn_write_cb(void *handle, int events) {
-    // Not strictly needed for a simple echo server, but good to have for completeness
-    // In a more complex scenario, this would handle pending writes.
+    struct netbsd_handle *nh = (struct netbsd_handle *)handle;
+    client_data_t *client_data = (client_data_t *)nh->data;
+    
+    if (client_data->cleaning_up) {
+        return;
+    }
+
     LOG_DEBUG("Client write callback triggered.");
+
+    // First send the header if not sent
+    if (!client_data->header_sent) {
+        struct iovec header_iov;
+        header_iov.iov_base = client_data->response_header + client_data->response_sent;
+        header_iov.iov_len = client_data->header_size - client_data->response_sent;
+
+        ssize_t bytes_written = netbsd_write(nh, &header_iov, 1);
+        if (bytes_written > 0) {
+            client_data->response_sent += bytes_written;
+            scheduler_inc_stat(STAT_BYTES_SENT, bytes_written);
+            LOG_INFO("Server: Sent %zd bytes of header (total %zu/%zu)", bytes_written, client_data->response_sent, client_data->header_size);
+
+            if (client_data->response_sent >= client_data->header_size) {
+                client_data->header_sent = 1;
+                client_data->response_sent = 0; // Reset for body
+                LOG_INFO("Server: Header fully sent");
+            }
+        } else if (bytes_written < 0) {
+            if (bytes_written == -EAGAIN || bytes_written == -EWOULDBLOCK) {
+                LOG_DEBUG("EAGAIN/EWOULDBLOCK during header write, will retry.");
+            } else {
+                if (bytes_written != -EPIPE) {
+                    LOG_ERROR("Failed to write header: %s (errno: %d)", strerror(errno), errno);
+                    metrics_inc_failure();
+                }
+                server_conn_cleanup(client_data);
+            }
+        }
+        return;
+    }
+
+    // Header is sent, now send the body
+    if (client_data->response_sent < client_data->response_size) {
+        struct iovec body_iov;
+        body_iov.iov_base = client_data->response_buffer + client_data->response_sent;
+        size_t remaining = client_data->response_size - client_data->response_sent;
+        body_iov.iov_len = (remaining > MAX_SEND_SIZE) ? MAX_SEND_SIZE : remaining;
+
+        ssize_t bytes_written = netbsd_write(nh, &body_iov, 1);
+        if (bytes_written > 0) {
+            client_data->response_sent += bytes_written;
+            scheduler_inc_stat(STAT_BYTES_SENT, bytes_written);
+            // Adjust logged total size to match Content-Length (excluding signatures)
+            size_t content_length = 0;
+            if (client_data->response_buffer == response_buffer_hello) {
+                content_length = client_data->config->http_config.response_size_hello;
+            } else if (client_data->response_buffer == response_buffer_another) {
+                content_length = client_data->config->http_config.response_size_another;
+            } else {
+                content_length = client_data->config->http_config.response_size_default;
+            }
+            size_t adjusted_sent = client_data->response_sent > 16 ? client_data->response_sent - 16 : 0; // Subtract header signature
+            if (adjusted_sent > content_length) adjusted_sent = content_length;
+            LOG_INFO("Server: Sent %zd bytes of body (total %zu/%zu)", bytes_written, adjusted_sent, content_length);
+
+            if (client_data->response_sent >= client_data->response_size) {
+                LOG_INFO("Server: Response fully sent");
+                // Response fully sent, wait for client to close or send another request
+            }
+        } else if (bytes_written < 0) {
+            if (bytes_written == -EAGAIN || bytes_written == -EWOULDBLOCK) {
+                LOG_DEBUG("EAGAIN/EWOULDBLOCK during body write, will retry.");
+            } else {
+                if (bytes_written != -EPIPE) {
+                    LOG_ERROR("Failed to write response body: %s (errno: %d)", strerror(errno), errno);
+                    metrics_inc_failure();
+                }
+                server_conn_cleanup(client_data);
+            }
+        }
+    }
 }
 
 static void client_conn_close_cb(void *handle, int events) {

@@ -276,6 +276,7 @@ static int so_read(struct netbsd_handle *nh, struct iovec *iov, int iovcnt,
 
     error = soreceive(so, from ? &addr_mbuf : NULL, &uio, NULL, NULL, &flags);
     if (error) {
+        //printf("soreceiver return %d\n", error);
         return -error; /* return error, like -EAGAIN */
     }
     if (so->so_state & SS_CANTRCVMORE) {
@@ -339,8 +340,8 @@ static ssize_t so_send(struct netbsd_handle *nh, const struct iovec *iov,
     error = sosend(so, to ? (struct sockaddr *)to : NULL, &uio, NULL, NULL, flags,
             curlwp);
     if (error) {
-        if (error != EWOULDBLOCK) {
-            return -error;
+        if (error == EWOULDBLOCK) {
+            return 0;
         }
         return -error;
     }
