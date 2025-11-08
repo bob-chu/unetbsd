@@ -24,6 +24,7 @@
 #define MBUF_CACHE_SIZE 256
 #define BURST_SIZE 32
 #define PORT_QUEUE_SZ 1
+#define JUMBO_FRAME_MAX_SIZE 9600 // Support for jumbo frames up to 9600 bytes
 
 static struct virt_interface *v_if;
 // Define symmetric RSS key - exactly 40 bytes for MLX5
@@ -84,7 +85,9 @@ port_init(uint16_t port, struct rte_mempool *mbuf_pool)
 
     struct rte_eth_conf port_conf = {
         .rxmode = {
-            .mq_mode = RTE_ETH_MQ_RX_RSS
+            .mq_mode = RTE_ETH_MQ_RX_RSS,
+            .max_lro_pkt_size = JUMBO_FRAME_MAX_SIZE, // Enable jumbo frames
+            .mtu = JUMBO_FRAME_MAX_SIZE - RTE_ETHER_HDR_LEN - RTE_ETHER_CRC_LEN, // Set MTU for jumbo frames
         },
         .rx_adv_conf = {
             .rss_conf = {
@@ -492,7 +495,7 @@ int dpdk_init(int argc, char **argv)
     mbuf_pool =  (proc_type == RTE_PROC_SECONDARY) ?
         rte_mempool_lookup(_MBUF_POOL) :
         rte_pktmbuf_pool_create("MBUF_POOL", num_mbufs * nb_ports,
-            MBUF_CACHE_SIZE, 0, RTE_MBUF_DEFAULT_BUF_SIZE, rte_socket_id());
+            MBUF_CACHE_SIZE, 0, JUMBO_FRAME_MAX_SIZE + RTE_PKTMBUF_HEADROOM, rte_socket_id());
     /* >8 End of allocating mempool to hold mbuf. */
 
     if (mbuf_pool == NULL)

@@ -48,7 +48,20 @@ out:
 int
 ifioctl_virt(struct ifnet *ifp, u_long cmd, void *data)
 {
-    return 0;
+    // Handle MTU-related ioctls to support jumbo frames
+    switch (cmd) {
+        case SIOCSIFMTU:
+            ifp->if_mtu = *(int *)data;
+            if (ifp->if_mtu > 9000) {
+                ifp->if_mtu = 9000; // Cap at 9000 for jumbo frame support
+            }
+            return 0;
+        case SIOCGIFMTU:
+            *(int *)data = ifp->if_mtu;
+            return 0;
+        default:
+            return 0;
+    }
 }
 
 struct virt_interface *virt_if_create(const char *name)
@@ -69,7 +82,7 @@ struct virt_interface *virt_if_create(const char *name)
     strlcpy(ifp->if_xname, "virt0", IFNAMSIZ);
     ifp->if_softc = gl_vif;
     ifp->if_mtu = ETHERMTU;
-    ifp->if_flags = IFF_MULTICAST |IFF_UP | IFF_RUNNING ;
+    ifp->if_flags = IFF_MULTICAST | IFF_UP | IFF_RUNNING;
     ifp->if_init = virt_if_init;
     ifp->if_start = virt_if_start;
     ifp->if_type = IFT_ETHER;
@@ -100,6 +113,7 @@ virt_if_attach(struct virt_interface *vif, const uint8_t *ether_addr)
     }
     */
     ether_ifattach(gl_vif->ifp, ether_addr);
+    //gl_vif->ifp->if_mtu = 7000; // Support jumbo frames up to 9000 bytes
     return 0;
 }
 

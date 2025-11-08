@@ -61,6 +61,7 @@ int main(int argc, char *argv[]) {
 
     char vdev_str[128];
     snprintf(vdev_str, sizeof(vdev_str), "eth_af_packet0,iface=%s,blocksz=4096,framesz=2048,framecnt=512,qpairs=1", if_name);
+    //snprintf(vdev_str, sizeof(vdev_str), "eth_af_packet0,iface=%s,blocksz=4194304,framesz=8192,framecnt=512,qpairs=1", if_name);
 
     char file_prefix_str[128];
     snprintf(file_prefix_str, sizeof(file_prefix_str), "--file-prefix=%s", file_prefix);

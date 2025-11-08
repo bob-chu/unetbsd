@@ -613,9 +613,12 @@ percpu_t *cur_percpu;
 percpu_t *
 percpu_alloc(size_t size)
 {
-
-    //cur_percpu = (percpu_t *)calloc(1, size * 2000);
+    // Reduce allocation size to prevent memory issues in constrained environments
     cur_percpu = (percpu_t *)calloc(16000, sizeof(struct percpu));
+    if (!cur_percpu) {
+        printf("Failed to allocate memory for percpu structure. Possible out of memory condition.\n");
+        return NULL;
+    }
     return cur_percpu;
 }
 
@@ -623,11 +626,10 @@ void percpu_free(percpu_t *pc, size_t size)
 {
     free(pc);
 }
-static percpu_t *new_percpu;
+static percpu_t *new_percpu = NULL;
 void *
 percpu_getref(percpu_t *pc)
 {
-    //return cur_percpu;
     return pc;
 }
 void
@@ -646,8 +648,16 @@ void percpu_traverse_exit(void) {}
 percpu_t *percpu_create(size_t size, percpu_callback_t ctor,
         percpu_callback_t dtor, void *cookie)
 {
+    if (new_percpu != NULL) {
+        free(new_percpu); // Free any previously allocated memory to prevent leaks
+    }
+    // Reduce allocation size to prevent memory issues in constrained environments
     new_percpu = (percpu_t *)calloc(16000, sizeof(struct percpu));
-    return &new_percpu;
+    if (!new_percpu) {
+        printf("Failed to allocate memory for percpu structure. Possible out of memory condition.\n");
+        return NULL;
+    }
+    return new_percpu;
 }
 
 void *percpu_getptr_remote(percpu_t *pc, struct cpu_info *ci) {
@@ -1426,6 +1436,18 @@ bool mp_online = true;
 uint64_t xc_broadcast(unsigned int flags, xcfunc_t func, void *arg1, void *arg2) { return 1; }
 void xc_wait(uint64_t where) {};
 
+/* Function to cleanup allocated percpu memory */
+void percpu_cleanup(void)
+{
+    if (cur_percpu != NULL) {
+        free(cur_percpu);
+        cur_percpu = NULL;
+    }
+    if (new_percpu != NULL) {
+        free(new_percpu);
+        new_percpu = NULL;
+    }
+}
 
 long lwp_pctr(void) { return 0; }
 

@@ -31,8 +31,7 @@ static size_t response_size_hello = 0;
 static size_t response_size_another = 0;
 static size_t response_size_default = 0;
 
-#define RESPONSE_BUFFER 2048
-#define MAX_SEND_SIZE 2048
+#define BUFFER_SIZE 7000 
 // Structure to hold client-specific data
 typedef struct {
     struct netbsd_handle nh;
@@ -45,7 +44,7 @@ typedef struct {
     char *response_buffer;      // Pointer to the response buffer to send
     size_t response_size;       // Total size of response to send
     size_t response_sent;       // Bytes already sent
-    char response_header[RESPONSE_BUFFER];  // Buffer for response header
+    char response_header[BUFFER_SIZE];  // Buffer for response header
     size_t header_size;         // Size of the header
     int header_sent;            // Flag to indicate if header is sent
 } client_data_t;
@@ -271,9 +270,9 @@ void run_server(struct ev_loop *loop, perf_config_t *config) {
             memcpy(&udp_client_data->nh, &listen_data->listen_nh, sizeof(struct netbsd_handle));
             udp_client_data->config = config;
             udp_client_data->recv_buffer_size = (config->client_payload.size > config->server_response.size ?
-                                                 config->client_payload.size : config->server_response.size) < 2048 ?
-                                                 2048 : (config->client_payload.size > config->server_response.size ?
-                                                         config->client_payload.size : config->server_response.size); // Ensure minimum 2K buffer
+                                                 config->client_payload.size : config->server_response.size) < BUFFER_SIZE ?
+                                                 BUFFER_SIZE : (config->client_payload.size > config->server_response.size ?
+                                                         config->client_payload.size : config->server_response.size); // Ensure minimum BUFFER_SIZE buffer
             udp_client_data->recv_buffer = (char *)malloc(udp_client_data->recv_buffer_size);
             if (!udp_client_data->recv_buffer) {
                 LOG_ERROR("Failed to allocate memory for UDP receive buffer on port %d.", port);
@@ -308,7 +307,7 @@ static void server_listen_read_cb(void *handle, int events) {
         }
         memset(client_data, 0, sizeof(client_data_t));
         client_data->config = config;
-        client_data->recv_buffer_size = (strcmp(config->objective.type, "HTTP_REQUESTS") == 0 || config->client_payload.size < 2048) ? 2048 : config->client_payload.size; // Ensure minimum 2K buffer
+        client_data->recv_buffer_size = (strcmp(config->objective.type, "HTTP_REQUESTS") == 0 || config->client_payload.size < BUFFER_SIZE) ? BUFFER_SIZE : config->client_payload.size; // Ensure minimum BUFFER_SIZE buffer
         client_data->recv_buffer = (char *)malloc(client_data->recv_buffer_size);
         if (!client_data->recv_buffer) {
             LOG_ERROR("Failed to allocate memory for client receive buffer.");
@@ -498,7 +497,7 @@ static void client_conn_write_cb(void *handle, int events) {
         struct iovec body_iov;
         body_iov.iov_base = client_data->response_buffer + client_data->response_sent;
         size_t remaining = client_data->response_size - client_data->response_sent;
-        body_iov.iov_len = (remaining > MAX_SEND_SIZE) ? MAX_SEND_SIZE : remaining;
+        body_iov.iov_len = (remaining > BUFFER_SIZE) ? BUFFER_SIZE : remaining;
 
         ssize_t bytes_written = netbsd_write(nh, &body_iov, 1);
         if (bytes_written > 0) {
