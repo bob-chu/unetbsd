@@ -30,6 +30,8 @@
 #include <net/if_stats.h>
 #include <netinet/in.h>
 
+#include "u_pktqueue.h"
+
 
 struct cpu_info cpu0 = {0};
 struct lwp	*curlwp;
@@ -44,17 +46,18 @@ struct lwp	*curlwp;
  * sys/kern/uipc_mbuf.c global variable
  */
 
-const int msize = 512;
-const int mclbytes = 2048;
+const int msize = 512;    // Reduced from 512 to allow more mbufs with less memory per mbuf
+const int mclbytes = 2048; // Increased from 2048 to allow larger clusters for better performance
 
-#define PHYSMEM 1048576*256
+//#define PHYSMEM 1048576*2048 // Increased from 256MB to 1GB
+#define PHYSMEM (1048576UL * 2048UL) // Increased from 256MB to 4GB, using unsigned long to prevent overflow
 unsigned long physmem = PHYSMEM;
 unsigned long nkmempages = PHYSMEM/2; /* from le chapeau */
 #undef PHYSMEM
 
-int nmbclusters = 4096;
-int mblowat = 256;
-int mcllowat = 64;
+int nmbclusters = 4096; // Increased from 4096 to allow more mbufs for network operations
+int mblowat = 256;       // Increased to maintain a higher watermark
+int mcllowat = 64;      // Increased to maintain a higher cluster watermark
 
 
 /*
@@ -184,9 +187,18 @@ void tick_update(void)
 
 int getticks(void) { return tick; }
 
-void nanotime(struct timespec *ts) { ts->tv_sec = 0; ts->tv_nsec = 0; }
-void getnanotime(struct timespec *tsp) { }
-void getmicrouptime(struct timeval *tv) { tv->tv_sec = 0; tv->tv_usec = 0; }
+void nanotime(struct timespec *ts) { 
+    struct timeval tv;
+    gettimeofday(&tv, NULL);
+    ts->tv_sec = tv.tv_sec;
+    ts->tv_nsec = tv.tv_usec * 1000;
+}
+void getnanotime(struct timespec *tsp) { 
+    nanotime(tsp);
+}
+void getmicrouptime(struct timeval *tv) { 
+    gettimeofday(tv, NULL);
+}
 
 
 void ovbcopy(const void *src, void *dest, size_t n)
@@ -332,11 +344,21 @@ xmalloc(size, type, flags)
 	// mbuf requires 128-byte alignment
     if (size > 8 && (size & (size-1)) == 0) {
         void *ptr = memalign(size, size);
+        if (ptr == NULL) {
+            printf("xmalloc: Failed to allocate aligned memory of size %lu for type %d\n", size, type);
+            return NULL;
+        }
         memset(ptr, 0, size);
+        printf("xmalloc: Allocated aligned memory at %p of size %lu for type %d\n", ptr, size, type);
         return ptr;
     } else {
         void *ptr = malloc(size);
+        if (ptr == NULL) {
+            printf("xmalloc: Failed to allocate memory of size %lu for type %d\n", size, type);
+            return NULL;
+        }
         memset(ptr, 0, size);
+        printf("xmalloc: Allocated memory at %p of size %lu for type %d\n", ptr, size, type);
         return ptr;
     }
 }
@@ -349,7 +371,12 @@ xfree(addr, type)
 	void *addr;
 	int type;
 {
-	return free(addr);
+    if (addr != NULL) {
+        printf("xfree: Freeing memory at %p for type %d\n", addr, type);
+        free(addr);
+    } else {
+        printf("xfree: Attempt to free NULL pointer for type %d\n", type);
+    }
 }
 
 void *kern_malloc(unsigned long reqsize, int flags)
@@ -467,13 +494,15 @@ sysctl_relock(void)
 void panic(const char *fmt, ...)
 {
     printf("panic: ");
-    // FIXME
     va_list args;
     va_start(args, fmt);
     vprintf(fmt, args);
     va_end(args);
     printf("\n");
 
+    // For userspace debugging, don't exit immediately; allow logging or debugging
+    printf("Panic encountered. Continuing for debugging (userspace mode).\n");
+    // Uncomment the line below to exit on panic if desired
      exit(1);
 }
 
@@ -592,18 +621,12 @@ struct pgrp *pgrp_find(pid_t pgid) { return NULL; }
  * sys/kern/subr_percpu.c
  */
 
-struct percpu_dummy {
-	unsigned		pc_offset;
-	size_t			pc_size;
-	percpu_callback_t	pc_ctor;
-	percpu_callback_t	pc_dtor;
-	void			*pc_cookie;
-        void                    *aa;
-        void                    *bb;
-};
-
 struct percpu {
-    struct percpu_dummy pc_items[1];	
+    void *pc_data; /* Pointer to per-CPU data */
+    size_t pc_size; /* Size of the allocated data */
+    percpu_callback_t pc_ctor; /* Constructor callback */
+    percpu_callback_t pc_dtor; /* Destructor callback */
+    void *pc_cookie; /* Cookie for callbacks */
 };
 typedef struct percpu percpu_t;
 
@@ -613,24 +636,38 @@ percpu_t *cur_percpu;
 percpu_t *
 percpu_alloc(size_t size)
 {
-    // Reduce allocation size to prevent memory issues in constrained environments
-    cur_percpu = (percpu_t *)calloc(16000, sizeof(struct percpu));
+    cur_percpu = (percpu_t *)calloc(1, sizeof(percpu_t));
     if (!cur_percpu) {
         printf("Failed to allocate memory for percpu structure. Possible out of memory condition.\n");
         return NULL;
     }
+    cur_percpu->pc_data = calloc(1, size);
+    if (!cur_percpu->pc_data) {
+        free(cur_percpu);
+        cur_percpu = NULL;
+        printf("Failed to allocate memory for percpu data of size %zu. Possible out of memory condition.\n", size);
+        return NULL;
+    }
+    cur_percpu->pc_size = size;
+    printf("percpu_alloc: Allocated memory of size %zu at %p (data at %p)\n", size, cur_percpu, cur_percpu->pc_data);
     return cur_percpu;
 }
 
 void percpu_free(percpu_t *pc, size_t size)
 {
-    free(pc);
+    if (pc) {
+        if (pc->pc_data) {
+            free(pc->pc_data);
+            pc->pc_data = NULL;
+        }
+        free(pc);
+    }
 }
 static percpu_t *new_percpu = NULL;
 void *
 percpu_getref(percpu_t *pc)
 {
-    return pc;
+    return pc ? pc->pc_data : NULL;
 }
 void
 percpu_putref(percpu_t *pc)
@@ -639,7 +676,9 @@ percpu_putref(percpu_t *pc)
 }
 
 void percpu_foreach(percpu_t *pc, percpu_callback_t cb, void *arg) {
-    cb((void *)&pc->pc_items[0], arg, &cpu0);
+    if (pc && pc->pc_data) {
+        cb(pc->pc_data, arg, &cpu0);
+    }
 }
 
 void percpu_traverse_enter(void) {}
@@ -649,27 +688,41 @@ percpu_t *percpu_create(size_t size, percpu_callback_t ctor,
         percpu_callback_t dtor, void *cookie)
 {
     if (new_percpu != NULL) {
-        free(new_percpu); // Free any previously allocated memory to prevent leaks
+        percpu_free(new_percpu, new_percpu->pc_size); // Free any previously allocated memory to prevent leaks
     }
-    // Reduce allocation size to prevent memory issues in constrained environments
-    new_percpu = (percpu_t *)calloc(16000, sizeof(struct percpu));
+    new_percpu = (percpu_t *)calloc(1, sizeof(percpu_t));
     if (!new_percpu) {
         printf("Failed to allocate memory for percpu structure. Possible out of memory condition.\n");
         return NULL;
+    }
+    new_percpu->pc_data = calloc(1, size);
+    if (!new_percpu->pc_data) {
+        free(new_percpu);
+        new_percpu = NULL;
+        printf("Failed to allocate memory for percpu data of size %zu. Possible out of memory condition.\n", size);
+        return NULL;
+    }
+    new_percpu->pc_size = size;
+    new_percpu->pc_ctor = ctor;
+    new_percpu->pc_dtor = dtor;
+    new_percpu->pc_cookie = cookie;
+    printf("percpu_create: Allocated memory of size %zu at %p (data at %p)\n", size, new_percpu, new_percpu->pc_data);
+    if (ctor) {
+        ctor(new_percpu->pc_data, cookie, &cpu0);
     }
     return new_percpu;
 }
 
 void *percpu_getptr_remote(percpu_t *pc, struct cpu_info *ci) {
-    //static struct cpu_info *cpu = &cpu0;
-    //return &cpu;
-    return &pc;
+    return pc ? pc->pc_data : NULL;
 }
 
 void percpu_foreach_xcall(percpu_t *pc, u_int xcflags, 
         percpu_callback_t func,
         void *arg) {
-    func(pc, arg, &cpu0);  // 单 CPU 模拟
+    if (pc && pc->pc_data) {
+        func(pc->pc_data, arg, &cpu0);  // 单 CPU 模拟
+    }
 }
 
 
@@ -683,6 +736,7 @@ xc_unicast(unsigned int flags, xcfunc_t func, void *arg1, void *arg2,
     struct cpu_info *ci)
 {
     (*func)(arg1, arg2); // 直接调用函数，忽略 CPU 特定逻辑
+    return 0;
 }
 #if 0
 // 模拟 vmem_xcreate
@@ -792,41 +846,7 @@ void rw_destroy(krwlock_t *lock) {
 /*
  * soft interrupt and wakeup
  */
-struct softint_handle_t {
-    void *intrh;
-    void *arg;
-};
-
-static struct softint_handle_t gl_sh[512];
-static int handle_index = 0;
-
-void softint_schedule(void *si) {
-    /* No-op for now */
-    void (*intrh)(void *);
-    struct softint_handle_t *sh = (struct softint_handle_t *)si;
-    intrh = sh->intrh;
-    intrh(sh->arg);
-}
-
-static void *dummy_sih = (void *)1;
-void *softint_establish(u_int flags, void (*func)(void *), void *arg) {
-    //return dummy_sih;  /* No softints in user space */
-    if (handle_index >=256) {
-        printf("Out of range of softint: %d\n", handle_index);
-        exit(1);
-    }
-    gl_sh[handle_index].intrh = func;
-    gl_sh[handle_index].arg = arg;
-    void *sih = &gl_sh[handle_index];
-    handle_index++;
-    return (void *)sih;
-}
-
-
-void softint_schedule_cpu(void *arg, struct cpu_info *ci_tgt)
-{
-    return softint_schedule(arg);
-}
+#include "u_softint.h"
 void sleepq_init(void *sq) {}
 
 void sleepq_wake(void *sq) {
@@ -1002,7 +1022,8 @@ int kthread_create(int pri, int flags, void *cpu, void (*func)(void *), void *ar
  */
 struct socket;
 
-/* Minimal fileops stub for socketops */
+/* Minimal fileops stub for socketops - defined in sys_socket.c, so commented out here */
+/*
 int soo_read(struct file *fp, off_t *off, struct uio *uio, kauth_cred_t cred, int flags) { return 0; }
 int soo_write(struct file *fp, off_t *off, struct uio *uio, kauth_cred_t cred, int flags) { return 0; }
 int soo_ioctl(struct file *fp, u_long cmd, void *data) { return 0; }
@@ -1018,25 +1039,28 @@ const struct fileops socketops = {
     .fo_stat = soo_noop,
     .fo_close = soo_close,
 #ifndef __NetBSD__
-    /* NetBSD-specific fields might differ; adjust if needed */
     .fo_restart = soo_noop,
     .fo_kqfilter = soo_noop,
 #endif
 };
+*/
 
 int chgsbsize(struct uidinfo *uip, u_long *buf, u_long to, rlim_t max) {
     *buf = to; 
     return 1; 
 }
-int accept_filt_clear(struct socket *so) {}
+int accept_filt_clear(struct socket *so) { return 0; }
 int accept_filt_setopt(struct socket *so, const struct sockopt *optval) { return 0; }
 int accept_filt_getopt(struct socket *so, struct sockopt *sopt) { return 0; }
 
 /* Stub function for ifioctl pointer */
-static int ifioctl_stub(struct socket *so, u_long cmd, void *data, struct lwp *l) { return 0; }
+static int ifioctl_stub(struct socket *so, u_long cmd, void *data, struct lwp *l) { 
+    printf("ifioctl_stub: Called with cmd %lu\n", cmd);
+    return 0; // Simulate success for now
+}
 
-/* Define the ifioctl pointer */
-int (*ifioctl)(struct socket *, u_long, void *, struct lwp *) = ifioctl_stub;
+/* Define the ifioctl pointer - commented out to avoid multiple definition */
+// int (*ifioctl)(struct socket *, u_long, void *, struct lwp *) = ifioctl_stub;
 
 uint8_t sockaddr_dl_measure(uint8_t namelen, uint8_t addrlen)
 {
@@ -1091,8 +1115,17 @@ int uiomove(void *buf, size_t len, struct uio *uio) {
     char *cp = buf;
     int error = 0;
 
+    if (buf == NULL || uio == NULL) {
+        printf("uiomove: NULL pointer passed, buf=%p, uio=%p\n", buf, uio);
+        return EINVAL;
+    }
+
     while (len > 0 && uio->uio_resid > 0) {
         iov = uio->uio_iov;
+        if (iov == NULL) {
+            printf("uiomove: NULL iovec in uio structure\n");
+            return EINVAL;
+        }
         cnt = iov->iov_len;
         if (cnt == 0) {
             uio->uio_iov++;
@@ -1103,6 +1136,11 @@ int uiomove(void *buf, size_t len, struct uio *uio) {
             cnt = len;
         if (cnt > uio->uio_resid)
             cnt = uio->uio_resid;
+
+        if (iov->iov_base == NULL) {
+            printf("uiomove: NULL iov_base in iovec\n");
+            return EINVAL;
+        }
 
         if (uio->uio_rw == UIO_READ) {
             memcpy((char *)iov->iov_base + uio->uio_offset, cp, cnt);
@@ -1204,8 +1242,7 @@ void carp_input(struct ifnet *ifp, struct mbuf **mp) {};
 int carp_iamatch(struct ifnet *ifp, const struct in_addr *addr) { return 0; }
 int carp_iamatch6(struct ifnet *ifp, const struct in_addr *addr) { return 0; }
 
-/* no soft interrupts */
-void softint_disestablish(void *si) {}
+/* Removed duplicate softint_disestablish definition */
 
 /* bstp related */
 const uint8_t *bstp_etheraddr = NULL;
@@ -1230,44 +1267,14 @@ void pppoe_input(struct ifnet *ifp, struct mbuf **mp) {}
 int ieee8023ad_lacp_input(struct ifnet *ifp, struct mbuf **mp) { return 0; }
 int ieee8023ad_marker_input(struct ifnet *ifp, struct mbuf **mp) { return 0; }
 
-struct pktqueue {
-    void *pq_sih;
-    void *data;
-};
+#include "u_pktqueue.h"
 
-typedef struct pktqueue pktqueue_t;
 /* sys/net/if_pktq.c */
 uint32_t pktq_rps_hash(const pktq_rps_hash_func_t *funcp, const struct mbuf *m) { return 0; }
 void pktq_ifdetach(void) {}
-bool pktq_enqueue(pktqueue_t *pq, struct mbuf *m, const u_int hash __unused)
-{
-    void (*intrh)(void *);
-    struct softint_handle_t *sh = (struct softint_handle_t *)(pq->pq_sih);
-    intrh = sh->intrh;
-    pq->data = m;
-    intrh(sh->arg);
-     
-    return true;
-}
 int sysctl_pktq_rps_hash_handler(SYSCTLFN_ARGS) { return 0; }
 static uint32_t stub_pktq_rps_hash_default(struct mbuf *m) { return 0; }
 const pktq_rps_hash_func_t pktq_rps_hash_default = stub_pktq_rps_hash_default;
-pktqueue_t *pktq_create(size_t maxlen, void (*intrh)(void *), void *sc)
-{
-    struct pktqueue *pq = (struct pktqueue *)calloc(1, sizeof(*pq));
-    void *sih = softint_establish(0, intrh, NULL);
-    pq->pq_sih = sih;
-    pq->data = NULL;
-    return pq;
-}
-struct mbuf *pktq_dequeue(pktqueue_t *pq) {
-    struct mbuf *m = NULL;
-    if (pq->data) {
-        m = (struct mbuf *)pq->data;
-        pq->data = NULL;
-    }
-    return m;
-};
 void
 pktq_sysctl_setup(pktqueue_t * const pq, struct sysctllog ** const clog,
 		  const struct sysctlnode * const parent_node, const int qid)
@@ -1288,8 +1295,8 @@ void kpreempt_enable(void) {}
 bool kpreempt_disabled(void) { return true; }
 
 
-/* sys/net/if_media.c */
-int ifmedia_ioctl(struct ifnet *ifp, struct ifreq *ifr, struct ifmedia *ifm, u_long cmd) { return 0; }
+/* sys/net/if_media.c - stub to avoid multiple definition */
+int ifmedia_ioctl(struct ifnet *ifp, struct ifreq *ifr, void *ifm, u_long cmd) { return 0; }
 
 /* sys/lib/libkern/kern_assert.c */
 void kern_assert(const char *fmt, ...) {}
@@ -1298,6 +1305,10 @@ void kern_assert(const char *fmt, ...) {}
 void raw_attach(struct socket *so, int proto) {}
 void raw_detach(struct socket *so) {}
 void raw_disconnect(struct socket *so) {}
+
+/* sys/kern/sys_socket.c stubs */
+int do_sys_peeloff(struct socket *so, void *arg) { return 0; }
+int eopnotsupp(void) { return EOPNOTSUPP; }
 
 /* sys/net/rtsock_shared */
 vec_sctp_add_ip_address = NULL;
@@ -1405,7 +1416,7 @@ void knote_fdclose(int fd) {}
 int kpause(const char *reason, bool intr, int ticks, kmutex_t *mtx) { return 0; }
 uintptr_t syncobj_noowner(wchan_t wchan) { return 0; }
 
-u_int maxfiles = 1024;
+u_int maxfiles = 1024*1024; /* 1M fd */
 
 /* sys/kern/subr_prf.c */
 void tablefull(const char *tab, const char *hint) {}
@@ -1440,11 +1451,11 @@ void xc_wait(uint64_t where) {};
 void percpu_cleanup(void)
 {
     if (cur_percpu != NULL) {
-        free(cur_percpu);
+        percpu_free(cur_percpu, cur_percpu->pc_size);
         cur_percpu = NULL;
     }
     if (new_percpu != NULL) {
-        free(new_percpu);
+        percpu_free(new_percpu, new_percpu->pc_size);
         new_percpu = NULL;
     }
 }

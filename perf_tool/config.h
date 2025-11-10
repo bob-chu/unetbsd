@@ -56,6 +56,9 @@ typedef struct {
     payload_config_t client_payload;
     payload_config_t server_response;
     http_config_t http_config;
+    struct {
+        int mtu;
+    } interface;
 } perf_config_t;
 
 // Function to parse the configuration file

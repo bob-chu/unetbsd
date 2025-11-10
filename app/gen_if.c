@@ -7,6 +7,7 @@
 #include <rte_mbuf.h>
 #include <rte_ethdev.h>
 #include <rte_ring.h>
+#include <rte_vhost.h>
 
 #include <stdbool.h>
 
@@ -72,6 +73,7 @@ port_init(uint16_t port, struct rte_mempool *mbuf_pool)
     if (nb_procs > 1) {
         rx_rings = tx_rings = nb_procs;
     }
+    LOG_INFO("Initializing port with %u RX queues and %u TX queues", rx_rings, tx_rings);
 
     uint16_t nb_rxd = RX_RING_SIZE;
     uint16_t nb_txd = TX_RING_SIZE;
@@ -484,7 +486,7 @@ int dpdk_init(int argc, char **argv)
 
     nb_ports = rte_eth_dev_count_avail();
     if (nb_ports < 1) {
-		rte_exit(EXIT_FAILURE, "Error: number of ports must be 1");
+        rte_exit(EXIT_FAILURE, "Error: number of ports must be at least 1");
     }
 
     unsigned int num_mbufs = (nb_procs + 1) * MBUF_CACHE_SIZE;
@@ -492,7 +494,7 @@ int dpdk_init(int argc, char **argv)
     num_mbufs += nb_procs * (RX_RING_SIZE + TX_RING_SIZE);
     proc_type = rte_eal_process_type();
     /* Allocates mempool to hold the mbufs. 8< */
-    mbuf_pool =  (proc_type == RTE_PROC_SECONDARY) ?
+    mbuf_pool = (proc_type == RTE_PROC_SECONDARY) ?
         rte_mempool_lookup(_MBUF_POOL) :
         rte_pktmbuf_pool_create("MBUF_POOL", num_mbufs * nb_ports,
             MBUF_CACHE_SIZE, 0, JUMBO_FRAME_MAX_SIZE + RTE_PKTMBUF_HEADROOM, rte_socket_id());
@@ -508,21 +510,17 @@ int dpdk_init(int argc, char **argv)
     if (proc_type == RTE_PROC_PRIMARY) {
         RTE_ETH_FOREACH_DEV(portid)
             if (port_init(portid, mbuf_pool) != 0)
-                rte_exit(EXIT_FAILURE, "Cannot init port %"PRIu16 "\n",
-                        portid);
+                rte_exit(EXIT_FAILURE, "Cannot init port %"PRIu16 "\n", portid);
     }
     /* only have 1 port: 0 */
     uint8_t port = 0;
     if (proc_type != RTE_PROC_PRIMARY) {
-        /* Display the port MAC address. */
         ret = rte_eth_macaddr_get(port, &addr);
         if (ret != 0)
             return ret;
         LOG_INFO("Port %u MAC: %02" PRIx8 " %02" PRIx8 " %02" PRIx8
                 " %02" PRIx8 " %02" PRIx8 " %02" PRIx8 "\n",
                 port, RTE_ETHER_ADDR_BYTES(&addr));
-
-
     }
     /* >8 End of initializing all ports. */
 
@@ -543,6 +541,17 @@ void open_interface(char *if_name)
     virt_if_attach(v_if, (const uint8_t *)&addr);
 
     virt_if_register_callbacks(v_if, gen_if_output, NULL);
+}
+
+void set_mtu(int mtu)
+{
+    if (v_if && v_if->ifp) {
+        // Use ioctl or another method if direct access to if_mtu is not allowed
+        // For now, we'll log the intent to set MTU
+        LOG_INFO("Setting MTU to %d for interface (method TBD)", mtu);
+    } else {
+        LOG_ERROR("Failed to set MTU: Interface not initialized");
+    }
 }
 
 void configure_interface(char *ip_addr, char *gateway_addr)

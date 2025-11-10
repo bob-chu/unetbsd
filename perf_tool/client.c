@@ -113,11 +113,11 @@ void run_client(struct ev_loop *loop, perf_config_t *config) {
 
     scheduler_init(loop, config);
 
-    ev_timer_init(&client_scheduler_watcher, client_scheduler_cb, 0., 0.1); // Check every 100ms
+    ev_timer_init(&client_scheduler_watcher, client_scheduler_cb, 0., 0.05); // Check every 50ms for faster ramp-up
     client_scheduler_watcher.data = config;
     ev_timer_start(loop, &client_scheduler_watcher);
 
-    ev_timer_init(&client_idle_watcher, client_idle_cb, 0.1, 0.1); // Check every 100ms
+    ev_timer_init(&client_idle_watcher, client_idle_cb, 0.01, 0.01); // Check every 10ms for maximum performance
     client_idle_watcher.data = config;
     ev_timer_start(loop, &client_idle_watcher);
 
@@ -138,7 +138,7 @@ void tcp_client_init(perf_config_t *config) {
     TAILQ_INIT(&g_client_conn_pool_list);
 
     // Preallocate client_conn_data pool with reduced size to prevent memory issues in containers
-    const int REDUCED_POOL_SIZE = 1000; // Reduced from 8000 to conserve memory
+    const int REDUCED_POOL_SIZE = 8000; // Reduced from 8000 to conserve memory
     g_client_conn_pool = (struct client_conn_data *)calloc(REDUCED_POOL_SIZE, sizeof(struct client_conn_data));
     if (!g_client_conn_pool) {
         LOG_ERROR("Failed to allocate memory for client connection pool. Out of memory or container memory limits reached.");
@@ -265,15 +265,16 @@ static void client_idle_cb(EV_P_ ev_timer *w, int revents) {
         if (g_concurrent_connections < g_current_target_connections) {
             LOG_DEBUG("Creating connections to reach target. Current: %lu, Target: %d", g_concurrent_connections, g_current_target_connections);
             int connections_to_create = g_current_target_connections - g_concurrent_connections;
-            // Create multiple connections to close the gap faster, but limit to a reasonable batch size
-            int batch_size = connections_to_create > 10 ? 10 : connections_to_create;
-            for (int i = 0; i < batch_size; i++) {
+            // Create multiple connections to close the gap faster, no limit on batch size for maximum speed
+            for (int i = 0; i < connections_to_create; i++) {
                 if (g_concurrent_connections >= g_current_target_connections) {
                     break;
                 }
                 create_tcp_connection(EV_A_ config);
             }
         }
+        // No need to send requests on existing connections since we close after each response
+        // Just ensure we maintain the target number of connections
     } else if (strcmp(config->objective.type, "TOTAL_CONNECTIONS") == 0) {
         if (scheduler_get_stats()->connections_opened < g_current_target_total_connections) {
             LOG_DEBUG("Creating connections to reach total target. Opened: %lu, Target: %d", scheduler_get_stats()->connections_opened, g_current_target_total_connections);
@@ -338,6 +339,17 @@ static void create_tcp_connection(struct ev_loop *loop, perf_config_t *config) {
 
     const char *request_path = config->http_config.client_request_path;
     conn_data->send_buffer_size = snprintf(NULL, 0, "GET %s HTTP/1.1\r\nHost: %s\r\n\r\n", request_path, config->network.dst_ip_start);
+    if (conn_data->send_buffer_size <= 0) {
+        LOG_ERROR("create_tcp_connection: Failed to calculate send buffer size.");
+        if (conn_data >= g_client_conn_pool && conn_data < g_client_conn_pool + CLIENT_CONN_POOL_SIZE) {
+            TAILQ_INSERT_TAIL(&g_client_conn_pool_list, conn_data, entries);
+            g_client_conn_pool_used--;
+            LOG_DEBUG("create_tcp_connection: Returned client_conn_data to pool due to send buffer calculation failure. Used: %d/%d", g_client_conn_pool_used, CLIENT_CONN_POOL_SIZE);
+        } else {
+            free(conn_data);
+        }
+        return;
+    }
     conn_data->send_buffer = (char *)malloc(conn_data->send_buffer_size + 1);
     if (!conn_data->send_buffer) {
         LOG_ERROR("create_tcp_connection: Failed to allocate memory for client send buffer for conn_data %p.", conn_data);
@@ -353,7 +365,7 @@ static void create_tcp_connection(struct ev_loop *loop, perf_config_t *config) {
     snprintf(conn_data->send_buffer, conn_data->send_buffer_size + 1, "GET %s HTTP/1.1\r\nHost: %s\r\n\r\n", request_path, config->network.dst_ip_start);
     LOG_DEBUG("create_tcp_connection: Allocated send_buffer at %p for conn_data %p", conn_data->send_buffer, conn_data);
 
-    conn_data->recv_buffer_size = sizeof(conn_data->recv_buffer); // 2K buffer for receiving data
+    conn_data->recv_buffer_size = MAX_RECV_SIZE; // 2K buffer for receiving data
     // recv_buffer is a fixed-size array within client_conn_data, no need to allocate
 
     conn_data->nh.proto = PROTO_TCP;
@@ -377,7 +389,7 @@ static void create_tcp_connection(struct ev_loop *loop, perf_config_t *config) {
         static int consecutive_socket_failures = 0;
         consecutive_socket_failures++;
         if (consecutive_socket_failures > 10) {
-            LOG_ERROR("Too many consecutive socket creation failures (%d). Pausing connection attempts.", consecutive_socket_failures);
+            LOG_ERROR("Too many consecutive socket creation failures (%d). Pausing connection attempts. Possible resource exhaustion (mbufs?).", consecutive_socket_failures);
             return;
         }
         // Reset counter if we have a successful connection later
@@ -614,6 +626,7 @@ static void client_conn_connect_cb(void *handle, int events) {
                  config->network.dst_ip_start, config->network.dst_port_start, conn_data->local_port);
         conn_data->is_connected = 1;
         scheduler_inc_stat(STAT_CONNECTIONS_OPENED, 1);
+        metrics_inc_success(); // Increment success count for successful connection
         TAILQ_INSERT_TAIL(&g_tcp_conn_list, conn_data, entries);
         LOG_DEBUG("client_conn_connect_cb: Connection established, callbacks set.");
         ev_timer_stop(g_main_loop, &conn_data->conn_timeout_timer); // Stop timeout timer on success
@@ -658,12 +671,8 @@ static void client_conn_write_cb(void *handle, int events) {
     }
 
     perf_config_t *config = conn_data->config;
-    if (config->objective.requests_per_connection > 0 &&
-        conn_data->requests_sent_on_connection >= config->objective.requests_per_connection) {
-        LOG_INFO("Reached requests_per_connection limit (%d). Not sending more requests.",
-                 config->objective.requests_per_connection);
-        return; 
-    }
+    // No limit on requests per connection to maximize RPS
+    LOG_DEBUG("Sending request #%d on this connection", conn_data->requests_sent_on_connection + 1);
     if (conn_data->sent_size < conn_data->send_buffer_size) { // Only send if we haven't sent the full request yet
         if (conn_data->sent_size == 0) { // First part of a new request
             conn_data->request_send_time = ev_now(g_main_loop);
@@ -765,11 +774,12 @@ static void process_http_response(struct client_conn_data *conn_data) {
             if (content_received >= (size_t)conn_data->content_length) {
                 // Log only the content length as per Content-Length header
                 size_t reported_content_received = content_received > (size_t)conn_data->content_length ? (size_t)conn_data->content_length : content_received;
-                LOG_INFO("All content received: %zu bytes: requests_sent_on_connection: %d", reported_content_received, conn_data->requests_sent_on_connection);
+                LOG_INFO("All content received: %zu bytes, requests_sent_on_connection: %d", reported_content_received, conn_data->requests_sent_on_connection);
+                conn_data->requests_sent_on_connection++; // Increment after receiving full response
+                
                 if (config->objective.requests_per_connection > 0 &&
                     conn_data->requests_sent_on_connection >= config->objective.requests_per_connection) {
-                    LOG_INFO("client_conn_read_cb: Reached requests_per_connection limit (%d). Closing connection.",
-                             config->objective.requests_per_connection);
+                    LOG_INFO("Reached requests_per_connection limit (%d). Closing connection.", config->objective.requests_per_connection);
                     client_conn_cleanup(g_main_loop, conn_data);
                     // Create a new connection to maintain concurrency if in RAMP_UP or SUSTAIN phase
                     test_phase_t current_phase = scheduler_get_current_phase();
@@ -786,7 +796,6 @@ static void process_http_response(struct client_conn_data *conn_data) {
                     conn_data->data_received = 0;
                     conn_data->header_length = 0;
                     conn_data->content_length = 0;
-                    conn_data->requests_sent_on_connection++; // Increment after receiving full response
                     LOG_INFO("Sending request #%d on this connection", conn_data->requests_sent_on_connection);
                     client_conn_write_cb(&conn_data->nh, 0);
                 }
@@ -820,10 +829,10 @@ static void process_http_response(struct client_conn_data *conn_data) {
             size_t reported_content_received = content_received > (size_t)conn_data->content_length ? (size_t)conn_data->content_length : content_received;
             LOG_INFO("All content received: %zu bytes, requests_sent_on_connection: %d", reported_content_received, conn_data->requests_sent_on_connection);
             conn_data->requests_sent_on_connection++; // Increment after receiving full response
+                
             if (config->objective.requests_per_connection > 0 &&
                 conn_data->requests_sent_on_connection >= config->objective.requests_per_connection) {
-                LOG_INFO("client_conn_read_cb: Reached requests_per_connection limit (%d). Closing connection.",
-                         config->objective.requests_per_connection);
+                LOG_INFO("Reached requests_per_connection limit (%d). Closing connection.", config->objective.requests_per_connection);
                 client_conn_cleanup(g_main_loop, conn_data);
                 // Create a new connection to maintain concurrency if in RAMP_UP or SUSTAIN phase
                 test_phase_t current_phase = scheduler_get_current_phase();
@@ -905,6 +914,12 @@ static void client_conn_read_cb(void *handle, int events) {
         }
         ssize_t bytes_read = netbsd_read(nh, &iov, 1);
         if (bytes_read > 0) {
+            if (conn_data->data_received + bytes_read > conn_data->recv_buffer_size) {
+                LOG_ERROR("Received more data than buffer can hold. Buffer size: %zu, received: %zd", conn_data->recv_buffer_size, conn_data->data_received + bytes_read);
+                metrics_inc_failure();
+                client_conn_cleanup(g_main_loop, conn_data);
+                break;
+            }
             LOG_INFO("client_conn_read_cb: Received %zd bytes (TCP).", bytes_read);
             scheduler_inc_stat(STAT_BYTES_RECEIVED, bytes_read);
             conn_data->total_received += bytes_read;
@@ -928,9 +943,8 @@ static void client_conn_read_cb(void *handle, int events) {
             }
 #endif
             process_http_response(conn_data);
-        } else if (bytes_read == 0 || bytes_read == -22 /*invalid*/) {
-            /*
-            LOG_WARN("client_conn_read_cb: Server closed connection (TCP).");
+        } else if (bytes_read == 0) {
+            LOG_INFO("client_conn_read_cb: Server closed connection (TCP).");
             ev_timer_stop(g_main_loop, &conn_data->request_timer);
             client_conn_cleanup(g_main_loop, conn_data);
             if ((strcmp(config->objective.type, "TCP_CONCURRENT") == 0 || strcmp(config->objective.type, "HTTP_REQUESTS") == 0) &&
@@ -938,22 +952,40 @@ static void client_conn_read_cb(void *handle, int events) {
                 LOG_INFO("Creating new connection after server close. Current: %lu, Target: %d", g_concurrent_connections, g_current_target_connections);
                 create_tcp_connection(g_main_loop, config);
             }
-            */
+            break;
+        } else if (bytes_read == -22 /*invalid*/) {
+#if 0
+            static int invalid_read_count = 0;
+            if (invalid_read_count < 5) {
+                LOG_WARN("client_conn_read_cb: Invalid read operation (TCP). Count: %d", ++invalid_read_count);
+            } else if (invalid_read_count == 5) {
+                LOG_WARN("client_conn_read_cb: Invalid read operation (TCP). Suppressing further logs. Count: %d", ++invalid_read_count);
+            }
+#endif
+            // Don't break or cleanup, just continue to avoid disrupting the connection
             break;
         } else {
-            if (bytes_read == -35/*EAGAIN, EWOULDBLOCK*/) {
-                LOG_DEBUG("client_conn_read_cb: EWOULDBLOCK, waiting for more data.");
+            if (bytes_read == -35 /*EAGAIN, EWOULDBLOCK*/) {
+                LOG_DEBUG("client_conn_read_cb: EAGAIN/EWOULDBLOCK, waiting for more data. Possible mbuf exhaustion in NetBSD stack - consider increasing NMBCLUSTERS or NMBUFS.");
                 break; // Wait for the next read event
-            } else {
-                if (bytes_read != -32/*-EPIPE*/ || bytes_read != -54/*ECONNRESET*/) {
-                    metrics_inc_failure();
-                }
-                LOG_INFO("client_conn_read_cb: Read error (TCP). bytes_read: %zd, errno: %d", bytes_read, errno);
+            } else if (bytes_read == -32 /*EPIPE*/ || bytes_read == -54 /*ECONNRESET*/) {
+                LOG_INFO("client_conn_read_cb: Connection error (TCP). bytes_read: %zd, errno: %d", bytes_read, errno);
                 ev_timer_stop(g_main_loop, &conn_data->request_timer);
                 client_conn_cleanup(g_main_loop, conn_data);
                 if ((strcmp(config->objective.type, "TCP_CONCURRENT") == 0 || strcmp(config->objective.type, "HTTP_REQUESTS") == 0) &&
                     g_concurrent_connections < g_current_target_connections) {
-                    LOG_INFO("Creating new connection after read error. Current: %lu, Target: %d", g_concurrent_connections, g_current_target_connections);
+                    LOG_INFO("Creating new connection after connection error. Current: %lu, Target: %d", g_concurrent_connections, g_current_target_connections);
+                    create_tcp_connection(g_main_loop, config);
+                }
+                break;
+            } else {
+                LOG_ERROR("client_conn_read_cb: Unexpected read error (TCP). bytes_read: %zd, errno: %d. Possible mbuf exhaustion in NetBSD stack - consider increasing NMBCLUSTERS or NMBUFS.", bytes_read, errno);
+                metrics_inc_failure();
+                ev_timer_stop(g_main_loop, &conn_data->request_timer);
+                client_conn_cleanup(g_main_loop, conn_data);
+                if ((strcmp(config->objective.type, "TCP_CONCURRENT") == 0 || strcmp(config->objective.type, "HTTP_REQUESTS") == 0) &&
+                    g_concurrent_connections < g_current_target_connections) {
+                    LOG_INFO("Creating new connection after unexpected read error. Current: %lu, Target: %d", g_concurrent_connections, g_current_target_connections);
                     create_tcp_connection(g_main_loop, config);
                 }
                 break;

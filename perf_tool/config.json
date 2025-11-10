@@ -8,14 +8,18 @@
   },
   "objective": {
     "type": "HTTP_REQUESTS",
-    "value": 100,
+    "value": 800,
+    "requests_per_second": 0,
     "requests_per_connection": 1
   },
   "http_config": {
     "client_request_path": "/hello",
-    "response_size_hello": 500000, 
+    "response_size_hello": 1000000, 
     "response_size_another": 5242880,
     "response_size_default": 1024
+  },
+  "interface": {
+    "mtu": 2000
   },
   "network": {
     "mac_address": "00:00:00:00:00:00",

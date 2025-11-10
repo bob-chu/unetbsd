@@ -121,6 +121,7 @@ netbsd_srcs = [
     netbsd_v4_srcs,
     netbsd_v6_srcs,
     'netbsd_src/sys/netatalk/at_print.c',
+    #'netbsd_src/sys/rump/librump/rumpkern/vm.c',
     'netbsd_src/sys/kern/kern_sysctl.c',
     'netbsd_src/sys/kern/init_sysctl_base.c',
     'netbsd_src/sys/kern/kern_subr.c',
@@ -158,7 +159,9 @@ netbsd_srcs = [
     'src/u_if.c',
     'src/u_socket.c',
     'src/u_clock.c',
-    'src/u_mem.c'
+    'src/u_mem.c',
+    'src/u_pktqueue.c',
+    'src/u_softint.c'
 ]
 
 libnetbsdstack = static_library(
@@ -231,7 +234,7 @@ executable(
     'perf_tool',
     perf_tool_srcs,
     c_args : cflags_user + ['-I/usr/local/include'],
-    include_directories : [include_directories('perf_tool'), include_directories('perf_tool/deps/cjson'), include_directories('perf_tool/deps/picohttpparser'), include_directories('include'), include_directories('app')],
+    include_directories : [include_directories('perf_tool'), include_directories('perf_tool/deps/cjson'), include_directories('perf_tool/deps/picohttpparser'), include_directories('include'), include_directories('app'), include_directories('src')],
     link_with : libnetbsdstack,
     dependencies : [dpdk_dep, libev_dep, pthread_dep],
     install : true

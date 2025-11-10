@@ -72,6 +72,7 @@ int parse_config(const char *file_path, perf_config_t *config) {
     if (objective_json) {
         config->objective.type = get_string_from_json(objective_json, "type");
         config->objective.value = get_int_from_json(objective_json, "value");
+        config->objective.requests_per_second = get_int_from_json(objective_json, "requests_per_second");
         config->objective.requests_per_connection = get_int_from_json(objective_json, "requests_per_connection");
     }
 
@@ -104,13 +105,19 @@ int parse_config(const char *file_path, perf_config_t *config) {
         config->server_response.size = get_int_from_json(server_response_json, "size");
     }
 
-// Parse http config
+    // Parse http config
     cJSON *http_config_json = cJSON_GetObjectItemCaseSensitive(json, "http_config");
     if (http_config_json) {
         config->http_config.client_request_path = get_string_from_json(http_config_json, "client_request_path");
         config->http_config.response_size_hello = get_int_from_json(http_config_json, "response_size_hello");
         config->http_config.response_size_another = get_int_from_json(http_config_json, "response_size_another");
         config->http_config.response_size_default = get_int_from_json(http_config_json, "response_size_default");
+    }
+
+    // Parse interface config
+    cJSON *interface_json = cJSON_GetObjectItemCaseSensitive(json, "interface");
+    if (interface_json) {
+        config->interface.mtu = get_int_from_json(interface_json, "mtu");
     }
 
     cJSON_Delete(json);

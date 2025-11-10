@@ -25,9 +25,10 @@ static void timer_1s_cb(EV_P_ ev_timer *w, int revents) {
     scheduler_check_phase_transition(mode);
 }
 
-static void idle_cb(struct ev_loop *loop, ev_idle *w, int revents) {
+static void idle_cb(EV_P_ ev_idle *w, int revents) {
     dpdk_read();
     netbsd_process_event();
+    softint_run();
 }
 
 int main(int argc, char *argv[]) {
@@ -41,7 +42,6 @@ int main(int argc, char *argv[]) {
         fprintf(stderr, "Usage: %s <client|server> <config.json> <interface_name> <file_prefix> <coremask>\n", argv[0]);
         return 1;
     }
-
 
     printf("Starting in %s mode with config file: %s\n", mode, config_path);
 
@@ -61,7 +61,6 @@ int main(int argc, char *argv[]) {
 
     char vdev_str[128];
     snprintf(vdev_str, sizeof(vdev_str), "eth_af_packet0,iface=%s,blocksz=4096,framesz=2048,framecnt=512,qpairs=1", if_name);
-    //snprintf(vdev_str, sizeof(vdev_str), "eth_af_packet0,iface=%s,blocksz=4194304,framesz=8192,framecnt=512,qpairs=1", if_name);
 
     char file_prefix_str[128];
     snprintf(file_prefix_str, sizeof(file_prefix_str), "--file-prefix=%s", file_prefix);
@@ -82,7 +81,8 @@ int main(int argc, char *argv[]) {
     netbsd_init();
 
     dpdk_init(dpdk_argc, dpdk_str);
-    open_interface(if_name);
+    open_interface((char *)if_name);
+    set_mtu(config.interface.mtu);
 
     char *ip_addr;
     char *gateway_addr;

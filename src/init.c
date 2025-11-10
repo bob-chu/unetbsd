@@ -62,18 +62,28 @@ void setipaddr(const char* name, uint ip)
   loaddr.sin_addr.s_addr = htonl(ip);
   bcopy(&loaddr, &req.ifr_addr, sizeof loaddr);
   struct socket* so = NULL;
-  socreate(AF_INET, &so, SOCK_DGRAM, 0, gl_lwp, NULL);
+  int error = socreate(AF_INET, &so, SOCK_DGRAM, 0, gl_lwp, NULL);
+  if (error != 0) {
+      printf("Failed to create socket for IP address setup: error %d\n", error);
+      return;
+  }
 
-  sofree(so);  // FIXME: this doesn't free memory
+  error = ifioctl(so, SIOCSIFADDR, &req, gl_lwp);
+  if (error != 0) {
+      printf("Failed to set IP address for %s: error %d\n", name, error);
+  }
+
+  sofree(so);
 }
 
 void cpu_startup()
 {
 }
 
+#include "u_softint.h"
+
 void netbsd_init()
 {
-    curproc->p_cred = &cred0;
     curproc->p_cred = &cred0;
     pool_subsystem_init();
     
@@ -96,6 +106,7 @@ void netbsd_init()
     loopinit();
     setipaddr("lo0", 0x7f000001);
     updatetime();
+    softint_levels_init();
 }
 
 extern int tcp_msl_local;

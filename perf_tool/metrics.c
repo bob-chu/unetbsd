@@ -22,7 +22,8 @@ void metrics_init(void) {
 void metrics_report(void) {
     LOG_INFO("\n--- Performance Metrics Report ---");
     LOG_INFO("Connections per second: %lu", g_metrics.connections_per_second);
-    LOG_INFO("Throughput (Gbps): %lu", g_metrics.throughput_gbps);
+    LOG_INFO("Bytes Sent per second: %lu (%.2f Mbps)", g_metrics.bytes_sent_per_second, (g_metrics.bytes_sent_per_second * 8.0) / 1000000.0);
+    LOG_INFO("Bytes Received per second: %lu (%.2f Mbps)", g_metrics.bytes_received_per_second, (g_metrics.bytes_received_per_second * 8.0) / 1000000.0);
     LOG_INFO("Successful operations: %lu", g_metrics.success_count);
     LOG_INFO("Failed operations: %lu", g_metrics.failure_count);
     LOG_INFO("Ports Used: %lu/%lu", g_metrics.ports_used, g_metrics.total_ports);
@@ -69,4 +70,23 @@ void metrics_update_port_usage(uint64_t ports_used, uint64_t total_ports) {
     g_metrics.ports_used = ports_used;
     g_metrics.total_ports = total_ports;
     LOG_INFO("Updated port usage: %lu/%lu", ports_used, total_ports);
+}
+
+void metrics_update_cps(uint64_t cps) {
+    g_metrics.connections_per_second = cps;
+}
+
+void metrics_update_bytes_sent(uint64_t bytes) {
+    g_metrics.total_bytes_sent += bytes;
+    g_metrics.bytes_sent_per_second += bytes;
+}
+
+void metrics_update_bytes_received(uint64_t bytes) {
+    g_metrics.total_bytes_received += bytes;
+    g_metrics.bytes_received_per_second += bytes;
+}
+
+void metrics_reset_bytes_per_second(void) {
+    g_metrics.bytes_sent_per_second = 0;
+    g_metrics.bytes_received_per_second = 0;
 }
