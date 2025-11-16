@@ -224,7 +224,12 @@ perf_tool_srcs = [
     'app/gen_if.c',
     'app/log.c',
     'perf_tool/server.c',
+    'perf_tool/http_server.c',
+    'perf_tool/udp_server.c',
     'perf_tool/client.c',
+    'perf_tool/http_client.c',
+    'perf_tool/udp_client.c',
+    'perf_tool/tcp_layer.c',
     'perf_tool/scheduler.c',
     'perf_tool/metrics.c',
     'perf_tool/deps/picohttpparser/picohttpparser.c'

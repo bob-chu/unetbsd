@@ -177,7 +177,7 @@ void dump_mbuf_hex(struct rte_mbuf *mbuf)
     const uint8_t *data = rte_pktmbuf_mtod(mbuf, const uint8_t *);
     uint16_t data_len = rte_pktmbuf_data_len(mbuf);
 
-    printf("Mbuf data dump (length=%u):\n", data_len);
+    LOG_DEBUG("Mbuf data dump (length=%u):", data_len);
 
     for (uint16_t i = 0; i < data_len; i++) {
         if (i % 16 == 0) { // Start a new line every 16 bytes

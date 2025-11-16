@@ -48,8 +48,6 @@ void scheduler_update_stats(void) {
     // For now, we'll just log them at phase transitions.
 }
 
-uint64_t g_concurrent_connections = 0;
-
 void scheduler_inc_stat(int stat, int value) {
     switch (stat) {
         case STAT_CONCURRENT_CONNECTIONS:
@@ -106,7 +104,8 @@ void scheduler_check_phase_transition(const char *role) {
     metrics_t current_metrics = metrics_get_snapshot();
     const scheduler_stats_t *current_stats = scheduler_get_stats();
 
-    uint64_t connections_per_second = (current_stats->connections_opened - last_stats.connections_opened);
+    uint64_t connections_opened_per_second = (current_stats->connections_opened - last_stats.connections_opened);
+    uint64_t connections_closed_per_second = (current_stats->connections_closed - last_stats.connections_closed);
     uint64_t requests_per_second = (current_stats->requests_sent - last_stats.requests_sent);
     uint64_t bytes_sent_per_second = (current_stats->bytes_sent - last_stats.bytes_sent);
     uint64_t bytes_received_per_second = (current_stats->bytes_received - last_stats.bytes_received);
@@ -114,7 +113,7 @@ void scheduler_check_phase_transition(const char *role) {
     uint64_t failure_per_second = (current_metrics.failure_count - last_metrics.failure_count);
 
     // Update metrics for real-time display with per-second values
-    metrics_update_cps(connections_per_second);
+    metrics_update_cps(connections_opened_per_second);
     metrics_update_bytes_sent(bytes_sent_per_second);
     metrics_update_bytes_received(bytes_received_per_second);
 
@@ -122,13 +121,15 @@ void scheduler_check_phase_transition(const char *role) {
     metrics_t display_metrics = metrics_get_snapshot();
 
     if (strcmp(role, "client") == 0) {
-        printf("[%s] [ %ds], %s (Target: %d), Concurrent Conns: %lu, CPS: %lu, RPS: %lu, BpsS: %.2f Mbps, BpsR: %.2f Mbps, Succ: %lu, Fail: %lu, Ports Used: %lu/%lu\n",
+        printf("[%s] [ %ds], %s (Target: %d), Concurrent Conns: %lu, CPS: %lu, Opens/s: %lu, Closes/s: %lu, RPS: %lu, BpsS: %.2f Mbps, BpsR: %.2f Mbps, Succ: %lu, Fail: %lu, Ports Used: %lu/%lu\n",
                role,
                time_index,
                phase_names[g_current_phase],
                client_get_current_target_connections(),
                g_concurrent_connections,
-               connections_per_second,
+               connections_opened_per_second,
+               connections_opened_per_second,
+               connections_closed_per_second,
                requests_per_second,
                (display_metrics.bytes_sent_per_second * 8.0) / 1000000.0,
                (display_metrics.bytes_received_per_second * 8.0) / 1000000.0,
@@ -137,13 +138,15 @@ void scheduler_check_phase_transition(const char *role) {
                current_metrics.ports_used,
                current_metrics.total_ports);
     } else {
-        printf("[%s] [ %ds], %s (Target: %d), Concurrent Conns: %lu, CPS: %lu, RPS: %lu, BpsS: %.2f Mbps, BpsR: %.2f Mbps, Succ: %lu, Fail: %lu\n",
+        printf("[%s] [ %ds], %s (Target: %d), Concurrent Conns: %lu, CPS: %lu, Opens/s: %lu, Closes/s: %lu, RPS: %lu, BpsS: %.2f Mbps, BpsR: %.2f Mbps, Succ: %lu, Fail: %lu\n",
                role,
                time_index,
                phase_names[g_current_phase],
                client_get_current_target_connections(),
                g_concurrent_connections,
-               connections_per_second,
+               connections_opened_per_second,
+               connections_opened_per_second,
+               connections_closed_per_second,
                requests_per_second,
                (display_metrics.bytes_sent_per_second * 8.0) / 1000000.0,
                (display_metrics.bytes_received_per_second * 8.0) / 1000000.0,

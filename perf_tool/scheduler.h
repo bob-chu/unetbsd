@@ -39,6 +39,7 @@ void scheduler_init(struct ev_loop *loop, perf_config_t *config);
 void scheduler_update_stats(void);
 void scheduler_inc_stat(int stat, int value);
 test_phase_t scheduler_get_current_phase(void);
+void scheduler_set_current_phase(test_phase_t phase);
 const scheduler_stats_t *scheduler_get_stats(void);
 double scheduler_get_current_time(void);
 double scheduler_get_current_phase_start_time(void);

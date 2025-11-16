@@ -111,6 +111,12 @@ void netbsd_process_event()
             //printf("Socket in error state during event processing: nh:%p, so:%p, error:%d\n", nh, nh->so, nh->so->so_error);
             nh->is_closing = 1;
             enqueue_event(nh, POLLHUP); // Trigger close event
+            // Ensure the socket is closed if not already closed
+            if (nh->so) {
+                soupcall_clear(nh->so); // Clear callbacks to prevent further events
+                soclose(nh->so); // Explicitly close the socket
+                nh->so = NULL;
+            }
             free(ev, M_TEMP);
             continue;
         }
