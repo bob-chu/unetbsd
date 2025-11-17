@@ -72,7 +72,6 @@ static void enqueue_event(struct netbsd_handle *nh, int events)
 static void soupcall_cb(struct socket *so, void *arg, int events, int waitflag)
 {
     struct netbsd_handle *nh = (struct netbsd_handle *)arg;
-
     enqueue_event(nh, events);
     //so->so_rcv.sb_flags |= SB_UPCALL;
     //so->so_snd.sb_flags |= SB_UPCALL;
@@ -88,7 +87,19 @@ void netbsd_process_event()
         nh->on_event_queue = 0;
         events = nh->events;
         nh->events = 0;
-
+#if 0
+        printf("netbsd_process_event: nh=%p, so=%p, events=%s%s%s%s%s%s%s%s\n",
+               (void *)nh, (void *)nh->so,
+               (events & POLLIN) ? "POLLIN " : "",
+               (events & POLLOUT) ? "POLLOUT " : "",
+               (events & POLLRDNORM) ? "POLLRDNORM " : "",
+               (events & POLLWRNORM) ? "POLLWRNORM " : "",
+               (events & POLLERR) ? "POLLERR " : "",
+               (events & POLLHUP) ? "POLLHUP " : "",
+               (events & POLLNVAL) ? "POLLNVAL " : "",
+               (events & POLLPRI) ? "POLLPRI " : "");
+        printf("process event on nh: %p\n", nh);
+#endif
         // If the handle is already closing, skip further processing of read/write events
         // but still allow close_cb to be called if POLLHUP is set.
         if (nh->is_closing && !(events & POLLHUP)) {
@@ -133,7 +144,7 @@ void netbsd_process_event()
         }
         free(ev, M_TEMP);
     }
-    
+
     softint_run();
 }
 
@@ -343,7 +354,6 @@ int netbsd_read(struct netbsd_handle *nh, struct iovec *iov, int iovcnt)
     if (nh->is_closing || nh->so == NULL || nh->so->so_error != 0) {
         if (nh->so && nh->so->so_error != 0) {
             int error = nh->so->so_error;
-            printf("Failed to read from socket: nh:%p, so: %p, (errno: %d)\n", nh, nh->so, error);
             enqueue_event(nh, POLLHUP); // Ensure close event is enqueued
             nh->is_closing = 1; // Mark as closing to prevent further operations
             return -error;

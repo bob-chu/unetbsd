@@ -8,7 +8,7 @@
   },
   "objective": {
     "type": "HTTP_REQUESTS",
-    "value": 1,
+    "value": 1000,
     "requests_per_connection": 1
   },
   "http_config": {

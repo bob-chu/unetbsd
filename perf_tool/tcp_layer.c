@@ -163,7 +163,7 @@ int tcp_layer_connect(struct ev_loop *loop, perf_config_t *config, int unused, t
     server_addr.sin_port = htons(server_port);
     inet_pton(AF_INET, config->network.dst_ip_start, &server_addr.sin_addr);
 
-    LOG_DEBUG("Connecting to server port: %d", server_port);
+    LOG_DEBUG("Connecting to server port: %d, from: %d", server_port, local_port);
     int ret = netbsd_connect(&conn->nh, (struct sockaddr *)&server_addr);
     if (ret != 0 && ret != EINPROGRESS) {
         LOG_ERROR("Failed to connect TCP socket to port %d: %s", server_port, strerror(errno));
@@ -204,18 +204,14 @@ void tcp_layer_close(tcp_conn_t *conn) {
         conn->nh.data = conn;
         conn->nh.active = 0;
         conn->nh.is_closing = 1;
-
+#if 0
         // If on_close callback is set, call it to notify upper layer
         if (conn->callbacks.on_close) {
             conn->callbacks.on_close(conn);
             // Prevent further callbacks by clearing it after calling
             conn->callbacks.on_close = NULL;
         }
-        // Return local port if it hasn't been returned yet
-        if (conn->local_port > 0) {
-            tcp_layer_return_local_port(conn->local_port);
-            conn->local_port = 0;
-        }
+#endif
         netbsd_close(&conn->nh);
         // Do not free(conn) here as it will be done in close_cb when triggered by netbsd_close
     }
@@ -339,8 +335,6 @@ void tcp_layer_server_cleanup(perf_config_t *config) {
 static void tcp_layer_accept_cb(void *handle, int events) {
     LOG_DEBUG("Entering tcp_layer_accept_cb with events: %d", events);
     struct netbsd_handle *nh = (struct netbsd_handle *)handle;
-    LOG_DEBUG("netbsd_handle: %p", nh);
-    if (!(events & EV_READ)) return;
 
     struct netbsd_handle *listen_nh = (struct netbsd_handle *)handle;
 
@@ -350,12 +344,6 @@ static void tcp_layer_accept_cb(void *handle, int events) {
             break;
         }
         memset(conn, 0, sizeof(tcp_conn_t));
-
-        int ret = netbsd_accept(listen_nh, &conn->nh);
-        if (ret != 0) {
-            free(conn);
-            break;
-        }
 
         conn->nh.proto = PROTO_TCP;
         conn->nh.type = SOCK_STREAM;
@@ -368,6 +356,13 @@ static void tcp_layer_accept_cb(void *handle, int events) {
         conn->nh.is_closing = 0;
         conn->nh.events = 0;
         conn->nh.on_event_queue = 0;
+
+        int ret = netbsd_accept(listen_nh, &conn->nh);
+        if (ret != 0) {
+            free(conn);
+            break;
+        }
+        LOG_DEBUG("tcp accept on tcp_layer, nh: %p, nh->so: %p", &conn->nh, conn->nh.so);
 
         netbsd_io_start(&conn->nh);
 

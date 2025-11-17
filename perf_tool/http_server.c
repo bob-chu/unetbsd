@@ -156,6 +156,7 @@ void http_server_cleanup(perf_config_t *config) {
 }
 
 static void http_on_accept(tcp_conn_t *conn) {
+    LOG_DEBUG("http_on_accept conn: %p", conn);
     client_data_t *data = get_client_data_from_pool();
     if (!data) {
         tcp_layer_close(conn);

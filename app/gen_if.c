@@ -164,7 +164,7 @@ port_init(uint16_t port, struct rte_mempool *mbuf_pool)
     return 0;
 }
 
-void dump_mbuf_hex(struct rte_mbuf *mbuf)
+void dump_mbuf_hex(struct rte_mbuf *mbuf, char *msg)
 {
     return;
 
@@ -177,7 +177,7 @@ void dump_mbuf_hex(struct rte_mbuf *mbuf)
     const uint8_t *data = rte_pktmbuf_mtod(mbuf, const uint8_t *);
     uint16_t data_len = rte_pktmbuf_data_len(mbuf);
 
-    LOG_DEBUG("Mbuf data dump (length=%u):", data_len);
+    LOG_DEBUG("Mbuf data dump: %s (length=%u):", msg, data_len);
 
     for (uint16_t i = 0; i < data_len; i++) {
         if (i % 16 == 0) { // Start a new line every 16 bytes
@@ -196,8 +196,7 @@ void dump_mbuf_hex(struct rte_mbuf *mbuf)
 static inline int
 send_single_packet(struct rte_mbuf *m, uint8_t port)
 {
-    LOG_DEBUG("OUT to QUEUE  %d: <<<<\n", proc_id);
-    dump_mbuf_hex(m);
+    dump_mbuf_hex(m, "OUT");
     rte_eth_tx_buffer(0, proc_id, tx_buffer, m);
 
     return 0;
@@ -239,8 +238,7 @@ out:
 
 static void single_mbuf_input(struct rte_mbuf *pkt)
 {
-    LOG_DEBUG("IN from QUEUE: %d: >>>>\n", proc_id);
-    dump_mbuf_hex(pkt);
+    dump_mbuf_hex(pkt, "IN");
     void *data = rte_pktmbuf_mtod(pkt, void*);
     uint16_t len = rte_pktmbuf_data_len(pkt);
     void *hdr = netbsd_mget_hdr(data, len);
@@ -352,7 +350,7 @@ flush_rx_queue(uint16_t client)
 static inline void
 enqueue_rx_packet(uint8_t client, struct rte_mbuf *buf)
 {
-    LOG_DEBUG("send packet to rx_queue [%u]", client);
+    //LOG_DEBUG("send packet to rx_queue [%u]", client);
     cl_rx_buf[client].buffer[cl_rx_buf[client].count++] = buf;
     if (cl_rx_buf[client].count > (BURST_SIZE-2)) {
         flush_rx_queue(client);
@@ -369,7 +367,7 @@ void port_read(uint8_t queue_id)
     if (unlikely(nb_rx == 0))
        return;
 
-    LOG_DEBUG("read packet [%d] from port [%d]", nb_rx, proc_id);
+    //LOG_DEBUG("read packet [%d] from port [%d]", nb_rx, proc_id);
     for (int i = 0; i < nb_rx; i++) {
         struct rte_mbuf *pkt = bufs[i];
         rte_prefetch0(rte_pktmbuf_mtod(pkt, void *));
@@ -415,7 +413,7 @@ static void rx_ring_read()
             pkts, BURST_SIZE, NULL);
     if (unlikely(rx_pkts == 0)) return;
 
-    LOG_DEBUG("read packet [%d] from ring [%d]", rx_pkts, proc_id);
+    //LOG_DEBUG("read packet [%d] from ring [%d]", rx_pkts, proc_id);
     for (i = 0; i < rx_pkts; i++) {
         struct rte_mbuf *buf = (struct rte_mbuf *)pkts[i];
         single_mbuf_input(buf);

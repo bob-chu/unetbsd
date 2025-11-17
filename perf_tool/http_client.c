@@ -58,11 +58,6 @@ void http_client_init(perf_config_t *config) {
 }
 
 void create_http_connection(struct ev_loop *loop, perf_config_t *config) {
-    int local_port = tcp_layer_get_local_port();
-    if (local_port == -1) {
-        LOG_ERROR("No available local ports for new connection.");
-        return;
-    }
 
     http_conn_t *http_conn = (http_conn_t *)malloc(sizeof(http_conn_t));
     memset(http_conn, 0, sizeof(http_conn_t));
@@ -74,12 +69,12 @@ void create_http_connection(struct ev_loop *loop, perf_config_t *config) {
     http_conn->send_buffer = (char *)malloc(http_conn->send_buffer_size + 1);
     snprintf(http_conn->send_buffer, http_conn->send_buffer_size + 1, "GET %s HTTP/1.1\r\nHost: %s\r\n\r\n", request_path, config->network.dst_ip_start);
     LOG_DEBUG("HTTP layer calling TCP layer to connect to %s:%d from local port %d",
-              config->network.dst_ip_start, config->network.dst_port_start, local_port);
-    if (tcp_layer_connect(loop, config, local_port, &http_callbacks, http_conn, &http_conn->tcp_conn) != 0) {
+              config->network.dst_ip_start, config->network.dst_port_start, 0);
+    if (tcp_layer_connect(loop, config, 0, &http_callbacks, http_conn, &http_conn->tcp_conn) != 0) {
         LOG_ERROR("Failed to create TCP connection.");
         free(http_conn->send_buffer);
         free(http_conn);
-        tcp_layer_return_local_port(local_port);
+        //tcp_layer_return_local_port(local_port);
     }
     
     TAILQ_INSERT_TAIL(&g_http_conn_list, http_conn, entries);
@@ -95,6 +90,7 @@ static void http_on_connect(struct tcp_conn *conn, int status) {
         scheduler_inc_stat(STAT_REQUESTS_SENT, 1);
         metrics_inc_success();
         http_conn->request_send_time = ev_now(g_main_loop);
+        LOG_INFO("HTTP write data: %s.", http_conn->send_buffer);
         tcp_layer_write(conn, http_conn->send_buffer, http_conn->send_buffer_size);
     } else {
         LOG_ERROR("HTTP connection failed to connect.");
@@ -161,6 +157,7 @@ static void http_on_read(struct tcp_conn *conn, const char *data, ssize_t len) {
                 http_conn->requests_sent_on_connection++;
                 if (http_conn->config->objective.requests_per_connection > 0 &&
                     http_conn->requests_sent_on_connection >= http_conn->config->objective.requests_per_connection) {
+                    LOG_DEBUG("http read all body, close the tcp");
                     tcp_layer_close(conn);
                 } else {
                     // Send another request
@@ -186,18 +183,11 @@ static void http_on_write(struct tcp_conn *conn) {
 
 static void http_on_close(struct tcp_conn *conn) {
     http_conn_t *http_conn = (http_conn_t *)conn->upper_layer_data;
-
-    if (http_conn->config->objective.requests_per_second == -1) {
-        test_phase_t phase = scheduler_get_current_phase();
-        if (phase == PHASE_RAMP_UP || phase == PHASE_SUSTAIN) {
-            create_http_connection(g_main_loop, http_conn->config);
-        }
-    }
-
+    LOG_DEBUG("http_on_close on client");
     scheduler_inc_stat(STAT_CONCURRENT_CONNECTIONS, -1);
     scheduler_inc_stat(STAT_CONNECTIONS_CLOSED, 1);
     TAILQ_REMOVE(&g_http_conn_list, http_conn, entries);
-    tcp_layer_return_local_port(http_conn->tcp_conn->local_port);
+    //tcp_layer_return_local_port(http_conn->tcp_conn->local_port);
     // No need to call tcp_layer_close here as it's already closing
     free(http_conn->send_buffer);
     free(http_conn);

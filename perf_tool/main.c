@@ -28,7 +28,7 @@ static void timer_1s_cb(EV_P_ ev_timer *w, int revents) {
 static void idle_cb(EV_P_ ev_idle *w, int revents) {
     dpdk_read();
     netbsd_process_event();
-    softint_run();
+    //softint_run();
 }
 
 int main(int argc, char *argv[]) {

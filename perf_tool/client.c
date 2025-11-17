@@ -15,7 +15,7 @@
 #include "scheduler.h"
 #include "tcp_layer.h"
 
-struct ev_loop *g_main_loop;
+static struct ev_loop *g_main_loop;
 
 int g_current_target_connections = 0;
 int g_current_target_total_connections = 0;
