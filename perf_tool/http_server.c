@@ -19,6 +19,7 @@
 
 #define BUFFER_SIZE 7000
 #define CLIENT_DATA_POOL_SIZE 16384
+#define MAX_SEND_BUFFER_SIZE 1024*10
 
 char *response_buffer_hello = NULL;
 char *response_buffer_another = NULL;
@@ -33,6 +34,7 @@ static struct client_data_free_list free_client_data_list = TAILQ_HEAD_INITIALIZ
 
 static void http_on_accept(tcp_conn_t *conn);
 static void http_request_read_cb(tcp_conn_t *conn, const char *data, ssize_t len);
+static void http_request_write_cb(tcp_conn_t *conn);
 static void http_on_close(tcp_conn_t *conn);
 static void prepare_http_response(client_data_t *data);
 static ssize_t send_http_response(client_data_t *data, tcp_conn_t *conn);
@@ -170,7 +172,7 @@ static void http_on_accept(tcp_conn_t *conn) {
     data->response_sent = 0;
 
     conn->callbacks.on_read = http_request_read_cb;
-    conn->callbacks.on_write = NULL;
+    conn->callbacks.on_write = http_request_write_cb;
     conn->callbacks.on_close = http_on_close;
     conn->callbacks.on_connect = NULL;
 
@@ -271,7 +273,7 @@ static void prepare_http_response(client_data_t *data) {
 static ssize_t send_http_response(client_data_t *data, tcp_conn_t *conn) {
     ssize_t total_sent = 0;
     ssize_t sent;
-
+    LOG_DEBUG("send_http_response, conn:%p", conn);
     // Send header
     size_t header_remaining = data->header_size - data->header_sent;
     while (header_remaining > 0) {
@@ -289,21 +291,23 @@ static ssize_t send_http_response(client_data_t *data, tcp_conn_t *conn) {
             LOG_WARN("Partial header send (%zd), closing due to emulation limit", total_sent);
             return total_sent;
         }
+        LOG_DEBUG("Header sent : %zu bytes", sent);
     }
-    LOG_DEBUG("Header sent fully: %zu bytes", data->header_size);
 
     // Send body
     size_t body_remaining = data->response_body_size - data->response_sent;
-    while (body_remaining > 0) {
-        size_t chunk_size = (body_remaining > 1024) ? 1024 : body_remaining;  // Send in chunks if large
+    //while (body_remaining > 0) {
+    if (body_remaining > 0) {
+        size_t chunk_size = (body_remaining > MAX_SEND_BUFFER_SIZE) ? MAX_SEND_BUFFER_SIZE : body_remaining;  // Send in chunks if large
         sent = tcp_layer_write(conn, data->response_body + data->response_sent, chunk_size);
         if (sent > 0) {
             scheduler_inc_stat(STAT_BYTES_SENT, sent);
             data->response_sent += sent;
             body_remaining -= sent;
             total_sent += sent;
+            LOG_DEBUG("Total sent: %zu, Body remain: %zu bytes", total_sent, body_remaining);
         } else if (sent == 0 || (sent < 0 && errno != EAGAIN && errno != EWOULDBLOCK)) {
-            LOG_ERROR("Failed to send body chunk: %zd (%s)", sent, strerror(errno));
+            LOG_DEBUG("Failed to send body chunk: %zd (%s)", sent, strerror(errno));
             return total_sent;
         } else {
             LOG_WARN("Partial body send (%zd), closing due to emulation limit", total_sent);
@@ -312,9 +316,14 @@ static ssize_t send_http_response(client_data_t *data, tcp_conn_t *conn) {
             return total_sent;
         }
     }
-    LOG_DEBUG("Body sent fully: %zu bytes", data->response_body_size);
 
     return total_sent;
+}
+
+static void http_request_write_cb(tcp_conn_t *conn) {
+
+    client_data_t *data = (client_data_t *)conn->upper_layer_data;
+    send_http_response(data, conn);
 }
 
 static void http_on_close(tcp_conn_t *conn) {

@@ -12,6 +12,9 @@
 #include "logger.h"
 #include "metrics.h"
 
+#define MAX_RECV_SZ 7000
+#define RECV_BUFFER_SZ 8192
+
 int g_current_server_port_index = 0;
 int g_server_port_count = 0;
 int *g_server_ports = NULL;
@@ -401,26 +404,38 @@ static void tcp_layer_read_cb(void *handle, int events) {
     struct netbsd_handle *nh = (struct netbsd_handle *)handle;
     LOG_DEBUG("netbsd_handle: %p", nh);
     tcp_conn_t *conn = (tcp_conn_t *)nh->data;
-    char buffer[8192];
+    char buffer[RECV_BUFFER_SZ];
     struct iovec iov;
-    iov.iov_base = buffer;
-    iov.iov_len = sizeof(buffer);
 
-    ssize_t bytes_read = netbsd_read(nh, &iov, 1);
-    if (bytes_read > 0) {
-        // Null-terminate for safe logging
-        buffer[bytes_read] = '\0';
-        LOG_DEBUG("tcp_layer_read_cb : %zd:%s", bytes_read, buffer);
-        if (conn->callbacks.on_read) {
-            conn->callbacks.on_read(conn, buffer, bytes_read);
-        }
-    } else {
-        if (conn->callbacks.on_read) {
-            conn->callbacks.on_read(conn, NULL, bytes_read);
-        }
-        // If read returns <= 0, it might indicate a connection closure or error
-        if (bytes_read <= 0) {
-            tcp_layer_close(conn);
+    while (1) {
+        iov.iov_base = buffer;
+        iov.iov_len = MAX_RECV_SZ;
+        ssize_t bytes_read = netbsd_read(nh, &iov, 1);
+        LOG_DEBUG("tcp_layer_read_cb : %zd", bytes_read);
+        if (bytes_read > 0) {
+            // Null-terminate for safe logging
+            buffer[bytes_read] = '\0';
+            LOG_DEBUG("tcp_layer_read_cb : %s", buffer);
+            if (conn->callbacks.on_read) {
+                conn->callbacks.on_read(conn, buffer, bytes_read);
+            }
+            if (bytes_read == MAX_RECV_SZ) {
+                continue;
+            } else {
+                return;
+            }
+        } else {
+            if (bytes_read == -35 /* EAGAIN */) {
+                return;
+            }
+            if (conn->callbacks.on_read) {
+                conn->callbacks.on_read(conn, NULL, bytes_read);
+            }
+            // If read returns <= 0, it might indicate a connection closure or error
+            if (bytes_read < 0) {
+                tcp_layer_close(conn);
+                return;
+            }
         }
     }
 }
@@ -429,7 +444,6 @@ static void tcp_layer_write_cb(void *handle, int events) {
     LOG_DEBUG("Entering tcp_layer_write_cb with events: %d", events);
     struct netbsd_handle *nh = (struct netbsd_handle *)handle;
     LOG_DEBUG("netbsd_handle: %p", nh);
-    if (!(events & EV_WRITE)) return;
 
     tcp_conn_t *conn = (tcp_conn_t *)nh->data;
     if (conn->callbacks.on_write) {

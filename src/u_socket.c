@@ -324,6 +324,7 @@ static int so_read(struct netbsd_handle *nh, struct iovec *iov, int iovcnt,
 
     total = uio.uio_resid;
     if (total == 0) {
+        printf("HHHHHHHHHHHHHHHHHHHHH, return -1 ??????\n");
         return -1;
     }
 

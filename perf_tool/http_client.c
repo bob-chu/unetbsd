@@ -58,7 +58,8 @@ void http_client_init(perf_config_t *config) {
 }
 
 void create_http_connection(struct ev_loop *loop, perf_config_t *config) {
-
+    static int counter = 0;
+    if (counter++ > 10) return;
     http_conn_t *http_conn = (http_conn_t *)malloc(sizeof(http_conn_t));
     memset(http_conn, 0, sizeof(http_conn_t));
     http_conn->config = config;
@@ -108,6 +109,7 @@ static void http_on_read(struct tcp_conn *conn, const char *data, ssize_t len) {
     
     if (len > 0) {
         http_conn->total_received += len;
+        LOG_DEBUG("HTTP read: %d:%s", len, data);
 
         // Only copy data to buffer if we haven't parsed the headers yet
         if (http_conn->header_length == 0) {
@@ -152,6 +154,7 @@ static void http_on_read(struct tcp_conn *conn, const char *data, ssize_t len) {
 
         if (http_conn->header_length > 0) {
             size_t content_received = http_conn->total_received - http_conn->header_length;
+            LOG_DEBUG("http body content_received :%d", content_received);
             if (content_received >= (size_t)http_conn->content_length) {
                 // Full response received
                 http_conn->requests_sent_on_connection++;
@@ -169,6 +172,8 @@ static void http_on_read(struct tcp_conn *conn, const char *data, ssize_t len) {
                     http_conn->request_send_time = ev_now(g_main_loop);
                     tcp_layer_write(conn, http_conn->send_buffer, http_conn->send_buffer_size);
                 }
+            } else {
+                LOG_DEBUG("http read body len: %d", content_received);
             }
         }
     }

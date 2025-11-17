@@ -54,8 +54,8 @@ int main(int argc, char *argv[]) {
     printf("Config parsed successfully.\n");
 
     logger_init();
-    logger_set_level(LOG_LEVEL_WARN);
-    //logger_set_level(LOG_LEVEL_DEBUG);
+    //logger_set_level(LOG_LEVEL_WARN);
+    logger_set_level(LOG_LEVEL_DEBUG);
     logger_enable_colors(1);
 
     metrics_init();
