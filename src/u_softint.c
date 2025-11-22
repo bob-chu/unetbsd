@@ -12,7 +12,7 @@
 
 #include "u_softint.h"
 
-#define SOFTINT_MAX_COUNT 32
+#define SOFTINT_MAX_COUNT 1024*32
 #define SOFTINT_LEVEL_COUNT SOFTINT_COUNT
 
 struct softint_percpu {
@@ -57,7 +57,7 @@ execute_softints(int level)
     struct softint *si;
     void (*func)(void *);
     void *arg;
-    bool mpsafe;
+    //bool mpsafe;
 
     while (!TAILQ_EMPTY(&softint_levels[level].si_pending)) {
         sip = TAILQ_FIRST(&softint_levels[level].si_pending);
@@ -65,20 +65,23 @@ execute_softints(int level)
 
         func = si->si_func;
         arg = si->si_arg;
-        mpsafe = si->si_flags & SI_MPSAFE;
+        //mpsafe = si->si_flags & SI_MPSAFE;
 
         sip->sip_onlist = false;
         TAILQ_REMOVE(&softint_levels[level].si_pending, sip, sip_entries);
-
+#if 0
         if (!mpsafe) {
             // In a real kernel, this would lock the kernel, but in userspace, it's a no-op
             printf("Executing non-MPSAFE soft interrupt at level %d\n", level);
         }
+#endif
         func(arg);
+#if 0
         if (!mpsafe) {
             // Unlock if needed, no-op in userspace
             printf("Finished non-MPSAFE soft interrupt at level %d\n", level);
         }
+#endif
     }
 }
 

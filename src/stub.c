@@ -46,7 +46,7 @@ struct lwp	*curlwp;
  * sys/kern/uipc_mbuf.c global variable
  */
 
-const int msize = 512;    // Reduced from 512 to allow more mbufs with less memory per mbuf
+const int msize = 512*8;    // Reduced from 512 to allow more mbufs with less memory per mbuf
 const int mclbytes = 2048; // Increased from 2048 to allow larger clusters for better performance
 
 //#define PHYSMEM 1048576*2048 // Increased from 256MB to 1GB
@@ -55,7 +55,7 @@ unsigned long physmem = PHYSMEM;
 unsigned long nkmempages = PHYSMEM/2; /* from le chapeau */
 #undef PHYSMEM
 
-int nmbclusters = 4096; // Increased from 4096 to allow more mbufs for network operations
+int nmbclusters = 4096*128; // Increased from 4096 to allow more mbufs for network operations
 int mblowat = 256;       // Increased to maintain a higher watermark
 int mcllowat = 64;      // Increased to maintain a higher cluster watermark
 
@@ -276,7 +276,7 @@ struct proc dummy_proc = {0};
 extern struct proc *curproc;
 
 __attribute__((constructor)) void init_dummy_lwp() {
-    gl_lwp = (struct lwp_t *)&lwp0;
+    gl_lwp = &lwp0;
 }
 
 static inline lwp_t * __attribute__ ((const)) stub_curlwp(void) { return &lwp0; }
@@ -293,13 +293,22 @@ int cpu_intr_p(void) {
 int
 copyout(const void *from, void *to, size_t len)
 {
-	bcopy (from, to, len);
+	if (from == NULL || to == NULL) {
+		printf("copyout: Invalid pointer detected - from=%p, to=%p, len=%zu\n", from, to, len);
+		return EFAULT;
+	}
+	bcopy(from, to, len);
 	return 0;
 }
 
-int copyin(const void* from, void* to, size_t len)
+int
+copyin(const void *from, void *to, size_t len)
 {
-	bcopy (from, to, len);
+	if (from == NULL || to == NULL) {
+		printf("copyin: Invalid pointer detected - from=%p, to=%p, len=%zu\n", from, to, len);
+		return EFAULT;
+	}
+	bcopy(from, to, len);
 	return 0;
 }
 
@@ -342,17 +351,18 @@ xmalloc(size, type, flags)
 	int type, flags;
 {
 	// mbuf requires 128-byte alignment
-    if (size > 8 && (size & (size-1)) == 0) {
-        void *ptr = memalign(size, size);
+    void *ptr;
+    if (type == M_MBUF || type == M_EXT_CLUSTER) {
+        ptr = memalign(128, size);
         if (ptr == NULL) {
-            printf("xmalloc: Failed to allocate aligned memory of size %lu for type %d\n", size, type);
+            printf("xmalloc: Failed to allocate 128-byte aligned memory of size %lu for type %d\n", size, type);
             return NULL;
         }
         memset(ptr, 0, size);
-        printf("xmalloc: Allocated aligned memory at %p of size %lu for type %d\n", ptr, size, type);
+        printf("xmalloc: Allocated 128-byte aligned memory at %p of size %lu for type %d\n", ptr, size, type);
         return ptr;
     } else {
-        void *ptr = malloc(size);
+        ptr = malloc(size);
         if (ptr == NULL) {
             printf("xmalloc: Failed to allocate memory of size %lu for type %d\n", size, type);
             return NULL;
@@ -503,7 +513,8 @@ void panic(const char *fmt, ...)
     // For userspace debugging, don't exit immediately; allow logging or debugging
     printf("Panic encountered. Continuing for debugging (userspace mode).\n");
     // Uncomment the line below to exit on panic if desired
-     exit(1);
+    //exit(1);
+    abort();
 }
 
 /*
@@ -617,6 +628,7 @@ get_expose_address(struct proc *p)
 
 struct pgrp *pgrp_find(pid_t pgid) { return NULL; }
 
+#if 1
 /*
  * sys/kern/subr_percpu.c
  */
@@ -627,12 +639,13 @@ struct percpu {
     percpu_callback_t pc_ctor; /* Constructor callback */
     percpu_callback_t pc_dtor; /* Destructor callback */
     void *pc_cookie; /* Cookie for callbacks */
+    uint8_t reserver[64]; /*reserver 64 */
 };
 typedef struct percpu percpu_t;
 
-percpu_t *cur_percpu;
+percpu_t *cur_percpu = NULL;
+static percpu_t *new_percpu = NULL;
 
-#if 1
 percpu_t *
 percpu_alloc(size_t size)
 {
@@ -661,35 +674,52 @@ void percpu_free(percpu_t *pc, size_t size)
             pc->pc_data = NULL;
         }
         free(pc);
+        if (pc == cur_percpu) {
+            cur_percpu = NULL;
+        }
+        if (pc == new_percpu) {
+            new_percpu = NULL;
+        }
+        pc = NULL;
     }
 }
-static percpu_t *new_percpu = NULL;
+
 void *
 percpu_getref(percpu_t *pc)
 {
     return pc ? pc->pc_data : NULL;
 }
+
 void
 percpu_putref(percpu_t *pc)
 {
-
+    // No-op in user space
 }
 
 void percpu_foreach(percpu_t *pc, percpu_callback_t cb, void *arg) {
-    if (pc && pc->pc_data) {
+    if (pc && pc->pc_data && cb) {
         cb(pc->pc_data, arg, &cpu0);
+    } else {
+        printf("percpu_foreach: Invalid pc=%p, pc_data=%p, or cb=%p\n", pc, pc ? pc->pc_data : NULL, cb);
     }
 }
 
-void percpu_traverse_enter(void) {}
-void percpu_traverse_exit(void) {}
+void percpu_traverse_enter(void) {
+    // No-op in user space
+}
+
+void percpu_traverse_exit(void) {
+    // No-op in user space
+}
 
 percpu_t *percpu_create(size_t size, percpu_callback_t ctor,
         percpu_callback_t dtor, void *cookie)
 {
+#if 0
     if (new_percpu != NULL) {
         percpu_free(new_percpu, new_percpu->pc_size); // Free any previously allocated memory to prevent leaks
     }
+#endif
     new_percpu = (percpu_t *)calloc(1, sizeof(percpu_t));
     if (!new_percpu) {
         printf("Failed to allocate memory for percpu structure. Possible out of memory condition.\n");
@@ -720,12 +750,12 @@ void *percpu_getptr_remote(percpu_t *pc, struct cpu_info *ci) {
 void percpu_foreach_xcall(percpu_t *pc, u_int xcflags, 
         percpu_callback_t func,
         void *arg) {
-    if (pc && pc->pc_data) {
-        func(pc->pc_data, arg, &cpu0);  // 单 CPU 模拟
+    if (pc && pc->pc_data && func) {
+        func(pc->pc_data, arg, &cpu0);  // Single CPU simulation
+    } else {
+        printf("percpu_foreach_xcall: Invalid pc=%p, pc_data=%p, or func=%p\n", pc, pc ? pc->pc_data : NULL, func);
     }
 }
-
-
 #endif
 unsigned int xc_encode_ipl(int ipl) {
     return 0;  // 返回伪造的 IPL
@@ -738,17 +768,14 @@ xc_unicast(unsigned int flags, xcfunc_t func, void *arg1, void *arg2,
     (*func)(arg1, arg2); // 直接调用函数，忽略 CPU 特定逻辑
     return 0;
 }
-#if 0
-// 模拟 vmem_xcreate
+
 vmem_t *
 vmem_xcreate(const char *name, vmem_addr_t base, vmem_size_t size,
     vmem_size_t quantum, vmem_ximport_t *importfn, vmem_release_t *releasefn,
     vmem_t *source, vmem_size_t qcache_max, vm_flag_t flags, int ipl)
 {
-    printf("vmem_xcreate: allocating %zu bytes for %s\n", size, name);
-    return (vmem_t *)malloc(size); // 简单返回 malloc 分配的内存
+    return (vmem_t *)malloc(size);
 }
-#endif
 // 模拟 explicit_memset
 void *
 explicit_memset(void *ptr, int value, size_t len)
@@ -1267,8 +1294,6 @@ void pppoe_input(struct ifnet *ifp, struct mbuf **mp) {}
 int ieee8023ad_lacp_input(struct ifnet *ifp, struct mbuf **mp) { return 0; }
 int ieee8023ad_marker_input(struct ifnet *ifp, struct mbuf **mp) { return 0; }
 
-#include "u_pktqueue.h"
-
 /* sys/net/if_pktq.c */
 uint32_t pktq_rps_hash(const pktq_rps_hash_func_t *funcp, const struct mbuf *m) { return 0; }
 void pktq_ifdetach(void) {}
@@ -1280,7 +1305,6 @@ pktq_sysctl_setup(pktqueue_t * const pq, struct sysctllog ** const clog,
 		  const struct sysctlnode * const parent_node, const int qid)
 {
 }
-
 /* sys/kern/subr_prf.c */
 void aprint_error(const char *fmt, ...) {}
 
@@ -1452,11 +1476,9 @@ void percpu_cleanup(void)
 {
     if (cur_percpu != NULL) {
         percpu_free(cur_percpu, cur_percpu->pc_size);
-        cur_percpu = NULL;
     }
     if (new_percpu != NULL) {
         percpu_free(new_percpu, new_percpu->pc_size);
-        new_percpu = NULL;
     }
 }
 

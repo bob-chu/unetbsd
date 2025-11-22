@@ -19,9 +19,17 @@ void *
 rump_hypermalloc(size_t howmuch, int alignment, bool waitok, const char *wmsg)
 {
     void *ptr;
+    // Validate alignment is power of 2 and at least sizeof(void*)
+    if (alignment < (int)sizeof(void*) || (alignment & (alignment - 1)) != 0) {
+        printf("ERROR: Invalid alignment %d\n", alignment);
+        return NULL;
+    }
+    
     if (posix_memalign(&ptr, alignment, howmuch) != 0) {
-        if (waitok)
-            panic("hypermalloc failed");
+        if (waitok) { 
+            panic("FATAL: hypermalloc failed to allocate %zu bytes (alignment %d)\n",
+                    howmuch, alignment);
+        }
         return NULL;
     }
     return ptr;
@@ -30,7 +38,10 @@ rump_hypermalloc(size_t howmuch, int alignment, bool waitok, const char *wmsg)
 void
 rump_hyperfree(void *what, size_t size)
 {
-    free(what);
+    if (what != NULL) {
+        memset(what, 0, size);
+        free(what);
+    }
 }
 
 int
@@ -57,7 +68,8 @@ uvm_km_kmem_free(vmem_t *vm, vmem_addr_t addr, vmem_size_t size)
 }
 
 int vmem_alloc(vmem_t *vm, vmem_size_t size, vm_flag_t flags, vmem_addr_t *addrp) {
-    *addrp = (vmem_addr_t)rump_hypermalloc(size, 16, (flags & VM_SLEEP), "vmem_alloc");
+    // User at least 128-byte aligment for network buffers
+    *addrp = (vmem_addr_t)rump_hypermalloc(size, 128, (flags & VM_SLEEP), "vmem_alloc");
     return *addrp ? 0 : ENOMEM;
 }
 

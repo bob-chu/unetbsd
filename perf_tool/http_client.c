@@ -16,7 +16,7 @@
 #include "tcp_layer.h"
 #include "deps/picohttpparser/picohttpparser.h"
 
-#define MAX_RECV_SIZE 2048
+#define MAX_RECV_SIZE 1024*10
 extern struct ev_loop *g_main_loop;
 
 
@@ -58,8 +58,6 @@ void http_client_init(perf_config_t *config) {
 }
 
 void create_http_connection(struct ev_loop *loop, perf_config_t *config) {
-    static int counter = 0;
-    if (counter++ > 10) return;
     http_conn_t *http_conn = (http_conn_t *)malloc(sizeof(http_conn_t));
     memset(http_conn, 0, sizeof(http_conn_t));
     http_conn->config = config;
@@ -73,8 +71,14 @@ void create_http_connection(struct ev_loop *loop, perf_config_t *config) {
               config->network.dst_ip_start, config->network.dst_port_start, 0);
     if (tcp_layer_connect(loop, config, 0, &http_callbacks, http_conn, &http_conn->tcp_conn) != 0) {
         LOG_ERROR("Failed to create TCP connection.");
-        free(http_conn->send_buffer);
-        free(http_conn);
+        if (http_conn->send_buffer) {
+            free(http_conn->send_buffer);
+            http_conn->send_buffer = NULL;
+        }
+        if (http_conn) {
+            free(http_conn);
+            http_conn = NULL;
+        }
         //tcp_layer_return_local_port(local_port);
     }
     
@@ -94,13 +98,19 @@ static void http_on_connect(struct tcp_conn *conn, int status) {
         LOG_INFO("HTTP write data: %s.", http_conn->send_buffer);
         tcp_layer_write(conn, http_conn->send_buffer, http_conn->send_buffer_size);
     } else {
-        LOG_ERROR("HTTP connection failed to connect.");
+        LOG_DEBUG("HTTP connection failed to connect.");
         metrics_inc_failure();
         scheduler_inc_stat(STAT_CONCURRENT_CONNECTIONS, -1);
         TAILQ_REMOVE(&g_http_conn_list, http_conn, entries);
         // No need to call tcp_layer_close as it's already being closed by TCP layer
-        free(http_conn->send_buffer);
-        free(http_conn);
+        if (http_conn) {
+            if (http_conn->send_buffer) {
+                free(http_conn->send_buffer);
+                http_conn->send_buffer = NULL;
+            }
+            free(http_conn);
+            conn->upper_layer_data = NULL;
+        }
     }
 }
 
@@ -108,13 +118,25 @@ static void http_on_read(struct tcp_conn *conn, const char *data, ssize_t len) {
     http_conn_t *http_conn = (http_conn_t *)conn->upper_layer_data;
     
     if (len > 0) {
+        // Check if we've already received the full body content
+        if (http_conn->header_length > 0) {
+            size_t body_received = (http_conn->total_received > http_conn->header_length) ? 
+                                   http_conn->total_received - http_conn->header_length : 0;
+            if (body_received >= (size_t)http_conn->content_length) {
+                LOG_WARN("Additional data received after full body, ignoring: %zd bytes", len);
+                return;
+            }
+        }
+        
         http_conn->total_received += len;
-        LOG_DEBUG("HTTP read: %d:%s", len, data);
+        LOG_DEBUG("HTTP read: %zd", len);
 
         // Only copy data to buffer if we haven't parsed the headers yet
         if (http_conn->header_length == 0) {
             if (http_conn->data_received + len > http_conn->recv_buffer_size) {
                 // Buffer overflow
+                LOG_DEBUG("Buffer overflow in HTTP client, closing connection");
+                tcp_layer_close(conn);
                 return;
             }
             memcpy(http_conn->recv_buffer + http_conn->data_received, data, len);
@@ -153,10 +175,14 @@ static void http_on_read(struct tcp_conn *conn, const char *data, ssize_t len) {
         }
 
         if (http_conn->header_length > 0) {
-            size_t content_received = http_conn->total_received - http_conn->header_length;
-            LOG_DEBUG("http body content_received :%d", content_received);
-            if (content_received >= (size_t)http_conn->content_length) {
-                // Full response received
+            // Calculate body content received by subtracting header length from total received
+            size_t body_received = (http_conn->total_received > http_conn->header_length) ? 
+                                   http_conn->total_received - http_conn->header_length : 0;
+            LOG_DEBUG("http body content_received: %zu", body_received);
+            if (body_received >= (size_t)http_conn->content_length) {
+                // Cap the body received at the expected content length to avoid overcounting
+                body_received = (size_t)http_conn->content_length;
+                LOG_DEBUG("Full body received: %zu bytes (expected: %lld)", body_received, http_conn->content_length);
                 http_conn->requests_sent_on_connection++;
                 if (http_conn->config->objective.requests_per_connection > 0 &&
                     http_conn->requests_sent_on_connection >= http_conn->config->objective.requests_per_connection) {
@@ -171,9 +197,10 @@ static void http_on_read(struct tcp_conn *conn, const char *data, ssize_t len) {
                     http_conn->content_length = 0;
                     http_conn->request_send_time = ev_now(g_main_loop);
                     tcp_layer_write(conn, http_conn->send_buffer, http_conn->send_buffer_size);
+                    LOG_DEBUG("Sending next request on same connection");
                 }
             } else {
-                LOG_DEBUG("http read body len: %d", content_received);
+                LOG_DEBUG("http read body len: %zu", body_received);
             }
         }
     }
@@ -189,13 +216,22 @@ static void http_on_write(struct tcp_conn *conn) {
 static void http_on_close(struct tcp_conn *conn) {
     http_conn_t *http_conn = (http_conn_t *)conn->upper_layer_data;
     LOG_DEBUG("http_on_close on client");
-    scheduler_inc_stat(STAT_CONCURRENT_CONNECTIONS, -1);
-    scheduler_inc_stat(STAT_CONNECTIONS_CLOSED, 1);
-    TAILQ_REMOVE(&g_http_conn_list, http_conn, entries);
-    //tcp_layer_return_local_port(http_conn->tcp_conn->local_port);
-    // No need to call tcp_layer_close here as it's already closing
-    free(http_conn->send_buffer);
-    free(http_conn);
+    if (http_conn) {
+        scheduler_inc_stat(STAT_CONCURRENT_CONNECTIONS, -1);
+        scheduler_inc_stat(STAT_CONNECTIONS_CLOSED, 1);
+        TAILQ_REMOVE(&g_http_conn_list, http_conn, entries);
+        //tcp_layer_return_local_port(http_conn->tcp_conn->local_port);
+        // No need to call tcp_layer_close here as it's already closing
+        if (http_conn) {
+            if (http_conn->send_buffer) {
+                free(http_conn->send_buffer);
+                http_conn->send_buffer = NULL;
+            }
+            free(http_conn);
+            conn->upper_layer_data = NULL;
+        }
+        conn->upper_layer_data = NULL; // Prevent double free by clearing the pointer
+    }
 }
 
 void http_client_close_excess_connections(int excess) {
@@ -209,6 +245,15 @@ void http_client_close_excess_connections(int excess) {
         tcp_layer_close(http_conn->tcp_conn);
         scheduler_inc_stat(STAT_CONCURRENT_CONNECTIONS, -1);
         scheduler_inc_stat(STAT_CONNECTIONS_CLOSED, 1);
+        // Free the resources here since on_close won't be called
+        if (http_conn->send_buffer) {
+            free(http_conn->send_buffer);
+            http_conn->send_buffer = NULL;
+        }
+        if (http_conn) {
+            free(http_conn);
+            http_conn = NULL;
+        }
         closed++;
     }
 }

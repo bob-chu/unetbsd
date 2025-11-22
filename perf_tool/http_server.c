@@ -19,7 +19,7 @@
 
 #define BUFFER_SIZE 7000
 #define CLIENT_DATA_POOL_SIZE 16384
-#define MAX_SEND_BUFFER_SIZE 1024*10
+#define MAX_SEND_BUFFER_SIZE 1024*5
 
 char *response_buffer_hello = NULL;
 char *response_buffer_another = NULL;
@@ -101,6 +101,7 @@ void free_response_buffers(void) {
     free(response_buffer_default);
     for (int i = 0; i < CLIENT_DATA_POOL_SIZE; i++) {
         free(client_data_pool[i].recv_buffer);
+        client_data_pool[i].recv_buffer = NULL;
     }
 }
 
@@ -134,6 +135,7 @@ void return_client_data_to_pool(client_data_t *client_data) {
         client_data->recv_pos = 0;
         client_data->header_sent = 0;
         client_data->response_sent = 0;
+        client_data->total_sent = 0;
         client_data->tcp_conn = NULL;
         client_data->in_use = 0;
         TAILQ_INSERT_TAIL(&free_client_data_list, client_data, free_list_entry);
@@ -229,7 +231,8 @@ static void http_request_read_cb(tcp_conn_t *conn, const char *buf, ssize_t nbyt
             data->response_sent = 0;
             // Send response synchronously in a loop until complete or EAGAIN
             ssize_t total_sent = send_http_response(data, conn);
-            LOG_DEBUG("Total response bytes sent: %zd", total_sent);
+            //data->total_sent += total_sent;
+            LOG_DEBUG("Total response bytes sent: %zd", data->total_sent);
             // Shift buffer only if there's remaining data (e.g., body for POST); for GET, recv_pos - ret is typically 0
             size_t remaining = data->recv_pos - ret;
             if (remaining > 0) {
@@ -271,7 +274,6 @@ static void prepare_http_response(client_data_t *data) {
 }
 
 static ssize_t send_http_response(client_data_t *data, tcp_conn_t *conn) {
-    ssize_t total_sent = 0;
     ssize_t sent;
     LOG_DEBUG("send_http_response, conn:%p", conn);
     // Send header
@@ -282,21 +284,22 @@ static ssize_t send_http_response(client_data_t *data, tcp_conn_t *conn) {
             scheduler_inc_stat(STAT_BYTES_SENT, sent);
             data->header_sent += sent;
             header_remaining -= sent;
-            total_sent += sent;
+            data->total_sent += sent;
+            LOG_DEBUG("Header sent: %zu bytes", sent);
         } else if (sent == 0 || (sent < 0 && errno != EAGAIN && errno != EWOULDBLOCK)) {
             LOG_ERROR("Failed to send header: %zd (%s)", sent, strerror(errno));
-            return total_sent;
+            http_on_close(conn);
+            tcp_layer_close(conn);
+            return data->total_sent;
         } else {
-            // EAGAIN, break to wait for writable, but since synchronous, log and close
-            LOG_WARN("Partial header send (%zd), closing due to emulation limit", total_sent);
-            return total_sent;
+            // EAGAIN or EWOULDBLOCK, wait for next write event
+            LOG_DEBUG("Partial header send (%zd), waiting for next write event", data->total_sent);
+            return data->total_sent;
         }
-        LOG_DEBUG("Header sent : %zu bytes", sent);
     }
 
     // Send body
     size_t body_remaining = data->response_body_size - data->response_sent;
-    //while (body_remaining > 0) {
     if (body_remaining > 0) {
         size_t chunk_size = (body_remaining > MAX_SEND_BUFFER_SIZE) ? MAX_SEND_BUFFER_SIZE : body_remaining;  // Send in chunks if large
         sent = tcp_layer_write(conn, data->response_body + data->response_sent, chunk_size);
@@ -304,26 +307,35 @@ static ssize_t send_http_response(client_data_t *data, tcp_conn_t *conn) {
             scheduler_inc_stat(STAT_BYTES_SENT, sent);
             data->response_sent += sent;
             body_remaining -= sent;
-            total_sent += sent;
-            LOG_DEBUG("Total sent: %zu, Body remain: %zu bytes", total_sent, body_remaining);
+            data->total_sent += sent;
+            LOG_DEBUG("Total sent: %zu, Body remain: %zu bytes", data->total_sent, body_remaining);
         } else if (sent == 0 || (sent < 0 && errno != EAGAIN && errno != EWOULDBLOCK)) {
-            LOG_DEBUG("Failed to send body chunk: %zd (%s)", sent, strerror(errno));
-            return total_sent;
+            //LOG_ERROR("Failed to send body chunk: %zd (%s)", sent, strerror(errno));
+            //http_on_close(conn);
+            //tcp_layer_close(conn);
+            return data->total_sent;
         } else {
-            LOG_WARN("Partial body send (%zd), closing due to emulation limit", total_sent);
-            http_on_close(conn);
-            tcp_layer_close(conn);
-            return total_sent;
+            // EAGAIN or EWOULDBLOCK, wait for next write event
+            LOG_DEBUG("Partial body send (%zd), waiting for next write event", data->total_sent);
+            return data->total_sent;
         }
     }
 
-    return total_sent;
+    // If everything is sent, log but do not close the connection, let the client handle closure
+    if (body_remaining == 0 && header_remaining == 0) {
+        LOG_DEBUG("Response fully sent (%zd bytes), waiting for client to close connection", data->total_sent);
+    }
+
+    return data->total_sent;
 }
 
 static void http_request_write_cb(tcp_conn_t *conn) {
-
     client_data_t *data = (client_data_t *)conn->upper_layer_data;
-    send_http_response(data, conn);
+    if (data->response_sent < data->response_body_size || data->header_sent < data->header_size) {
+        send_http_response(data, conn);
+    } else {
+        LOG_DEBUG("Response already fully sent, ignoring write callback");
+    }
 }
 
 static void http_on_close(tcp_conn_t *conn) {

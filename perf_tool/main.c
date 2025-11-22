@@ -27,8 +27,7 @@ static void timer_1s_cb(EV_P_ ev_timer *w, int revents) {
 
 static void idle_cb(EV_P_ ev_idle *w, int revents) {
     dpdk_read();
-    netbsd_process_event();
-    //softint_run();
+    netbsd_loop();
 }
 
 int main(int argc, char *argv[]) {
@@ -54,8 +53,8 @@ int main(int argc, char *argv[]) {
     printf("Config parsed successfully.\n");
 
     logger_init();
-    //logger_set_level(LOG_LEVEL_WARN);
-    logger_set_level(LOG_LEVEL_DEBUG);
+    logger_set_level(LOG_LEVEL_WARN);
+    //logger_set_level(LOG_LEVEL_DEBUG);
     logger_enable_colors(1);
 
     metrics_init();

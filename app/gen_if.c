@@ -263,10 +263,17 @@ static void single_mbuf_input(struct rte_mbuf *pkt)
         pn = pn->next;
         prev = mb;
     }
-    if (flag)
+    if (flag) {
         virt_if_mbuf_input(v_if, hdr);
-
-    rte_pktmbuf_free(pkt);
+        // Always free the DPDK mbuf to prevent leaks. The NetBSD mbuf is now owned by ether_input,
+        // and we must not touch it to avoid double-free issues if NetBSD frees it.
+        rte_pktmbuf_free(pkt);
+    } else {
+        // If we didn't pass the NetBSD mbuf to ether_input (due to an error in processing),
+        // free it here to prevent a memory leak.
+        netbsd_freembuf(hdr);
+        rte_pktmbuf_free(pkt);
+    }
 }
 
 static int is_arp_packet(struct rte_mbuf *pkt)

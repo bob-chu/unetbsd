@@ -33,6 +33,7 @@ typedef struct client_data {
     char *response_body;
     size_t response_body_size;
     size_t response_sent;
+    size_t total_sent;
     TAILQ_ENTRY(client_data) free_list_entry;
 } client_data_t;
 

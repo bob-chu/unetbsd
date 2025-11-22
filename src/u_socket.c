@@ -144,9 +144,15 @@ void netbsd_process_event()
         }
         free(ev, M_TEMP);
     }
-
-    softint_run();
 }
+
+void netbsd_loop()
+{
+        //softint_run();
+        netbsd_process_event();
+}
+
+
 
 int netbsd_socket(struct netbsd_handle *nh)
 {

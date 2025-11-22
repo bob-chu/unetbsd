@@ -182,7 +182,7 @@ int tcp_layer_connect(struct ev_loop *loop, perf_config_t *config, int unused, t
     netbsd_io_start(&conn->nh);
     LOG_DEBUG("tcp_layer_connect set tcp_layer_connct_cb on write_cb");
 
-    ev_timer_init(&conn->conn_timeout_timer, tcp_layer_timeout_cb, 10., 0.);
+    ev_timer_init(&conn->conn_timeout_timer, tcp_layer_timeout_cb, 100., 0.);
     conn->conn_timeout_timer.data = conn;
     ev_timer_start(conn->loop, &conn->conn_timeout_timer);
 
@@ -415,7 +415,7 @@ static void tcp_layer_read_cb(void *handle, int events) {
         if (bytes_read > 0) {
             // Null-terminate for safe logging
             buffer[bytes_read] = '\0';
-            LOG_DEBUG("tcp_layer_read_cb : %s", buffer);
+            //LOG_DEBUG("tcp_layer_read_cb : %s", buffer);
             if (conn->callbacks.on_read) {
                 conn->callbacks.on_read(conn, buffer, bytes_read);
             }
