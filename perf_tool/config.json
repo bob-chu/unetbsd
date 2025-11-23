@@ -1,15 +1,14 @@
 {
   "scheduler": {
     "prepare_duration_sec": 3,
-    "ramp_up_duration_sec": 10,
+    "ramp_up_duration_sec": 1,
     "sustain_duration_sec": 30,
     "ramp_down_duration_sec": 10,
     "close_duration_sec": 1
   },
   "objective": {
     "type": "HTTP_REQUESTS",
-    "value": 800,
-    "requests_per_second": 0,
+    "value": 100,
     "requests_per_connection": 1
   },
   "http_config": {

@@ -1,5 +1,6 @@
 // logger.c
 #include "logger.h"
+#include <unistd.h>
 
 static logger_config_t g_config = {
     .output_file = NULL,
@@ -70,6 +71,7 @@ void logger_log(const char* file, int line, log_level_t level, const char* fmt, 
     // Print actual log message
     va_list args;
     va_start(args, fmt);
+    fprintf(g_config.output_file, "[PID: %d] ", getpid());
     vfprintf(g_config.output_file, fmt, args);
     va_end(args);
 

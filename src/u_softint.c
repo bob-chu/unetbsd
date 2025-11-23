@@ -12,7 +12,7 @@
 
 #include "u_softint.h"
 
-#define SOFTINT_MAX_COUNT 32
+#define SOFTINT_MAX_COUNT 1024*32
 #define SOFTINT_LEVEL_COUNT SOFTINT_COUNT
 
 struct softint_percpu {
@@ -22,6 +22,7 @@ struct softint_percpu {
 };
 
 struct softint_lev {
+    int count;
     TAILQ_HEAD(, softint_percpu) si_pending;
 };
 
@@ -44,6 +45,7 @@ softint_levels_init(void)
     int i;
     for (i = 0; i < SOFTINT_LEVEL_COUNT; i++) {
         TAILQ_INIT(&softint_levels[i].si_pending);
+        softint_levels[i].count = 0;
     }
 }
 
@@ -51,34 +53,37 @@ softint_levels_init(void)
  * Execute pending soft interrupts for a given level.
  */
 static void
-execute_softints(int level)
+execute_softints(int level, int pending_count)
 {
     struct softint_percpu *sip;
     struct softint *si;
     void (*func)(void *);
     void *arg;
-    bool mpsafe;
+    //bool mpsafe;
 
-    while (!TAILQ_EMPTY(&softint_levels[level].si_pending)) {
+    while (!TAILQ_EMPTY(&softint_levels[level].si_pending) && pending_count-- > 0) {
         sip = TAILQ_FIRST(&softint_levels[level].si_pending);
         si = sip->sip_parent;
 
         func = si->si_func;
         arg = si->si_arg;
-        mpsafe = si->si_flags & SI_MPSAFE;
+        //mpsafe = si->si_flags & SI_MPSAFE;
 
         sip->sip_onlist = false;
         TAILQ_REMOVE(&softint_levels[level].si_pending, sip, sip_entries);
-
+#if 0
         if (!mpsafe) {
             // In a real kernel, this would lock the kernel, but in userspace, it's a no-op
             printf("Executing non-MPSAFE soft interrupt at level %d\n", level);
         }
+#endif
         func(arg);
+#if 0
         if (!mpsafe) {
             // Unlock if needed, no-op in userspace
             printf("Finished non-MPSAFE soft interrupt at level %d\n", level);
         }
+#endif
     }
 }
 
@@ -143,11 +148,13 @@ softint_schedule(void *arg)
 
     if (!sip->sip_onlist) {
         TAILQ_INSERT_TAIL(&softint_levels[si->si_level].si_pending, sip, sip_entries);
+        softint_levels[si->si_level].count++;
         sip->sip_onlist = true;
         //printf("Scheduled soft interrupt at level %d\n", si->si_level);
     } else {
         //printf("Soft interrupt at level %d already scheduled\n", si->si_level);
     }
+    //softint_run();
 }
 
 /*
@@ -167,9 +174,13 @@ void
 softint_run(void)
 {
     int i;
+    int pending_count[SOFTINT_LEVEL_COUNT];
+    for (i = 0; i < SOFTINT_LEVEL_COUNT; i++) {
+        pending_count[i] = softint_levels[i].count;
+    }
     for (i = 0; i < SOFTINT_LEVEL_COUNT; i++) {
         if (!TAILQ_EMPTY(&softint_levels[i].si_pending)) {
-            execute_softints(i);
+            execute_softints(i, pending_count[i]);
         }
     }
 }

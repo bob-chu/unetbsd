@@ -72,7 +72,12 @@ int parse_config(const char *file_path, perf_config_t *config) {
     if (objective_json) {
         config->objective.type = get_string_from_json(objective_json, "type");
         config->objective.value = get_int_from_json(objective_json, "value");
-        config->objective.requests_per_second = get_int_from_json(objective_json, "requests_per_second");
+        cJSON *rps_item = cJSON_GetObjectItemCaseSensitive(objective_json, "requests_per_second");
+        if (cJSON_IsNumber(rps_item)) {
+            config->objective.requests_per_second = rps_item->valueint;
+        } else {
+            config->objective.requests_per_second = -1; // Use -1 to signify "max speed"
+        }
         config->objective.requests_per_connection = get_int_from_json(objective_json, "requests_per_connection");
     }
 

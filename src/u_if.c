@@ -20,28 +20,9 @@ static void virt_if_start(struct ifnet *ifp)
 
 int virt_transmit(struct ifnet *ifp, struct mbuf *m)
 {
-    char data[4096];
     int total = m->m_pkthdr.len;
-    int off = 0;
-    int len = total;
-    struct mbuf *mb = (struct mbuf *)m;
-    char *data_ptr = mtod(m, char *);
-
-    //printf(">>>>: %u: %d\n", m->m_pkthdr.len,  total);
-    /*
-    while (total > 0) {
-        if (off + total > sizeof(data)) {
-            printf("buf[4096] is less than mbuf size: %d\n", total);
-            goto out;
-        }
-        m_copydata(mb, 0, total, data);
-        total -= total;
-    }
-    */
-    //gl_vif->output_cb((void *)data_ptr, len, gl_vif->sc_arg);
-    gl_vif->output_cb((void *)m, len, gl_vif->sc_arg);
-out:
-    m_freem((struct mbuf *)mb);
+    gl_vif->output_cb((void *)m, total, gl_vif->sc_arg);
+    m_freem(m); // Free the mbuf after the callback
     return 0;
 }
 
@@ -132,18 +113,24 @@ int virt_if_output(struct virt_interface *vif, void *data, size_t len) {
 }
 
 int virt_if_input(struct virt_interface *vif, void *data, size_t len) {
-    //if (!vif || !vif->input_cb) return -1;
     vif = gl_vif;
     struct mbuf *m;
-    m = m_getcl(M_NOWAIT, MT_DATA, M_PKTHDR);
-    if (!m) return -1;
-#if 0
-    if (len > MHLEN) {
-        m_free(m);
+    if (len > MCLBYTES) {
+        printf("Input data size %zu exceeds maximum mbuf cluster size %d", len, MCLBYTES);
         return -1;
     }
-#endif
-    m->m_data += 32;
+    m = m_getcl(M_NOWAIT, MT_DATA, M_PKTHDR);
+    if (!m) {
+        printf("Failed to allocate mbuf for input data");
+        return -1;
+    }
+    /* Do we need this ? */
+    m->m_data += 32; // Reserve space for headers
+    if (len > M_TRAILINGSPACE(m)) {
+        m_free(m);
+        printf("Input data size %zu exceeds available space in mbuf", len);
+        return -1;
+    }
     u_memcpy(m->m_data, data, len);
     m->m_len = len;
     m->m_pkthdr.len = len;
@@ -314,6 +301,9 @@ void *netbsd_mget_hdr(void *data, int len)
     struct mbuf *m;
     if (len > MHLEN) {
         m = m_getcl(M_NOWAIT, MT_DATA, M_PKTHDR);
+        if (m == NULL) {
+            return NULL;
+        }
         if (m->m_ext.ext_buf == NULL) {
             return NULL;
         }
@@ -336,8 +326,10 @@ void *netbsd_mget_hdr(void *data, int len)
 void *netbsd_mget_data(void *pre, void *data, int len)
 {
     struct mbuf *m_new = NULL;
+    struct mbuf *m_prev = (struct mbuf *)pre;
+
     if (len > MLEN) {
-        m_new = m_getcl(M_NOWAIT, MT_DATA, M_PKTHDR);
+        m_new = m_getcl(M_NOWAIT, MT_DATA, 0);
         if (m_new == NULL) {
             return NULL;
         }
@@ -349,6 +341,12 @@ void *netbsd_mget_data(void *pre, void *data, int len)
     }
     u_memcpy(m_new->m_data, data, len);
     m_new->m_len = len;
+    m_new->m_next = NULL;  // Initialize to NULL
+
+    // Link this mbuf to the previous one
+    if (m_prev != NULL) {
+        m_prev->m_next = m_new;
+    }
     return m_new;
 }
 
@@ -358,4 +356,5 @@ int virt_if_mbuf_input(struct virt_interface *vif, void *data)
         return -1;
     }
     ether_input(gl_vif->ifp, data);
+    return 0;
 }
