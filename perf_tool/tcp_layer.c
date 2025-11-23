@@ -194,6 +194,7 @@ ssize_t tcp_layer_write(tcp_conn_t *conn, const char *data, size_t len) {
     struct iovec iov;
     iov.iov_base = (void *)data;
     iov.iov_len = len;
+    LOG_DEBUG("TCP layer netbsd_write: %d:%s", len, data);
     return netbsd_write(&conn->nh, &iov, 1);
 }
 
@@ -415,7 +416,7 @@ static void tcp_layer_read_cb(void *handle, int events) {
         if (bytes_read > 0) {
             // Null-terminate for safe logging
             buffer[bytes_read] = '\0';
-            //LOG_DEBUG("tcp_layer_read_cb : %s", buffer);
+            LOG_DEBUG("tcp_layer_read_cb : %s", buffer);
             if (conn->callbacks.on_read) {
                 conn->callbacks.on_read(conn, buffer, bytes_read);
             }
@@ -425,6 +426,7 @@ static void tcp_layer_read_cb(void *handle, int events) {
                 return;
             }
         } else {
+            LOG_DEBUG("tcp_layer_read_cb return : %d", bytes_read);
             if (bytes_read == -35 /* EAGAIN */) {
                 return;
             }
@@ -433,6 +435,7 @@ static void tcp_layer_read_cb(void *handle, int events) {
             }
             // If read returns <= 0, it might indicate a connection closure or error
             if (bytes_read < 0) {
+                LOG_DEBUG("tcp_layer_read_cb return : %d, close tcp", bytes_read);
                 tcp_layer_close(conn);
                 return;
             }

@@ -148,8 +148,8 @@ void netbsd_process_event()
 
 void netbsd_loop()
 {
-        //softint_run();
-        netbsd_process_event();
+    softint_run();
+    netbsd_process_event();
 }
 
 

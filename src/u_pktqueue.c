@@ -30,7 +30,7 @@ pktq_create(size_t maxlen, void (*intrh)(void *), void *sc)
 	pq->pq_tail = 0;
 	pq->pq_intrh = intrh;
 	pq->pq_sc = sc;
-	sih = softint_establish(0, pktq_dequeue_all, pq);
+	sih = softint_establish(SOFTINT_NET | SOFTINT_MPSAFE, pktq_dequeue_all, pq);
     printf("pkt_queue create, softint establish intrh:%p, sc: %p\n", pq->pq_intrh, pq->pq_sc);
     if (!sih) {
         printf("softint_establish failed. exit\n");
