@@ -80,6 +80,7 @@ void create_http_connection(struct ev_loop *loop, perf_config_t *config) {
             http_conn = NULL;
         }
         //tcp_layer_return_local_port(local_port);
+        return;
     }
     
     TAILQ_INSERT_TAIL(&g_http_conn_list, http_conn, entries);

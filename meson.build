@@ -166,6 +166,9 @@ netbsd_srcs = [
     'src/u_softint.c'
 ]
 
+# Apply patch for TCP output cache in userspace event-driven model
+patch_file = 'disable_cache_optimization.patch'
+
 libnetbsdstack = static_library(
     'netbsdstack',
     netbsd_srcs,
@@ -182,8 +185,14 @@ libnetbsdstack = static_library(
         '-DINET',
         '-DINET6',
         '-D__BSD_VISIBLE'
-    ]
+    ],
+    override_options : ['cpp_std=none']
 )
+
+# Note: Applying patches directly in Meson might require a custom target or script
+# since Meson doesn't have built-in patch application like this.
+# For now, ensure the patch is applied manually or through a setup script.
+message('Make sure to apply the patch ' + patch_file + ' to the NetBSD source if needed.')
 
 app_srcs = [
     'app/main.c',

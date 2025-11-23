@@ -458,5 +458,12 @@ int netbsd_reuseaddr(struct netbsd_handle *nh, const void *optval, socklen_t opt
         printf("netbsd_reuseaddr failed: level=%d, optname=%d, error=%d\n",
                 sopt.sopt_level, sopt.sopt_name, error);
     }
+    sopt.sopt_name = SO_REUSEPORT;
+    error = sosetopt(so, &sopt);
+    if (error) {
+        printf("netbsd_reuseport failed: level=%d, optname=%d, error=%d\n",
+                sopt.sopt_level, sopt.sopt_name, error);
+    }
+
     return error;
 }
