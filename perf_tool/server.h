@@ -10,11 +10,13 @@
 
 #include "picohttpparser.h"
 #include "tcp_layer.h"
+#include "ssl_layer.h"
 
 #define BUFFER_SIZE 7000
 
 typedef struct client_data {
     tcp_conn_t *tcp_conn;
+    ssl_layer_t *ssl_layer;
     perf_config_t *config;
     char *recv_buffer;
     size_t recv_buffer_size;

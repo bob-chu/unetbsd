@@ -5,7 +5,7 @@ cc = meson.get_compiler('c')
 
 add_project_arguments(
     '-g',
-    '-O0',
+    '-O2',
     '-march=native',
     '-Wall',
     '-Wno-builtin-declaration-mismatch',
@@ -18,7 +18,7 @@ add_project_arguments(
 
 cflags_user = [
   '-g',
-  '-O0',
+  '-O2',
   '-frename-registers',
   '-funswitch-loops',
   '-fweb',
@@ -228,6 +228,8 @@ if get_option('use_dpdk')
     )
 endif
 
+openssl_dep = dependency('openssl', required : true)
+
 perf_tool_srcs = [
     'perf_tool/main.c',
     'perf_tool/config.c',
@@ -243,6 +245,7 @@ perf_tool_srcs = [
     'perf_tool/tcp_layer.c',
     'perf_tool/scheduler.c',
     'perf_tool/metrics.c',
+    'perf_tool/ssl_layer.c',
     'perf_tool/deps/picohttpparser/picohttpparser.c'
 ]
 
@@ -252,6 +255,31 @@ executable(
     c_args : cflags_user + ['-I/usr/local/include'],
     include_directories : [include_directories('perf_tool'), include_directories('perf_tool/deps/cjson'), include_directories('perf_tool/deps/picohttpparser'), include_directories('include'), include_directories('app'), include_directories('src')],
     link_with : libnetbsdstack,
-    dependencies : [dpdk_dep, libev_dep, pthread_dep],
+    dependencies : [dpdk_dep, libev_dep, pthread_dep, openssl_dep],
+    install : true
+)
+
+test_ssl_layer_srcs = [
+    'perf_tool/test/test_ssl_layer.c',
+    'perf_tool/ssl_layer.c',
+    'perf_tool/config.c',
+    'perf_tool/deps/cjson/cJSON.c',
+    'app/log.c',
+]
+
+executable(
+    'test_ssl_layer',
+    test_ssl_layer_srcs,
+    c_args : cflags_user + ['-I/usr/local/include'],
+    include_directories : [include_directories('perf_tool'), include_directories('perf_tool/deps/cjson'), include_directories('perf_tool/deps/picohttpparser'), include_directories('include'), include_directories('app'), include_directories('src')],
+    link_with : libnetbsdstack,
+    dependencies : [dpdk_dep, libev_dep, pthread_dep, openssl_dep],
+    install : true
+)
+
+executable(
+    'test_simple',
+    'perf_tool/test/test_simple.c',
+    dependencies : [openssl_dep],
     install : true
 )

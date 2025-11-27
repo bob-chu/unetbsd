@@ -1,19 +1,22 @@
 {
   "scheduler": {
     "prepare_duration_sec": 3,
-    "ramp_up_duration_sec": 1,
-    "sustain_duration_sec": 30,
+    "ramp_up_duration_sec": 10,
+    "sustain_duration_sec": 50,
     "ramp_down_duration_sec": 10,
     "close_duration_sec": 1
   },
   "objective": {
     "type": "HTTP_REQUESTS",
-    "value": 100,
+    "value": 1000,
     "requests_per_connection": 1
   },
   "http_config": {
+    "use_https":1,
+    "cert_path":"./server.crt",
+    "key_path":"./server.key",
     "client_request_path": "/hello",
-    "response_size_hello": 1000000, 
+    "response_size_hello": 100, 
     "response_size_another": 5242880,
     "response_size_default": 1024
   },
@@ -30,7 +33,7 @@
     "src_port_start": 1000,
     "src_port_end": 65000,
     "dst_port_start": 8000,
-    "dst_port_end": 8010 
+    "dst_port_end": 8000 
   },
   "client_payload": {
     "data": "Hello from client!",

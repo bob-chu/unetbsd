@@ -1,0 +1,301 @@
+#include "ssl_layer.h"
+#include <openssl/err.h>
+#include "logger.h"
+#include <stdio.h>
+#include <stdlib.h> // For malloc/free
+
+static SSL_CTX *g_ssl_server_ctx = NULL;
+static SSL_CTX *g_ssl_client_ctx = NULL;
+int s_ex_data_idx = -1;
+
+static int openssl_initialized = 0;
+
+static void initialize_openssl_libraries() {
+    if (!openssl_initialized) {
+        SSL_library_init();
+        OpenSSL_add_all_algorithms();
+        SSL_load_error_strings();
+        openssl_initialized = 1;
+    }
+}
+
+int ssl_layer_init_server(const char *cert_path, const char *key_path) {
+    initialize_openssl_libraries();
+
+    if (g_ssl_server_ctx) {
+        return 0;
+    }
+
+    g_ssl_server_ctx = SSL_CTX_new(TLS_server_method());
+    if (!g_ssl_server_ctx) {
+        ERR_print_errors_fp(stderr);
+        return -1;
+    }
+    SSL_CTX_set_mode(g_ssl_server_ctx, SSL_MODE_ENABLE_PARTIAL_WRITE |
+                     SSL_MODE_ACCEPT_MOVING_WRITE_BUFFER);
+
+    if (SSL_CTX_use_certificate_file(g_ssl_server_ctx, cert_path,
+                                     SSL_FILETYPE_PEM) <= 0) {
+        ERR_print_errors_fp(stderr);
+        SSL_CTX_free(g_ssl_server_ctx);
+        g_ssl_server_ctx = NULL;
+        return -1;
+    }
+
+    if (SSL_CTX_use_PrivateKey_file(g_ssl_server_ctx, key_path,
+                                    SSL_FILETYPE_PEM) <= 0) {
+        ERR_print_errors_fp(stderr);
+        SSL_CTX_free(g_ssl_server_ctx);
+        g_ssl_server_ctx = NULL;
+        return -1;
+    }
+
+    if (s_ex_data_idx == -1) {
+        s_ex_data_idx = SSL_CTX_get_ex_new_index(0, NULL, NULL, NULL, NULL);
+        if (s_ex_data_idx == -1) {
+            ERR_print_errors_fp(stderr);
+            SSL_CTX_free(g_ssl_server_ctx);
+            g_ssl_server_ctx = NULL;
+            return -1;
+        }
+    }
+
+    return 0;
+}
+
+int ssl_layer_init_client() {
+    initialize_openssl_libraries();
+
+    if (g_ssl_client_ctx) {
+        return 0;
+    }
+
+    g_ssl_client_ctx = SSL_CTX_new(TLS_client_method());
+    if (!g_ssl_client_ctx) {
+        ERR_print_errors_fp(stderr);
+        return -1;
+    }
+    SSL_CTX_set_mode(g_ssl_client_ctx, SSL_MODE_ENABLE_PARTIAL_WRITE |
+                     SSL_MODE_ACCEPT_MOVING_WRITE_BUFFER);
+
+    if (s_ex_data_idx == -1) {
+        s_ex_data_idx = SSL_CTX_get_ex_new_index(0, NULL, NULL, NULL, NULL);
+        if (s_ex_data_idx == -1) {
+            ERR_print_errors_fp(stderr);
+            SSL_CTX_free(g_ssl_client_ctx);
+            g_ssl_client_ctx = NULL;
+            return -1;
+        }
+    }
+
+    return 0;
+}
+
+ssl_layer_t *
+ssl_layer_create(int is_server,
+                 on_handshake_complete_cb_t on_handshake_complete_cb,
+                 on_encrypted_data_cb_t on_encrypted_data_cb,
+                 on_decrypted_data_cb_t on_decrypted_data_cb) {
+    ssl_layer_t *layer = (ssl_layer_t *)malloc(sizeof(ssl_layer_t));
+    if (!layer) {
+        return NULL;
+    }
+
+    layer->on_handshake_complete_cb = on_handshake_complete_cb;
+    layer->on_encrypted_data_cb = on_encrypted_data_cb;
+    layer->on_decrypted_data_cb = on_decrypted_data_cb;
+
+    if (is_server) {
+        layer->ssl = SSL_new(g_ssl_server_ctx);
+    } else {
+        layer->ssl = SSL_new(g_ssl_client_ctx);
+    }
+
+    if (!layer->ssl) {
+        free(layer);
+        return NULL;
+    }
+
+    layer->rbio = BIO_new(BIO_s_mem());
+    layer->wbio = BIO_new(BIO_s_mem());
+
+    if (!layer->rbio || !layer->wbio) {
+        if (layer->rbio) BIO_free(layer->rbio);
+        if (layer->wbio) BIO_free(layer->wbio);
+        SSL_free(layer->ssl);
+        free(layer);
+        ERR_print_errors_fp(stderr); // Print OpenSSL errors if any during BIO creation
+        return NULL;
+    }
+
+    SSL_set_bio(layer->ssl, layer->rbio, layer->wbio);
+    if (is_server) {
+        SSL_set_accept_state(layer->ssl);
+    } else {
+        SSL_set_connect_state(layer->ssl);
+    }
+
+    return layer;
+}
+
+void ssl_layer_destroy(ssl_layer_t *layer) {
+    if (layer) {
+        SSL_free(layer->ssl);
+        // BIOs are freed by SSL_free
+        free(layer);
+    }
+}
+
+ssl_handshake_status_t ssl_layer_handshake(ssl_layer_t *layer) {
+    int ret = SSL_do_handshake(layer->ssl);
+    if (ret == 1) {
+        if (layer->on_handshake_complete_cb) {
+            layer->on_handshake_complete_cb(layer);
+        }
+        return SSL_HANDSHAKE_OK;
+    }
+
+    int err = SSL_get_error(layer->ssl, ret);
+    char buf[4096];
+    int len = 0;
+
+    switch (err) {
+        case SSL_ERROR_WANT_READ:
+        case SSL_ERROR_WANT_WRITE:
+            len = BIO_read(layer->wbio, buf, sizeof(buf));
+            if (len > 0) {
+                if (layer->on_encrypted_data_cb) {
+                    layer->on_encrypted_data_cb(layer, buf, len);
+                }
+            } else if (len < 0) {
+                ERR_print_errors_fp(stderr);
+                return SSL_HANDSHAKE_ERROR;
+            }
+            return (err == SSL_ERROR_WANT_READ) ? SSL_HANDSHAKE_WANT_READ
+            : SSL_HANDSHAKE_WANT_WRITE;
+        default:
+            ERR_print_errors_fp(stderr);
+            return SSL_HANDSHAKE_ERROR;
+    }
+}
+
+int ssl_layer_read_net_data(ssl_layer_t *layer, const void *data, int len) {
+    int written = BIO_write(layer->rbio, data, len);
+    if (written != len) {
+        ERR_print_errors_fp(stderr);
+        return -1; // Failed to write all data to BIO
+    }
+
+    if (!SSL_is_init_finished(layer->ssl)) {
+        LOG_DEBUG("ssl handshake");
+        ssl_handshake_status_t hs_status = ssl_layer_handshake(layer);
+        if (hs_status == SSL_HANDSHAKE_ERROR) {
+            ERR_print_errors_fp(stderr);
+            return -1; // Indicate an error during handshake
+        }
+        // Even if handshake is not complete, we continue to process any possible data
+        // Return 0 only if no further processing is possible at this stage
+        if (hs_status != SSL_HANDSHAKE_OK) {
+            // Check if there is data to process after handshake attempt
+            if (BIO_pending(layer->rbio) <= 0) {
+                return 0; // No more data to process, wait for more network data
+            }
+        }
+    }
+
+    char buf[4096];
+    int nbytes;
+    int total_decrypted_bytes = 0;
+    do {
+        LOG_DEBUG("ssl data, call SSL_read");
+        nbytes = SSL_read(layer->ssl, buf, sizeof(buf));
+        if (nbytes > 0) {
+            if (layer->on_decrypted_data_cb) {
+                LOG_DEBUG("ssl data, call on_decrypted_data_cb");
+                layer->on_decrypted_data_cb(layer, buf, nbytes);
+            }
+            total_decrypted_bytes += nbytes;
+        } else if (nbytes < 0) {
+            int err = SSL_get_error(layer->ssl, nbytes);
+            if (err == SSL_ERROR_WANT_READ || err == SSL_ERROR_WANT_WRITE) {
+                // No more data to read from SSL_read for now, but not an error.
+                // Any pending encrypted data in wbio would have been handled by
+                // handshake or will be handled when app data is written.
+                break; // Exit loop, wait for more network data
+            } else {
+                ERR_print_errors_fp(stderr);
+                return -1; // Actual SSL_read error
+            }
+        } else { // nbytes == 0, meaning SSL_read indicates no more data from BIO
+            break;
+        }
+    } while (BIO_pending(layer->rbio) > 0 ||
+    nbytes > 0); // Continue if more data in rbio or last read was successful
+
+    return total_decrypted_bytes;
+}
+
+int ssl_layer_write_app_data(ssl_layer_t *layer, const void *data, int len) {
+
+    LOG_DEBUG("ssl data, call ssl_layer_write_app_data");
+    int ret = SSL_write(layer->ssl, data, len);
+    if (ret <= 0) {
+        int err = SSL_get_error(layer->ssl, ret);
+        if (err == SSL_ERROR_WANT_READ) {
+            // This should not happen with memory BIOs
+        } else {
+            ERR_print_errors_fp(stderr);
+            return -1;
+        }
+    }
+
+    char buf[4096];
+    int nbytes;
+    while ((nbytes = BIO_read(layer->wbio, buf, sizeof(buf))) > 0) {
+        if (layer->on_encrypted_data_cb) {
+            layer->on_encrypted_data_cb(layer, buf, nbytes);
+        }
+    }
+
+    return ret;
+}
+
+int ssl_layer_shutdown(ssl_layer_t *layer) {
+    int ret = SSL_shutdown(layer->ssl);
+    if (ret == 0) {
+        // Shutdown is not finished, need to call it again
+        ret = SSL_shutdown(layer->ssl);
+    }
+
+    if (ret == 1) {
+        // Shutdown is complete
+        return 0;
+    }
+
+    int err = SSL_get_error(layer->ssl, ret);
+    if (err == SSL_ERROR_WANT_READ) {
+        char buf[4096];
+        int len = BIO_read(layer->wbio, buf, sizeof(buf));
+        if (len > 0) {
+            if (layer->on_encrypted_data_cb) {
+                layer->on_encrypted_data_cb(layer, buf, len);
+            }
+        }
+    } else {
+        ERR_print_errors_fp(stderr);
+        return -1;
+    }
+
+    return 0;
+}
+
+void ssl_layer_cleanup() {
+    if (g_ssl_server_ctx) {
+        SSL_CTX_free(g_ssl_server_ctx);
+        g_ssl_server_ctx = NULL;
+    }
+    if (g_ssl_client_ctx) {
+        SSL_CTX_free(g_ssl_client_ctx);
+        g_ssl_client_ctx = NULL;
+    }
+}

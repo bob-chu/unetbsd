@@ -117,7 +117,14 @@ int parse_config(const char *file_path, perf_config_t *config) {
         config->http_config.response_size_hello = get_int_from_json(http_config_json, "response_size_hello");
         config->http_config.response_size_another = get_int_from_json(http_config_json, "response_size_another");
         config->http_config.response_size_default = get_int_from_json(http_config_json, "response_size_default");
+        config->http_config.use_https = get_int_from_json(http_config_json, "use_https");
+        config->http_config.cert_path = get_string_from_json(http_config_json, "cert_path");
+        config->http_config.key_path = get_string_from_json(http_config_json, "key_path");
     }
+
+    config->use_https = config->http_config.use_https;
+    config->cert_path = config->http_config.cert_path;
+    config->key_path = config->http_config.key_path;
 
     // Parse interface config
     cJSON *interface_json = cJSON_GetObjectItemCaseSensitive(json, "interface");
@@ -141,5 +148,7 @@ void free_config(perf_config_t *config) {
         free(config->client_payload.data);
         free(config->server_response.data);
         free(config->http_config.client_request_path);
+        free(config->http_config.cert_path);
+        free(config->http_config.key_path);
     }
 }
