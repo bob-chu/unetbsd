@@ -81,9 +81,11 @@ void cpu_startup()
 }
 
 #include "u_softint.h"
+#include "u_fd.h"
 
 void netbsd_init()
 {
+    fd_table_init();
     curproc->p_cred = &cred0;
     pool_subsystem_init();
     

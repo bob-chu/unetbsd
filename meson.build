@@ -4,7 +4,7 @@ cc = meson.get_compiler('c')
 
 add_project_arguments(
     '-g',
-    '-O2',
+    '-O3',
     '-march=native',
     '-Wall',
     '-Wno-builtin-declaration-mismatch',
@@ -16,12 +16,12 @@ add_project_arguments(
 )
 
 cflags_user = [
-  '-g',
-  '-O2',
-  '-frename-registers',
-  '-funswitch-loops',
-  '-fweb',
-  '-Wno-format-truncation',
+    '-g',
+    '-O3',
+    '-frename-registers',
+    '-funswitch-loops',
+    '-fweb',
+    '-Wno-format-truncation',
 ]
 
 if get_option('use_dpdk')
@@ -163,7 +163,8 @@ netbsd_srcs = [
     'src/u_mem.c',
     'src/u_pktqueue.c',
     'src/u_softint.c',
-    'src/u_kstub.c'
+    'src/u_kstub.c',
+    'src/u_fd.c'
 ]
 
 # Apply patch for TCP output cache in userspace event-driven model
