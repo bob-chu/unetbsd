@@ -309,3 +309,16 @@ executable(
 >>>>>>> 9644bed (Add support both static and dynamic library)
     install : true
 )
+
+libnetbsd_shim_srcs = [
+    'src/posix_shim.c',
+]
+
+shared_library(
+    'netbsdshim',
+    libnetbsd_shim_srcs,
+    include_directories : [include_directories('include'), include_directories('src')],
+    link_with : libnetbsdstack_shared,
+    dependencies : [cc.find_library('dl', required: true)],
+    install : true
+)
