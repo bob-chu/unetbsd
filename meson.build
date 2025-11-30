@@ -4,7 +4,7 @@ cc = meson.get_compiler('c')
 
 add_project_arguments(
     '-g',
-    '-O3',
+    '-O2',
     '-march=native',
     '-Wall',
     '-Wno-builtin-declaration-mismatch',
@@ -17,7 +17,7 @@ add_project_arguments(
 
 cflags_user = [
     '-g',
-    '-O3',
+    '-O2',
     '-frename-registers',
     '-funswitch-loops',
     '-fweb',
@@ -25,9 +25,11 @@ cflags_user = [
 ]
 
 if get_option('use_dpdk')
-    dpdk_dep = dependency('libdpdk', static : true, required : true)
+    dpdk_dep_static = dependency('libdpdk', static : true, required : true)
+    dpdk_dep_dynamic = dependency('libdpdk', static : false, required : true)
 else
-    dpdk_dep = dependency('', required : false)
+    dpdk_dep_static = dependency('', required : false)
+    dpdk_dep_dynamic = dependency('', required : false)
 endif
 
 libev_dep = cc.find_library('ev', required : true)
@@ -244,7 +246,7 @@ if get_option('use_dpdk')
         c_args : cflags_user + ['-I/usr/local/include'],
         include_directories : [include_directories(app_include_dirs), include_directories('include', is_system : true)],
         link_with : libnetbsdstack_static,
-        dependencies : [dpdk_dep, libev_dep, pthread_dep],
+        dependencies : [dpdk_dep_static, libev_dep, pthread_dep],
         install : true
     )
 endif
@@ -275,9 +277,8 @@ executable(
     perf_tool_srcs,
     c_args : cflags_user + ['-I/usr/local/include'],
     include_directories : [include_directories('perf_tool'), include_directories('perf_tool/deps/cjson'), include_directories('perf_tool/deps/picohttpparser'), include_directories('include'), include_directories('app'), include_directories('src')],
-<<<<<<< HEAD
-    link_with : libnetbsdstack,
-    dependencies : [dpdk_dep, libev_dep, pthread_dep, openssl_dep],
+    link_with : libnetbsdstack_static,
+    dependencies : [dpdk_dep_static, libev_dep, pthread_dep, openssl_dep],
     install : true
 )
 
@@ -294,8 +295,8 @@ executable(
     test_ssl_layer_srcs,
     c_args : cflags_user + ['-I/usr/local/include'],
     include_directories : [include_directories('perf_tool'), include_directories('perf_tool/deps/cjson'), include_directories('perf_tool/deps/picohttpparser'), include_directories('include'), include_directories('app'), include_directories('src')],
-    link_with : libnetbsdstack,
-    dependencies : [dpdk_dep, libev_dep, pthread_dep, openssl_dep],
+    link_with : libnetbsdstack_static,
+    dependencies : [dpdk_dep_static, libev_dep, pthread_dep, openssl_dep],
     install : true
 )
 
@@ -303,22 +304,23 @@ executable(
     'test_simple',
     'perf_tool/test/test_simple.c',
     dependencies : [openssl_dep],
-=======
     link_with : libnetbsdstack_static,
-    dependencies : [dpdk_dep, libev_dep, pthread_dep],
->>>>>>> 9644bed (Add support both static and dynamic library)
+    dependencies : [dpdk_dep_static, libev_dep, pthread_dep],
     install : true
 )
 
 libnetbsd_shim_srcs = [
     'src/posix_shim.c',
+    'src/u_cmdqueue.c',
 ]
 
 shared_library(
     'netbsdshim',
     libnetbsd_shim_srcs,
     include_directories : [include_directories('include'), include_directories('src')],
-    link_with : libnetbsdstack_shared,
-    dependencies : [cc.find_library('dl', required: true)],
+    link_with : libnetbsdstack_static,
+    dependencies : [cc.find_library('dl', required: true), dependency('threads')] + (get_option('use_dpdk') ? [dpdk_dep_dynamic] : []),
+    #c_args : ['-fPIC'],
+    link_args : ['-static-libgcc', '-Wl,--whole-archive', '-lpthread', '-lnuma', '-Wl,--no-whole-archive'],
     install : true
 )

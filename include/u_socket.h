@@ -61,5 +61,6 @@ int netbsd_reuseport(struct netbsd_handle *nh, const void *optval, socklen_t opt
 int netbsd_linger_set(struct netbsd_handle *nh, struct linger *l);
 
 void netbsd_process_event();
+void netbsd_process_commands();
 void netbsd_loop();
 #endif
