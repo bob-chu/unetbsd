@@ -430,7 +430,7 @@ static void tcp_layer_read_cb(void *handle, int events) {
             if (bytes_read == -35 /* EAGAIN */) {
                 return;
             }
-            if (conn->callbacks.on_read) {
+            if (bytes_read > 0 && conn->callbacks.on_read) {
                 conn->callbacks.on_read(conn, NULL, bytes_read);
             }
             // If read returns <= 0, it might indicate a connection closure or error

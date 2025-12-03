@@ -5,6 +5,8 @@
 
 typedef struct {
     uint64_t connections_per_second;
+    uint64_t connections_per_second_http;
+    uint64_t connections_per_second_https;
     uint64_t success_count;
     uint64_t failure_count;
     uint64_t min_latency_ms;
@@ -26,6 +28,8 @@ void metrics_add_latency(uint64_t latency_ms);
 metrics_t metrics_get_snapshot(void);
 void metrics_update_port_usage(uint64_t ports_used, uint64_t total_ports);
 void metrics_update_cps(uint64_t cps);
+void metrics_update_cps_http(uint64_t cps);
+void metrics_update_cps_https(uint64_t cps);
 void metrics_update_bytes_sent(uint64_t bytes);
 void metrics_update_bytes_received(uint64_t bytes);
 void metrics_reset_bytes_per_second(void);

@@ -14,6 +14,7 @@
 #include "metrics.h"
 #include "scheduler.h"
 #include "tcp_layer.h"
+#include "ssl_layer.h"
 #include "deps/picohttpparser/picohttpparser.h"
 
 #define MAX_RECV_SIZE 1024*10
@@ -22,6 +23,7 @@ extern struct ev_loop *g_main_loop;
 
 typedef struct http_conn {
     tcp_conn_t *tcp_conn;
+    ssl_layer_t *ssl_layer;
     perf_config_t *config;
     char *send_buffer;
     size_t send_buffer_size;
@@ -42,6 +44,7 @@ static struct http_conn_list_head g_http_conn_list;
 
 static void http_on_connect(struct tcp_conn *conn, int status);
 static void http_on_read(struct tcp_conn *conn, const char *data, ssize_t len);
+static void https_on_read(struct tcp_conn *conn, const char *data, ssize_t len);
 static void http_on_write(struct tcp_conn *conn);
 static void http_on_close(struct tcp_conn *conn);
 
@@ -52,12 +55,60 @@ static tcp_callbacks_t http_callbacks = {
     .on_close = http_on_close,
 };
 
+static void on_handshake_complete_cb_client(ssl_layer_t *layer) {
+    http_conn_t *http_conn = (http_conn_t*)SSL_get_ex_data(layer->ssl, 0);
+    if (http_conn) {
+        LOG_INFO("SSL handshake complete for client %p", http_conn);
+        // Now that handshake is complete, send the first HTTP request
+        scheduler_inc_stat(STAT_CONNECTIONS_OPENED, 1);
+        scheduler_inc_stat(STAT_REQUESTS_SENT, 1);
+        metrics_inc_success();
+        metrics_update_cps(1); // Increment CPS for HTTPS
+        http_conn->request_send_time = ev_now(g_main_loop);
+        LOG_INFO("HTTP write data: %s.", http_conn->send_buffer);
+        ssl_layer_write_app_data(http_conn->ssl_layer, http_conn->send_buffer, http_conn->send_buffer_size);
+    } else {
+        LOG_ERROR("No HTTP connection data associated with SSL layer during handshake complete");
+    }
+}
+
+static void on_encrypted_data_cb_client(ssl_layer_t *layer, const void *data, int len) {
+    LOG_DEBUG("HTTP on_encrypted_data_cb_client len:%d.", len);
+    http_conn_t *http_conn = (http_conn_t*)SSL_get_ex_data(layer->ssl, 0);
+    if (http_conn) {
+        scheduler_inc_stat(STAT_BYTES_SENT, len); // Track sent bytes for bandwidth
+        tcp_layer_write(http_conn->tcp_conn, data, len);
+    } else {
+        LOG_ERROR("No HTTP connection data associated with SSL layer during encrypted data callback");
+    }
+}
+
+static void on_decrypted_data_cb_client(ssl_layer_t *layer, const void *data, int len) {
+    http_conn_t *http_conn = (http_conn_t*)SSL_get_ex_data(layer->ssl, 0);
+    if (http_conn) {
+        scheduler_inc_stat(STAT_BYTES_RECEIVED, len); // Track received bytes for bandwidth
+        http_on_read(http_conn->tcp_conn, data, len);
+    } else {
+        LOG_ERROR("No HTTP connection data associated with SSL layer during decrypted data callback");
+    }
+}
+
 void http_client_init(perf_config_t *config) {
     TAILQ_INIT(&g_http_conn_list);
     tcp_layer_init_local_port_pool(config);
+
+    if (config->use_https) {
+        if (ssl_layer_init_client() != 0) {
+            LOG_ERROR("Failed to initialize client SSL layer");
+            return;
+        }
+    }
 }
 
 void create_http_connection(struct ev_loop *loop, perf_config_t *config) {
+    //static int counter = 0;
+    //if (counter++ > 0) return;
+
     http_conn_t *http_conn = (http_conn_t *)malloc(sizeof(http_conn_t));
     memset(http_conn, 0, sizeof(http_conn_t));
     http_conn->config = config;
@@ -69,7 +120,12 @@ void create_http_connection(struct ev_loop *loop, perf_config_t *config) {
     snprintf(http_conn->send_buffer, http_conn->send_buffer_size + 1, "GET %s HTTP/1.1\r\nHost: %s\r\n\r\n", request_path, config->network.dst_ip_start);
     LOG_DEBUG("HTTP layer calling TCP layer to connect to %s:%d from local port %d",
               config->network.dst_ip_start, config->network.dst_port_start, 0);
-    if (tcp_layer_connect(loop, config, 0, &http_callbacks, http_conn, &http_conn->tcp_conn) != 0) {
+    tcp_callbacks_t http_cbs = http_callbacks;
+    if (config->use_https) {
+        http_cbs.on_read = https_on_read;
+    }
+
+    if (tcp_layer_connect(loop, config, 0, &http_cbs, http_conn, &http_conn->tcp_conn) != 0) {
         LOG_ERROR("Failed to create TCP connection.");
         if (http_conn->send_buffer) {
             free(http_conn->send_buffer);
@@ -82,6 +138,16 @@ void create_http_connection(struct ev_loop *loop, perf_config_t *config) {
         //tcp_layer_return_local_port(local_port);
         return;
     }
+
+    if (config->use_https) {
+        http_conn->ssl_layer = ssl_layer_create(0, on_handshake_complete_cb_client, on_encrypted_data_cb_client, on_decrypted_data_cb_client); // 0 for is_client
+        if (!http_conn->ssl_layer) {
+            LOG_ERROR("Failed to create client SSL layer");
+            tcp_layer_close(http_conn->tcp_conn);
+            return;
+        }
+        SSL_set_ex_data(http_conn->ssl_layer->ssl, 0, http_conn); // Use index 0 for http_conn
+    }
     
     TAILQ_INSERT_TAIL(&g_http_conn_list, http_conn, entries);
     scheduler_inc_stat(STAT_CONCURRENT_CONNECTIONS, 1);
@@ -91,13 +157,18 @@ static void http_on_connect(struct tcp_conn *conn, int status) {
     http_conn_t *http_conn = (http_conn_t *)conn->upper_layer_data;
     LOG_DEBUG("HTTP layer received connect callback from TCP layer. Status: %d", status);
     if (status == 0) {
-        LOG_INFO("HTTP connection established.");
-        scheduler_inc_stat(STAT_CONNECTIONS_OPENED, 1);
-        scheduler_inc_stat(STAT_REQUESTS_SENT, 1);
-        metrics_inc_success();
-        http_conn->request_send_time = ev_now(g_main_loop);
-        LOG_INFO("HTTP write data: %s.", http_conn->send_buffer);
-        tcp_layer_write(conn, http_conn->send_buffer, http_conn->send_buffer_size);
+        if (http_conn->config->use_https) {
+            ssl_layer_handshake(http_conn->ssl_layer);
+        } else {
+            LOG_INFO("HTTP connection established.");
+            scheduler_inc_stat(STAT_CONNECTIONS_OPENED, 1);
+            scheduler_inc_stat(STAT_REQUESTS_SENT, 1);
+            metrics_inc_success();
+            metrics_update_cps(1); // Increment CPS for HTTP
+            http_conn->request_send_time = ev_now(g_main_loop);
+            LOG_INFO("HTTP write data: %s.", http_conn->send_buffer);
+            tcp_layer_write(conn, http_conn->send_buffer, http_conn->send_buffer_size);
+        }
     } else {
         LOG_DEBUG("HTTP connection failed to connect.");
         metrics_inc_failure();
@@ -115,9 +186,18 @@ static void http_on_connect(struct tcp_conn *conn, int status) {
     }
 }
 
-static void http_on_read(struct tcp_conn *conn, const char *data, ssize_t len) {
+static void https_on_read(struct tcp_conn *conn, const char *data, ssize_t len) {
     http_conn_t *http_conn = (http_conn_t *)conn->upper_layer_data;
-    
+
+    LOG_DEBUG("https_on_read", len);
+    if (http_conn->config->use_https && len > 0) {
+        ssl_layer_read_net_data(http_conn->ssl_layer, data, len);
+        return;
+    }
+}
+static void http_on_read(struct tcp_conn *conn, const char *data, ssize_t len) {
+    LOG_DEBUG("http_on_read", len);
+    http_conn_t *http_conn = (http_conn_t *)conn->upper_layer_data;
     if (len > 0) {
         // Check if we've already received the full body content
         if (http_conn->header_length > 0) {
@@ -209,9 +289,14 @@ static void http_on_read(struct tcp_conn *conn, const char *data, ssize_t len) {
 
 static void http_on_write(struct tcp_conn *conn) {
     http_conn_t *http_conn = (http_conn_t *)conn->upper_layer_data;
-    http_conn->sent_size = http_conn->send_buffer_size;
-    // Data has been written, we can send more if needed.
-    // In this simple case, we send the whole request at once.
+    if (http_conn->config->use_https) {
+        // Data has been written to the SSL_BIO, nothing to do here directly for HTTPS
+        // The ssl_layer_write_app_data already sends encrypted data via on_encrypted_data_cb_client
+    } else {
+        http_conn->sent_size = http_conn->send_buffer_size;
+        // Data has been written, we can send more if needed.
+        // In this simple case, we send the whole request at once.
+    }
 }
 
 static void http_on_close(struct tcp_conn *conn) {
@@ -221,6 +306,10 @@ static void http_on_close(struct tcp_conn *conn) {
         scheduler_inc_stat(STAT_CONCURRENT_CONNECTIONS, -1);
         scheduler_inc_stat(STAT_CONNECTIONS_CLOSED, 1);
         TAILQ_REMOVE(&g_http_conn_list, http_conn, entries);
+        if (http_conn->config->use_https && http_conn->ssl_layer) {
+            ssl_layer_destroy(http_conn->ssl_layer);
+            http_conn->ssl_layer = NULL;
+        }
         //tcp_layer_return_local_port(http_conn->tcp_conn->local_port);
         // No need to call tcp_layer_close here as it's already closing
         if (http_conn) {
@@ -247,6 +336,10 @@ void http_client_close_excess_connections(int excess) {
         scheduler_inc_stat(STAT_CONCURRENT_CONNECTIONS, -1);
         scheduler_inc_stat(STAT_CONNECTIONS_CLOSED, 1);
         // Free the resources here since on_close won't be called
+        if (http_conn->config->use_https && http_conn->ssl_layer) {
+            ssl_layer_destroy(http_conn->ssl_layer);
+            http_conn->ssl_layer = NULL;
+        }
         if (http_conn->send_buffer) {
             free(http_conn->send_buffer);
             http_conn->send_buffer = NULL;

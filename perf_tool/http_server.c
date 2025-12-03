@@ -16,6 +16,7 @@
 #include "metrics.h"
 #include "scheduler.h"
 #include "tcp_layer.h"
+#include "ssl_layer.h"
 
 #define BUFFER_SIZE 7000
 #define CLIENT_DATA_POOL_SIZE 16384
@@ -38,6 +39,11 @@ static void http_request_write_cb(tcp_conn_t *conn);
 static void http_on_close(tcp_conn_t *conn);
 static void prepare_http_response(client_data_t *data);
 static ssize_t send_http_response(client_data_t *data, tcp_conn_t *conn);
+
+static void on_handshake_complete_cb(ssl_layer_t *layer);
+static void on_encrypted_data_cb(ssl_layer_t *layer, const void *data, int len);
+static void on_decrypted_data_cb(ssl_layer_t *layer, const void *data, int len);
+
 
 static tcp_server_callbacks_t server_callbacks;
 
@@ -132,6 +138,10 @@ client_data_t *get_client_data_from_pool() {
 
 void return_client_data_to_pool(client_data_t *client_data) {
     if (client_data->in_use) {
+        if (client_data->ssl_layer) {
+            ssl_layer_destroy(client_data->ssl_layer);
+            client_data->ssl_layer = NULL;
+        }
         client_data->recv_pos = 0;
         client_data->header_sent = 0;
         client_data->response_sent = 0;
@@ -145,6 +155,13 @@ void return_client_data_to_pool(client_data_t *client_data) {
 void http_server_init(perf_config_t *config) {
     init_response_buffers(config);
     init_client_data_pool(config);
+
+    if (config->use_https) {
+        if (ssl_layer_init_server(config->http_config.cert_path, config->http_config.key_path) != 0) {
+            LOG_ERROR("Failed to initialize SSL layer");
+            return;
+        }
+    }
 
     server_callbacks.on_accept = http_on_accept;
 
@@ -178,12 +195,43 @@ static void http_on_accept(tcp_conn_t *conn) {
     conn->callbacks.on_close = http_on_close;
     conn->callbacks.on_connect = NULL;
 
+    if (data->config->use_https) {
+        data->ssl_layer = ssl_layer_create(1, on_handshake_complete_cb, on_encrypted_data_cb, on_decrypted_data_cb); // 1 for is_server
+        if (!data->ssl_layer) {
+            LOG_ERROR("Failed to create SSL layer");
+            http_on_close(conn);
+            tcp_layer_close(conn);
+            return;
+        }
+        // Associate the ssl_layer with the client_data for callbacks
+        SSL_set_ex_data(data->ssl_layer->ssl, 0, data); // Use index 0 for client_data
+    }
+
     scheduler_inc_stat(STAT_CONNECTIONS_OPENED, 1);
+    metrics_update_cps(1); // Increment CPS for HTTP or HTTPS connection
 }
 
-static void http_request_read_cb(tcp_conn_t *conn, const char *buf, ssize_t nbytes) {
-    client_data_t *data = (client_data_t *)conn->upper_layer_data;
-    LOG_DEBUG("Enter http_request_read_cb, nbytes: %zd", nbytes);
+static void on_handshake_complete_cb(ssl_layer_t *layer) {
+    LOG_INFO("SSL handshake complete");
+    client_data_t *client_data = (client_data_t*)SSL_get_ex_data(layer->ssl, 0);
+    if (client_data) {
+        metrics_update_cps(1); // Increment CPS for HTTPS specifically on handshake completion
+    }
+}
+
+static void on_encrypted_data_cb(ssl_layer_t *layer, const void *data, int len) {
+    client_data_t *client_data = (client_data_t*)SSL_get_ex_data(layer->ssl, 0);
+    if (client_data) {
+        scheduler_inc_stat(STAT_BYTES_SENT, len); // Track sent bytes for bandwidth
+        tcp_layer_write(client_data->tcp_conn, data, len);
+    } else {
+        LOG_ERROR("No client data associated with SSL layer");
+    }
+}
+
+static void process_http_request(client_data_t *data, const char *buf, int nbytes) {
+    tcp_conn_t *conn = data->tcp_conn;
+    LOG_DEBUG("Enter process_http_request, nbytes: %d", nbytes);
     if (nbytes > 0) {
         size_t space = data->recv_buffer_size - data->recv_pos;
         size_t copy_len = ((size_t)nbytes < space) ? (size_t)nbytes : space;
@@ -192,18 +240,6 @@ static void http_request_read_cb(tcp_conn_t *conn, const char *buf, ssize_t nbyt
             data->recv_pos += copy_len;
         }
         scheduler_inc_stat(STAT_BYTES_RECEIVED, (int)copy_len);
-
-        // Temporarily null-terminate for logging
-        char saved_char = '\0';
-        if (data->recv_pos < data->recv_buffer_size) {
-            saved_char = data->recv_buffer[data->recv_pos];
-            data->recv_buffer[data->recv_pos] = '\0';
-        }
-        LOG_DEBUG("Current recv_buffer (len %zu): %s", data->recv_pos, data->recv_buffer);
-        // Restore the saved char
-        if (data->recv_pos < data->recv_buffer_size) {
-            data->recv_buffer[data->recv_pos] = saved_char;
-        }
 
         const char *method = NULL;
         size_t method_len = 0;
@@ -229,11 +265,8 @@ static void http_request_read_cb(tcp_conn_t *conn, const char *buf, ssize_t nbyt
             prepare_http_response(data);
             data->header_sent = 0;
             data->response_sent = 0;
-            // Send response synchronously in a loop until complete or EAGAIN
-            ssize_t total_sent = send_http_response(data, conn);
-            //data->total_sent += total_sent;
+            send_http_response(data, conn);
             LOG_DEBUG("Total response bytes sent: %zd", data->total_sent);
-            // Shift buffer only if there's remaining data (e.g., body for POST); for GET, recv_pos - ret is typically 0
             size_t remaining = data->recv_pos - ret;
             if (remaining > 0) {
                 memmove(data->recv_buffer, data->recv_buffer + ret, remaining);
@@ -252,6 +285,28 @@ close_conn:
     http_on_close(conn);
     tcp_layer_close(conn);
 }
+
+static void on_decrypted_data_cb(ssl_layer_t *layer, const void *buf, int nbytes) {
+    client_data_t *data = (client_data_t*)SSL_get_ex_data(layer->ssl, 0);
+    if (data) {
+        scheduler_inc_stat(STAT_BYTES_RECEIVED, nbytes); // Track received bytes for bandwidth
+        process_http_request(data, buf, nbytes);
+    } else {
+        LOG_ERROR("No client data associated with SSL layer during decrypted data callback");
+    }
+}
+
+
+static void http_request_read_cb(tcp_conn_t *conn, const char *buf, ssize_t nbytes) {
+    client_data_t *data = (client_data_t *)conn->upper_layer_data;
+
+    if (data->config->use_https) {
+        ssl_layer_read_net_data(data->ssl_layer, buf, nbytes);
+    } else {
+        process_http_request(data, buf, nbytes);
+    }
+}
+
 
 static void prepare_http_response(client_data_t *data) {
     char *body = NULL;
@@ -276,53 +331,79 @@ static void prepare_http_response(client_data_t *data) {
 static ssize_t send_http_response(client_data_t *data, tcp_conn_t *conn) {
     ssize_t sent;
     LOG_DEBUG("send_http_response, conn:%p", conn);
-    // Send header
-    size_t header_remaining = data->header_size - data->header_sent;
-    while (header_remaining > 0) {
-        sent = tcp_layer_write(conn, data->response_header + data->header_sent, header_remaining);
-        if (sent > 0) {
-            scheduler_inc_stat(STAT_BYTES_SENT, sent);
-            data->header_sent += sent;
-            header_remaining -= sent;
-            data->total_sent += sent;
-            LOG_DEBUG("Header sent: %zu bytes", sent);
-        } else if (sent == 0 || (sent < 0 && errno != EAGAIN && errno != EWOULDBLOCK)) {
-            LOG_ERROR("Failed to send header: %zd (%s)", sent, strerror(errno));
-            http_on_close(conn);
-            tcp_layer_close(conn);
-            return data->total_sent;
-        } else {
-            // EAGAIN or EWOULDBLOCK, wait for next write event
-            LOG_DEBUG("Partial header send (%zd), waiting for next write event", data->total_sent);
-            return data->total_sent;
+
+    if (data->config->use_https) {
+        // Send header
+        size_t header_remaining = data->header_size - data->header_sent;
+        if (header_remaining > 0) {
+            LOG_DEBUG("send_https header, conn:%p", conn);
+            ssl_layer_write_app_data(data->ssl_layer, data->response_header + data->header_sent, header_remaining);
+            data->header_sent += header_remaining;
+            data->total_sent += header_remaining;
+            scheduler_inc_stat(STAT_BYTES_SENT, header_remaining);
+        }
+
+        // Send body
+        size_t body_remaining = data->response_body_size - data->response_sent;
+        if (body_remaining > 0) {
+            LOG_DEBUG("send_https body, conn:%p", conn);
+            ssl_layer_write_app_data(data->ssl_layer, data->response_body + data->response_sent, body_remaining);
+            data->response_sent += body_remaining;
+            data->total_sent += body_remaining;
+            scheduler_inc_stat(STAT_BYTES_SENT, body_remaining);
+        }
+        return 0;
+
+    } else {
+        // Send header
+        size_t header_remaining = data->header_size - data->header_sent;
+        while (header_remaining > 0) {
+            sent = tcp_layer_write(conn, data->response_header + data->header_sent, header_remaining);
+            if (sent > 0) {
+                scheduler_inc_stat(STAT_BYTES_SENT, sent);
+                data->header_sent += sent;
+                header_remaining -= sent;
+                data->total_sent += sent;
+                LOG_DEBUG("Header sent: %zu bytes", sent);
+            } else if (sent == 0 || (sent < 0 && errno != EAGAIN && errno != EWOULDBLOCK)) {
+                LOG_ERROR("Failed to send header: %zd (%s)", sent, strerror(errno));
+                http_on_close(conn);
+                tcp_layer_close(conn);
+                return data->total_sent;
+            } else {
+                // EAGAIN or EWOULDBLOCK, wait for next write event
+                LOG_DEBUG("Partial header send (%zd), waiting for next write event", data->total_sent);
+                return data->total_sent;
+            }
+        }
+
+        // Send body
+        size_t body_remaining = data->response_body_size - data->response_sent;
+        if (body_remaining > 0) {
+            size_t chunk_size = (body_remaining > MAX_SEND_BUFFER_SIZE) ? MAX_SEND_BUFFER_SIZE : body_remaining;  // Send in chunks if large
+            sent = tcp_layer_write(conn, data->response_body + data->response_sent, chunk_size);
+            if (sent > 0) {
+                scheduler_inc_stat(STAT_BYTES_SENT, sent);
+                data->response_sent += sent;
+                body_remaining -= sent;
+                data->total_sent += sent;
+                LOG_DEBUG("Total sent: %zu, Body remain: %zu bytes", data->total_sent, body_remaining);
+            } else if (sent == 0 || (sent < 0 && errno != EAGAIN && errno != EWOULDBLOCK)) {
+                //LOG_ERROR("Failed to send body chunk: %zd (%s)", sent, strerror(errno));
+                //http_on_close(conn);
+                //tcp_layer_close(conn);
+                return data->total_sent;
+            } else {
+                // EAGAIN or EWOULDBLOCK, wait for next write event
+                LOG_DEBUG("Partial body send (%zd), waiting for next write event", data->total_sent);
+                return data->total_sent;
+            }
         }
     }
 
-    // Send body
-    size_t body_remaining = data->response_body_size - data->response_sent;
-    if (body_remaining > 0) {
-        size_t chunk_size = (body_remaining > MAX_SEND_BUFFER_SIZE) ? MAX_SEND_BUFFER_SIZE : body_remaining;  // Send in chunks if large
-        sent = tcp_layer_write(conn, data->response_body + data->response_sent, chunk_size);
-        if (sent > 0) {
-            scheduler_inc_stat(STAT_BYTES_SENT, sent);
-            data->response_sent += sent;
-            body_remaining -= sent;
-            data->total_sent += sent;
-            LOG_DEBUG("Total sent: %zu, Body remain: %zu bytes", data->total_sent, body_remaining);
-        } else if (sent == 0 || (sent < 0 && errno != EAGAIN && errno != EWOULDBLOCK)) {
-            //LOG_ERROR("Failed to send body chunk: %zd (%s)", sent, strerror(errno));
-            //http_on_close(conn);
-            //tcp_layer_close(conn);
-            return data->total_sent;
-        } else {
-            // EAGAIN or EWOULDBLOCK, wait for next write event
-            LOG_DEBUG("Partial body send (%zd), waiting for next write event", data->total_sent);
-            return data->total_sent;
-        }
-    }
 
     // If everything is sent, log but do not close the connection, let the client handle closure
-    if (body_remaining == 0 && header_remaining == 0) {
+    if (data->response_body_size - data->response_sent == 0 && data->header_size - data->header_sent == 0) {
         LOG_DEBUG("Response fully sent (%zd bytes), waiting for client to close connection", data->total_sent);
     }
 
@@ -332,7 +413,8 @@ static ssize_t send_http_response(client_data_t *data, tcp_conn_t *conn) {
 static void http_request_write_cb(tcp_conn_t *conn) {
     client_data_t *data = (client_data_t *)conn->upper_layer_data;
     if (data->response_sent < data->response_body_size || data->header_sent < data->header_size) {
-        send_http_response(data, conn);
+        ssize_t sent = send_http_response(data, conn);
+        LOG_DEBUG("Write callback processed, total sent: %zd bytes", sent);
     } else {
         LOG_DEBUG("Response already fully sent, ignoring write callback");
     }
