@@ -303,9 +303,8 @@ executable(
 executable(
     'test_simple',
     'perf_tool/test/test_simple.c',
-    dependencies : [openssl_dep],
     link_with : libnetbsdstack_static,
-    dependencies : [dpdk_dep_static, libev_dep, pthread_dep],
+    dependencies : [dpdk_dep_static, libev_dep, pthread_dep, openssl_dep],
     install : true
 )
 
