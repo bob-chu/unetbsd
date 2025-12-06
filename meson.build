@@ -32,7 +32,7 @@ else
     dpdk_dep_dynamic = dependency('', required : false)
 endif
 
-libev_dep = cc.find_library('ev', required : true)
+libev_dep = cc.find_library('ev', required : true, static : true)
 pthread_dep = dependency('threads')
 
 netbsd_include_dirs = [
@@ -251,7 +251,7 @@ if get_option('use_dpdk')
     )
 endif
 
-openssl_dep = dependency('openssl', required : true)
+openssl_dep = dependency('openssl', required : true, static : true)
 
 perf_tool_srcs = [
     'perf_tool/main.c',
@@ -278,6 +278,7 @@ executable(
     c_args : cflags_user + ['-I/usr/local/include'],
     include_directories : [include_directories('perf_tool'), include_directories('perf_tool/deps/cjson'), include_directories('perf_tool/deps/picohttpparser'), include_directories('include'), include_directories('app'), include_directories('src')],
     link_with : libnetbsdstack_static,
+    link_args : ['-static'],
     dependencies : [dpdk_dep_static, libev_dep, pthread_dep, openssl_dep],
     install : true
 )

@@ -33,12 +33,9 @@ static void idle_cb(EV_P_ ev_idle *w, int revents) {
 int main(int argc, char *argv[]) {
     const char *mode = argv[1];
     const char *config_path = argv[2];
-    const char *if_name = argv[3];
-    const char *file_prefix = argv[4];
-    const char *coremask = argv[5];
 
-    if (argc != 6) {
-        fprintf(stderr, "Usage: %s <client|server|standalone> <config.json> <interface_name> <file_prefix> <coremask>\n", argv[0]);
+    if (argc != 3) {
+        fprintf(stderr, "Usage: %s <client|server|standalone> <config.json>\n", argv[0]);
         return 1;
     }
 
@@ -59,30 +56,24 @@ int main(int argc, char *argv[]) {
 
     metrics_init();
 
-    char vdev_str[128];
-    snprintf(vdev_str, sizeof(vdev_str), "eth_af_packet0,iface=%s,blocksz=4096,framesz=2048,framecnt=512,qpairs=1", if_name);
-
-    char file_prefix_str[128];
-    snprintf(file_prefix_str, sizeof(file_prefix_str), "--file-prefix=%s", file_prefix);
-
-    char lcores_str[128];
-    snprintf(lcores_str, sizeof(lcores_str), "-l%s", coremask);
-
-    char *dpdk_str[] = {
-        "tt",
-        lcores_str,
-        "--vdev", vdev_str,
-        "--proc-type=primary",
-        file_prefix_str,
-        "--no-huge"
-    };
-    int dpdk_argc = sizeof(dpdk_str) / sizeof(dpdk_str[0]);
+    char *dpdk_args_copy = strdup(config.dpdk.args);
+    char *dpdk_argv[64];
+    int dpdk_argc = 0;
+    dpdk_argv[dpdk_argc++] = "tt"; // Dummy program name
+    char *token = strtok(dpdk_args_copy, " ");
+    while (token != NULL && dpdk_argc < 63) {
+        dpdk_argv[dpdk_argc++] = token;
+        token = strtok(NULL, " ");
+    }
+    dpdk_argv[dpdk_argc] = NULL;
 
     netbsd_init();
 
-    dpdk_init(dpdk_argc, dpdk_str);
-    open_interface((char *)if_name);
+    dpdk_init(dpdk_argc, dpdk_argv);
+    open_interface(config.dpdk.iface);
     set_mtu(config.interface.mtu);
+
+    free(dpdk_args_copy);
 
     char *ip_addr;
     char *gateway_addr;

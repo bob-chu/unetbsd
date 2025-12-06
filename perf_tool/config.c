@@ -107,6 +107,13 @@ int parse_config(const char *file_path, perf_config_t *config) {
         }
     }
 
+    // Parse dpdk config
+    cJSON *dpdk_json = cJSON_GetObjectItemCaseSensitive(json, "dpdk");
+    if (dpdk_json) {
+        config->dpdk.iface = get_string_from_json(dpdk_json, "iface");
+        config->dpdk.args = get_string_from_json(dpdk_json, "args");
+    }
+
     // Parse client payload
     cJSON *client_payload_json = cJSON_GetObjectItemCaseSensitive(json, "client_payload");
     if (client_payload_json) {
@@ -156,6 +163,8 @@ void free_config(perf_config_t *config) {
         free(config->l3.dst_ip_start);
         free(config->l3.dst_ip_end);
         free(config->l4.protocol);
+        free(config->dpdk.iface);
+        free(config->dpdk.args);
         free(config->client_payload.data);
         free(config->server_response.data);
         free(config->http_config.client_request_path);

@@ -38,6 +38,11 @@ typedef struct {
 } l4_config_t;
 
 typedef struct {
+  char *iface;
+  char *args;
+} dpdk_config_t;
+
+typedef struct {
   char *data;
   int size;
 } payload_config_t;
@@ -58,6 +63,7 @@ typedef struct {
   l2_config_t l2;
   l3_config_t l3;
   l4_config_t l4;
+  dpdk_config_t dpdk;
   payload_config_t client_payload;
   payload_config_t server_response;
   http_config_t http_config;
