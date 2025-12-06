@@ -333,26 +333,45 @@ static ssize_t send_http_response(client_data_t *data, tcp_conn_t *conn) {
     LOG_DEBUG("send_http_response, conn:%p", conn);
 
     if (data->config->use_https) {
+        client_data_t *check_data = SSL_get_ex_data(data->ssl_layer->ssl, 0);
+        if (check_data != data) {
+            LOG_ERROR("FATAL: SSL context corruption on conn=%p! expected_ctx=%p, actual_ctx=%p",
+                      conn, data, check_data);
+            abort();
+        }
+
         // Send header
         size_t header_remaining = data->header_size - data->header_sent;
-        if (header_remaining > 0) {
-            LOG_DEBUG("send_https header, conn:%p", conn);
-            ssl_layer_write_app_data(data->ssl_layer, data->response_header + data->header_sent, header_remaining);
-            data->header_sent += header_remaining;
-            data->total_sent += header_remaining;
-            scheduler_inc_stat(STAT_BYTES_SENT, header_remaining);
+        while (header_remaining > 0) {
+            sent = ssl_layer_write_app_data(data->ssl_layer, data->response_header + data->header_sent, header_remaining);
+            if (sent > 0) {
+                scheduler_inc_stat(STAT_BYTES_SENT, sent);
+                data->header_sent += sent;
+                header_remaining -= sent;
+                data->total_sent += sent;
+                LOG_DEBUG("HTTPS Header sent: %zu bytes", sent);
+            } else {
+                LOG_DEBUG("Partial HTTPS header send (%zd), waiting for next write event", data->total_sent);
+                return data->total_sent;
+            }
         }
 
         // Send body
         size_t body_remaining = data->response_body_size - data->response_sent;
         if (body_remaining > 0) {
-            LOG_DEBUG("send_https body, conn:%p", conn);
-            ssl_layer_write_app_data(data->ssl_layer, data->response_body + data->response_sent, body_remaining);
-            data->response_sent += body_remaining;
-            data->total_sent += body_remaining;
-            scheduler_inc_stat(STAT_BYTES_SENT, body_remaining);
+            size_t chunk_size = (body_remaining > MAX_SEND_BUFFER_SIZE) ? MAX_SEND_BUFFER_SIZE : body_remaining;  // Send in chunks if large
+            sent = ssl_layer_write_app_data(data->ssl_layer, data->response_body + data->response_sent, chunk_size);
+            if (sent > 0) {
+                scheduler_inc_stat(STAT_BYTES_SENT, sent);
+                data->response_sent += sent;
+                body_remaining -= sent;
+                data->total_sent += sent;
+                LOG_DEBUG("Total sent: %zu, Body remain: %zu bytes", data->total_sent, body_remaining);
+            } else {
+                LOG_DEBUG("Partial HTTPS body send (%zd), waiting for next write event", data->total_sent);
+                return data->total_sent;
+            }
         }
-        return 0;
 
     } else {
         // Send header

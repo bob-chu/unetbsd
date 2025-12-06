@@ -198,91 +198,69 @@ static void https_on_read(struct tcp_conn *conn, const char *data, ssize_t len) 
 static void http_on_read(struct tcp_conn *conn, const char *data, ssize_t len) {
     LOG_DEBUG("http_on_read", len);
     http_conn_t *http_conn = (http_conn_t *)conn->upper_layer_data;
-    if (len > 0) {
-        // Check if we've already received the full body content
-        if (http_conn->header_length > 0) {
-            size_t body_received = (http_conn->total_received > http_conn->header_length) ? 
-                                   http_conn->total_received - http_conn->header_length : 0;
-            if (body_received >= (size_t)http_conn->content_length) {
-                LOG_WARN("Additional data received after full body, ignoring: %zd bytes", len);
-                return;
-            }
+    if (len <= 0) {
+        return;
+    }
+
+    http_conn->total_received += len;
+    LOG_DEBUG("HTTP read: %zd", len);
+
+    // Buffer data only if we are still waiting for the full header.
+    if (http_conn->header_length == 0) {
+        if (http_conn->data_received + len > http_conn->recv_buffer_size) {
+            LOG_ERROR("Buffer overflow while reading header, closing.");
+            tcp_layer_close(conn);
+            return;
         }
-        
-        http_conn->total_received += len;
-        LOG_DEBUG("HTTP read: %zd", len);
+        memcpy(http_conn->recv_buffer + http_conn->data_received, data, len);
+        http_conn->data_received += len;
+    }
 
-        // Only copy data to buffer if we haven't parsed the headers yet
-        if (http_conn->header_length == 0) {
-            if (http_conn->data_received + len > http_conn->recv_buffer_size) {
-                // Buffer overflow
-                LOG_DEBUG("Buffer overflow in HTTP client, closing connection");
-                tcp_layer_close(conn);
-                return;
-            }
-            memcpy(http_conn->recv_buffer + http_conn->data_received, data, len);
-            http_conn->data_received += len;
-        }
+    // Try to parse the header if we haven't already.
+    if (http_conn->header_length == 0 && http_conn->data_received > 0) {
+        int pret, minor_version, status;
+        const char *msg;
+        size_t msg_len;
+        struct phr_header headers[100];
+        size_t num_headers = sizeof(headers) / sizeof(headers[0]);
+        pret = phr_parse_response(http_conn->recv_buffer, http_conn->data_received, &minor_version, &status, &msg, &msg_len, headers, &num_headers, 0);
 
-        // Process response
-        if (http_conn->header_length == 0) {
-            int pret, minor_version, status;
-            const char *msg;
-            size_t msg_len;
-            struct phr_header headers[100];
-            size_t num_headers = sizeof(headers) / sizeof(headers[0]);
-            pret = phr_parse_response(http_conn->recv_buffer, http_conn->data_received, &minor_version, &status, &msg, &msg_len, headers, &num_headers, 0);
+        if (pret > 0) {
+            http_conn->header_length = pret;
+            double response_recv_time = ev_now(g_main_loop);
+            uint64_t latency_ms = (uint64_t)((response_recv_time - http_conn->request_send_time) * 1000);
+            metrics_add_latency(latency_ms);
+            metrics_inc_success();
+            scheduler_inc_stat(STAT_RESPONSES_RECEIVED, 1);
 
-            if (pret > 0) {
-                http_conn->header_length = pret;
-                double response_recv_time = ev_now(g_main_loop);
-                uint64_t latency_ms = (uint64_t)((response_recv_time - http_conn->request_send_time) * 1000);
-                metrics_add_latency(latency_ms);
-                metrics_inc_success();
-                scheduler_inc_stat(STAT_RESPONSES_RECEIVED, 1);
-
-                // Get content length
-                for (size_t i = 0; i < num_headers; i++) {
-                    if (strncasecmp(headers[i].name, "Content-Length", headers[i].name_len) == 0) {
-                        char length_str[32];
-                        size_t clen = headers[i].value_len < sizeof(length_str) - 1 ? headers[i].value_len : sizeof(length_str) - 1;
-                        strncpy(length_str, headers[i].value, clen);
-                        length_str[clen] = '\0';
-                        http_conn->content_length = atoll(length_str);
-                        break;
-                    }
+            http_conn->content_length = 0;
+            for (size_t i = 0; i < num_headers; i++) {
+                if (strncasecmp(headers[i].name, "Content-Length", headers[i].name_len) == 0) {
+                    char length_str[32];
+                    size_t clen = headers[i].value_len < sizeof(length_str) - 1 ? headers[i].value_len : sizeof(length_str) - 1;
+                    strncpy(length_str, headers[i].value, clen);
+                    length_str[clen] = '\0';
+                    http_conn->content_length = atoll(length_str);
+                    break;
                 }
             }
+        } else if (pret == -1) {
+            LOG_ERROR("HTTP response parse error, closing.");
+            tcp_layer_close(conn);
+            return;
         }
+        // If pret == -2, header is incomplete. We will wait for more data.
+    }
 
-        if (http_conn->header_length > 0) {
-            // Calculate body content received by subtracting header length from total received
-            size_t body_received = (http_conn->total_received > http_conn->header_length) ? 
-                                   http_conn->total_received - http_conn->header_length : 0;
-            LOG_DEBUG("http body content_received: %zu", body_received);
-            if (body_received >= (size_t)http_conn->content_length) {
-                // Cap the body received at the expected content length to avoid overcounting
-                body_received = (size_t)http_conn->content_length;
-                LOG_DEBUG("Full body received: %zu bytes (expected: %lld)", body_received, http_conn->content_length);
-                http_conn->requests_sent_on_connection++;
-                if (http_conn->config->objective.requests_per_connection > 0 &&
-                    http_conn->requests_sent_on_connection >= http_conn->config->objective.requests_per_connection) {
-                    LOG_DEBUG("http read all body, close the tcp");
-                    tcp_layer_close(conn);
-                } else {
-                    // Send another request
-                    http_conn->sent_size = 0;
-                    http_conn->total_received = 0;
-                    http_conn->data_received = 0;
-                    http_conn->header_length = 0;
-                    http_conn->content_length = 0;
-                    http_conn->request_send_time = ev_now(g_main_loop);
-                    tcp_layer_write(conn, http_conn->send_buffer, http_conn->send_buffer_size);
-                    LOG_DEBUG("Sending next request on same connection");
-                }
-            } else {
-                LOG_DEBUG("http read body len: %zu", body_received);
-            }
+    // If header is parsed, check if we have received/drained the full body.
+    if (http_conn->header_length > 0) {
+        if (http_conn->total_received >= http_conn->header_length + http_conn->content_length) {
+            
+            // This is the non-keep-alive case.
+            LOG_DEBUG("Full response received, closing connection.");
+            tcp_layer_close(conn);
+            // NOTE: Any data that arrived in the same buffer as the end of the body is discarded.
+            // This is fine for non-keep-alive, but will break pipelining.
         }
     }
 }
@@ -303,24 +281,22 @@ static void http_on_close(struct tcp_conn *conn) {
     http_conn_t *http_conn = (http_conn_t *)conn->upper_layer_data;
     LOG_DEBUG("http_on_close on client");
     if (http_conn) {
+        conn->upper_layer_data = NULL; // Prevent re-entry from other callbacks
+
         scheduler_inc_stat(STAT_CONCURRENT_CONNECTIONS, -1);
         scheduler_inc_stat(STAT_CONNECTIONS_CLOSED, 1);
         TAILQ_REMOVE(&g_http_conn_list, http_conn, entries);
+
         if (http_conn->config->use_https && http_conn->ssl_layer) {
             ssl_layer_destroy(http_conn->ssl_layer);
             http_conn->ssl_layer = NULL;
         }
-        //tcp_layer_return_local_port(http_conn->tcp_conn->local_port);
-        // No need to call tcp_layer_close here as it's already closing
-        if (http_conn) {
-            if (http_conn->send_buffer) {
-                free(http_conn->send_buffer);
-                http_conn->send_buffer = NULL;
-            }
-            free(http_conn);
-            conn->upper_layer_data = NULL;
+
+        if (http_conn->send_buffer) {
+            free(http_conn->send_buffer);
+            http_conn->send_buffer = NULL;
         }
-        conn->upper_layer_data = NULL; // Prevent double free by clearing the pointer
+        free(http_conn);
     }
 }
 
