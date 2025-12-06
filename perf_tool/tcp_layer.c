@@ -181,11 +181,11 @@ int tcp_layer_connect(struct ev_loop *loop, perf_config_t *config, int unused, t
     conn->nh.close_cb = tcp_layer_close_cb;
     netbsd_io_start(&conn->nh);
     LOG_DEBUG("tcp_layer_connect set tcp_layer_connct_cb on write_cb");
-
+#if 0
     ev_timer_init(&conn->conn_timeout_timer, tcp_layer_timeout_cb, 100., 0.);
     conn->conn_timeout_timer.data = conn;
     ev_timer_start(conn->loop, &conn->conn_timeout_timer);
-
+#endif
     *conn_out = conn;
     return 0;
 }
@@ -194,7 +194,7 @@ ssize_t tcp_layer_write(tcp_conn_t *conn, const char *data, size_t len) {
     struct iovec iov;
     iov.iov_base = (void *)data;
     iov.iov_len = len;
-    LOG_DEBUG("TCP layer netbsd_write: %d:%s", len, data);
+    //LOG_DEBUG("TCP layer netbsd_write: %d:%s", len, data);
     return netbsd_write(&conn->nh, &iov, 1);
 }
 
@@ -416,7 +416,7 @@ static void tcp_layer_read_cb(void *handle, int events) {
         if (bytes_read > 0) {
             // Null-terminate for safe logging
             buffer[bytes_read] = '\0';
-            LOG_DEBUG("tcp_layer_read_cb : %s", buffer);
+            //LOG_DEBUG("tcp_layer_read_cb : %s", buffer);
             if (conn->callbacks.on_read) {
                 conn->callbacks.on_read(conn, buffer, bytes_read);
             }
