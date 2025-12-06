@@ -1,6 +1,5 @@
 project('unetbsd', 'c')
 
-
 cc = meson.get_compiler('c')
 
 add_project_arguments(
@@ -17,21 +16,23 @@ add_project_arguments(
 )
 
 cflags_user = [
-  '-g',
-  '-O2',
-  '-frename-registers',
-  '-funswitch-loops',
-  '-fweb',
-  '-Wno-format-truncation',
+    '-g',
+    '-O2',
+    '-frename-registers',
+    '-funswitch-loops',
+    '-fweb',
+    '-Wno-format-truncation',
 ]
 
 if get_option('use_dpdk')
-    dpdk_dep = dependency('libdpdk', static : true, required : true)
+    dpdk_dep_static = dependency('libdpdk', static : true, required : true)
+    dpdk_dep_dynamic = dependency('libdpdk', static : false, required : true)
 else
-    dpdk_dep = dependency('', required : false)
+    dpdk_dep_static = dependency('', required : false)
+    dpdk_dep_dynamic = dependency('', required : false)
 endif
 
-libev_dep = cc.find_library('ev', required : true)
+libev_dep = cc.find_library('ev', required : true, static : true)
 pthread_dep = dependency('threads')
 
 netbsd_include_dirs = [
@@ -163,13 +164,35 @@ netbsd_srcs = [
     'src/u_clock.c',
     'src/u_mem.c',
     'src/u_pktqueue.c',
-    'src/u_softint.c'
+    'src/u_softint.c',
+    'src/u_kstub.c',
+    'src/u_fd.c'
 ]
 
 # Apply patch for TCP output cache in userspace event-driven model
 patch_file = 'disable_cache_optimization.patch'
 
-libnetbsdstack = static_library(
+libnetbsdstack_static = static_library(
+    'netbsdstack',
+    netbsd_srcs,
+    include_directories : include_directories(netbsd_include_dirs),
+    c_args : [
+        '-nostdinc',
+        '-D_KERNEL',
+        '-D__NetBSD__',
+        '-DNET_MPSAFE',
+        '-DSOSEND_NO_LOAN',
+        '-DTCP_DEBUG',
+        '-D_NETBSD_SOURCE',
+        '-D_RUMPKERNEL',
+        '-DINET',
+        '-DINET6',
+        '-D__BSD_VISIBLE'
+    ],
+    override_options : ['cpp_std=none']
+)
+
+libnetbsdstack_shared = shared_library(
     'netbsdstack',
     netbsd_srcs,
     include_directories : include_directories(netbsd_include_dirs),
@@ -205,7 +228,7 @@ executable(
     app_srcs,
     c_args : cflags_user,
     include_directories : [include_directories(app_include_dirs), include_directories('include', is_system : true)],
-    link_with : libnetbsdstack,
+    link_with : libnetbsdstack_static,
     dependencies : [libev_dep, pthread_dep],
     install : true
 )
@@ -222,13 +245,13 @@ if get_option('use_dpdk')
         app_dpdk_srcs,
         c_args : cflags_user + ['-I/usr/local/include'],
         include_directories : [include_directories(app_include_dirs), include_directories('include', is_system : true)],
-        link_with : libnetbsdstack,
-        dependencies : [dpdk_dep, libev_dep, pthread_dep],
+        link_with : libnetbsdstack_static,
+        dependencies : [dpdk_dep_static, libev_dep, pthread_dep],
         install : true
     )
 endif
 
-openssl_dep = dependency('openssl', required : true)
+openssl_dep = dependency('openssl', required : true, static : true)
 
 perf_tool_srcs = [
     'perf_tool/main.c',
@@ -254,8 +277,9 @@ executable(
     perf_tool_srcs,
     c_args : cflags_user + ['-I/usr/local/include'],
     include_directories : [include_directories('perf_tool'), include_directories('perf_tool/deps/cjson'), include_directories('perf_tool/deps/picohttpparser'), include_directories('include'), include_directories('app'), include_directories('src')],
-    link_with : libnetbsdstack,
-    dependencies : [dpdk_dep, libev_dep, pthread_dep, openssl_dep],
+    link_with : libnetbsdstack_static,
+    link_args : ['-static'],
+    dependencies : [dpdk_dep_static, libev_dep, pthread_dep, openssl_dep],
     install : true
 )
 
@@ -272,14 +296,31 @@ executable(
     test_ssl_layer_srcs,
     c_args : cflags_user + ['-I/usr/local/include'],
     include_directories : [include_directories('perf_tool'), include_directories('perf_tool/deps/cjson'), include_directories('perf_tool/deps/picohttpparser'), include_directories('include'), include_directories('app'), include_directories('src')],
-    link_with : libnetbsdstack,
-    dependencies : [dpdk_dep, libev_dep, pthread_dep, openssl_dep],
+    link_with : libnetbsdstack_static,
+    dependencies : [dpdk_dep_static, libev_dep, pthread_dep, openssl_dep],
     install : true
 )
 
 executable(
     'test_simple',
     'perf_tool/test/test_simple.c',
-    dependencies : [openssl_dep],
+    link_with : libnetbsdstack_static,
+    dependencies : [dpdk_dep_static, libev_dep, pthread_dep, openssl_dep],
+    install : true
+)
+
+libnetbsd_shim_srcs = [
+    'src/posix_shim.c',
+    'src/u_cmdqueue.c',
+]
+
+shared_library(
+    'netbsdshim',
+    libnetbsd_shim_srcs,
+    include_directories : [include_directories('include'), include_directories('src')],
+    link_with : libnetbsdstack_static,
+    dependencies : [cc.find_library('dl', required: true), dependency('threads')] + (get_option('use_dpdk') ? [dpdk_dep_dynamic] : []),
+    #c_args : ['-fPIC'],
+    link_args : ['-static-libgcc', '-Wl,--whole-archive', '-lpthread', '-lnuma', '-Wl,--no-whole-archive'],
     install : true
 )

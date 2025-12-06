@@ -81,9 +81,14 @@ void cpu_startup()
 }
 
 #include "u_softint.h"
+#include "u_fd.h"
+
+static int g_shutdown = 0;
+
 
 void netbsd_init()
 {
+    fd_table_init();
     curproc->p_cred = &cred0;
     pool_subsystem_init();
     
@@ -108,6 +113,7 @@ void netbsd_init()
     updatetime();
     softint_levels_init();
 }
+
 
 extern int tcp_msl_local;
 

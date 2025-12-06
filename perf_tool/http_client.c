@@ -113,11 +113,11 @@ void create_http_connection(struct ev_loop *loop, perf_config_t *config) {
     http_conn->recv_buffer_size = MAX_RECV_SIZE;
 
     const char *request_path = config->http_config.client_request_path;
-    http_conn->send_buffer_size = snprintf(NULL, 0, "GET %s HTTP/1.1\r\nHost: %s\r\n\r\n", request_path, config->network.dst_ip_start);
+    http_conn->send_buffer_size = snprintf(NULL, 0, "GET %s HTTP/1.1\r\nHost: %s\r\n\r\n", request_path, config->l3.dst_ip_start);
     http_conn->send_buffer = (char *)malloc(http_conn->send_buffer_size + 1);
-    snprintf(http_conn->send_buffer, http_conn->send_buffer_size + 1, "GET %s HTTP/1.1\r\nHost: %s\r\n\r\n", request_path, config->network.dst_ip_start);
-    LOG_DEBUG("HTTP layer calling TCP layer to connect to %s:%d from local port %d",
-              config->network.dst_ip_start, config->network.dst_port_start, 0);
+    snprintf(http_conn->send_buffer, http_conn->send_buffer_size + 1, "GET %s HTTP/1.1\r\nHost: %s\r\n\r\n", request_path, config->l3.dst_ip_start);
+        LOG_DEBUG("Connecting to %s:%d for request: %s",
+              config->l3.dst_ip_start, config->l4.dst_port_start, 0);
     tcp_callbacks_t http_cbs = http_callbacks;
     if (config->use_https) {
         http_cbs.on_read = https_on_read;

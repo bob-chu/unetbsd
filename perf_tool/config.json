@@ -24,16 +24,26 @@
     "mtu": 2000
   },
   "network": {
-    "mac_address": "00:00:00:00:00:00",
-    "src_ip_start": "192.168.1.10",
-    "src_ip_end": "192.168.1.10",
-    "dst_ip_start": "192.168.1.1",
-    "dst_ip_end": "192.168.1.1",
-    "protocol": "TCP",
-    "src_port_start": 1000,
-    "src_port_end": 65000,
-    "dst_port_start": 8000,
-    "dst_port_end": 8000 
+    "l2": {
+      "mac_address": "00:00:00:00:00:00"
+    },
+    "l3": {
+      "src_ip_start": "192.168.1.10",
+      "src_ip_end": "192.168.1.10",
+      "dst_ip_start": "192.168.1.1",
+      "dst_ip_end": "192.168.1.1"
+    },
+    "l4": {
+      "protocol": "TCP",
+      "src_port_start": 1000,
+      "src_port_end": 65000,
+      "dst_port_start": 8000,
+      "dst_port_end": 8000 
+    }
+  },
+  "dpdk": {
+    "iface": "ens1",
+    "args": "-l1 --vdev eth_af_packet0,iface=ens1,blocksz=4096,framesz=2048,framecnt=512,qpairs=1 --proc-type=primary --file-prefix=rte --no-huge"
   },
   "client_payload": {
     "data": "Hello from client!",

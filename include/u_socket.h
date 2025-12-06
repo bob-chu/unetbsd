@@ -2,6 +2,9 @@
 #define U_SOCKET_H
 
 #include <sys/queue.h>
+#include <sys/types.h>
+#include <sys/socket.h>
+#include <sys/uio.h>
 
 typedef void (*netbsd_read_cb)(void *handle, int events);
 typedef void (*netbsd_write_cb)(void *handle, int events);
@@ -14,6 +17,7 @@ enum proto_type {
 
 struct netbsd_handle {
     struct socket *so;
+    int fd;
     int is_ipv4;
     int type;
     enum proto_type proto;
@@ -57,5 +61,6 @@ int netbsd_reuseport(struct netbsd_handle *nh, const void *optval, socklen_t opt
 int netbsd_linger_set(struct netbsd_handle *nh, struct linger *l);
 
 void netbsd_process_event();
+void netbsd_process_commands();
 void netbsd_loop();
 #endif

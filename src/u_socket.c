@@ -1,6 +1,7 @@
 #include "stub.h"
 #include "u_socket.h"
 #include "u_softint.h"
+#include "u_fd.h"
 #include <sys/malloc.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
@@ -172,8 +173,15 @@ int netbsd_socket(struct netbsd_handle *nh)
             proto, curlwp, NULL);
     if (error) {
         printf("socreate failed with error: %d\n", error);
+        return error;
     }
-    return error;
+    nh->fd = u_fd_alloc(nh);
+    if (nh->fd < 0) {
+        soclose(nh->so);
+        nh->so = NULL;
+        return -1;
+    }
+    return 0;
 }
 
 void netbsd_io_start(struct netbsd_handle *nh)
@@ -278,6 +286,10 @@ int netbsd_close(struct netbsd_handle *nh)
         soclose(nh->so);
         nh->so = NULL;
         
+        // Free the file descriptor
+        u_fd_free(nh->fd);
+        nh->fd = -1;
+
         // Remove any pending events for this handle from the queue
         struct netbsd_event *ev, *tmp;
         TAILQ_FOREACH_SAFE(ev, &event_queue, next, tmp) {

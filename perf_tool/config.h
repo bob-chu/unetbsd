@@ -20,16 +20,27 @@ typedef struct {
 
 typedef struct {
   char *mac_address;
+} l2_config_t;
+
+typedef struct {
   char *src_ip_start;
   char *src_ip_end;
   char *dst_ip_start;
   char *dst_ip_end;
+} l3_config_t;
+
+typedef struct {
   char *protocol;
   int src_port_start;
   int src_port_end;
   int dst_port_start;
   int dst_port_end;
-} network_config_t;
+} l4_config_t;
+
+typedef struct {
+  char *iface;
+  char *args;
+} dpdk_config_t;
 
 typedef struct {
   char *data;
@@ -49,7 +60,10 @@ typedef struct {
 typedef struct {
   scheduler_config_t scheduler;
   objective_config_t objective;
-  network_config_t network;
+  l2_config_t l2;
+  l3_config_t l3;
+  l4_config_t l4;
+  dpdk_config_t dpdk;
   payload_config_t client_payload;
   payload_config_t server_response;
   http_config_t http_config;
