@@ -222,7 +222,6 @@ static void on_handshake_complete_cb(ssl_layer_t *layer) {
 static void on_encrypted_data_cb(ssl_layer_t *layer, const void *data, int len) {
     client_data_t *client_data = (client_data_t*)SSL_get_ex_data(layer->ssl, 0);
     if (client_data) {
-        scheduler_inc_stat(STAT_BYTES_SENT, len); // Track sent bytes for bandwidth
         tcp_layer_write(client_data->tcp_conn, data, len);
     } else {
         LOG_ERROR("No client data associated with SSL layer");
@@ -239,7 +238,6 @@ static void process_http_request(client_data_t *data, const char *buf, int nbyte
             memcpy(data->recv_buffer + data->recv_pos, buf, copy_len);
             data->recv_pos += copy_len;
         }
-        scheduler_inc_stat(STAT_BYTES_RECEIVED, (int)copy_len);
 
         const char *method = NULL;
         size_t method_len = 0;
@@ -289,7 +287,6 @@ close_conn:
 static void on_decrypted_data_cb(ssl_layer_t *layer, const void *buf, int nbytes) {
     client_data_t *data = (client_data_t*)SSL_get_ex_data(layer->ssl, 0);
     if (data) {
-        scheduler_inc_stat(STAT_BYTES_RECEIVED, nbytes); // Track received bytes for bandwidth
         process_http_request(data, buf, nbytes);
     } else {
         LOG_ERROR("No client data associated with SSL layer during decrypted data callback");
@@ -345,7 +342,6 @@ static ssize_t send_http_response(client_data_t *data, tcp_conn_t *conn) {
         while (header_remaining > 0) {
             sent = ssl_layer_write_app_data(data->ssl_layer, data->response_header + data->header_sent, header_remaining);
             if (sent > 0) {
-                scheduler_inc_stat(STAT_BYTES_SENT, sent);
                 data->header_sent += sent;
                 header_remaining -= sent;
                 data->total_sent += sent;
@@ -362,7 +358,6 @@ static ssize_t send_http_response(client_data_t *data, tcp_conn_t *conn) {
             size_t chunk_size = (body_remaining > MAX_SEND_BUFFER_SIZE) ? MAX_SEND_BUFFER_SIZE : body_remaining;  // Send in chunks if large
             sent = ssl_layer_write_app_data(data->ssl_layer, data->response_body + data->response_sent, chunk_size);
             if (sent > 0) {
-                scheduler_inc_stat(STAT_BYTES_SENT, sent);
                 data->response_sent += sent;
                 body_remaining -= sent;
                 data->total_sent += sent;
@@ -379,7 +374,6 @@ static ssize_t send_http_response(client_data_t *data, tcp_conn_t *conn) {
         while (header_remaining > 0) {
             sent = tcp_layer_write(conn, data->response_header + data->header_sent, header_remaining);
             if (sent > 0) {
-                scheduler_inc_stat(STAT_BYTES_SENT, sent);
                 data->header_sent += sent;
                 header_remaining -= sent;
                 data->total_sent += sent;
@@ -402,7 +396,6 @@ static ssize_t send_http_response(client_data_t *data, tcp_conn_t *conn) {
             size_t chunk_size = (body_remaining > MAX_SEND_BUFFER_SIZE) ? MAX_SEND_BUFFER_SIZE : body_remaining;  // Send in chunks if large
             sent = tcp_layer_write(conn, data->response_body + data->response_sent, chunk_size);
             if (sent > 0) {
-                scheduler_inc_stat(STAT_BYTES_SENT, sent);
                 data->response_sent += sent;
                 body_remaining -= sent;
                 data->total_sent += sent;

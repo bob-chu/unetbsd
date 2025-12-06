@@ -121,13 +121,12 @@ void scheduler_check_phase_transition(const char *role) {
     metrics_t display_metrics = metrics_get_snapshot();
 
     if (strcmp(role, "client") == 0) {
-        printf("[%s] [ %ds], %s (Target: %d), ConConns: %lu, CPS: %lu, Opens/s: %lu, Closes/s: %lu, RPS: %lu, BpsS: %.2f Mbps, BpsR: %.2f Mbps, Succ: %lu, Fail: %lu\n",
+        printf("[%s] [ %ds], %s (Target: %d), ConConns: %lu, CPS: %lu, Closes/s: %lu, RPS: %lu, BpsS: %.2f Mbps, BpsR: %.2f Mbps, Succ: %lu, Fail: %lu\n",
                role,
                time_index,
                phase_names[g_current_phase],
                client_get_current_target_connections(),
                g_concurrent_connections,
-               connections_opened_per_second,
                connections_opened_per_second,
                connections_closed_per_second,
                requests_per_second,
@@ -136,13 +135,12 @@ void scheduler_check_phase_transition(const char *role) {
                success_per_second,
                failure_per_second);
     } else {
-        printf("[%s] [ %ds], %s (Target: %d), ConConns: %lu, CPS: %lu, Opens/s: %lu, Closes/s: %lu, RPS: %lu, BpsS: %.2f Mbps, BpsR: %.2f Mbps, Succ: %lu, Fail: %lu\n",
+        printf("[%s] [ %ds], %s (Target: %d), ConConns: %lu, CPS: %lu, Closes/s: %lu, RPS: %lu, BpsS: %.2f Mbps, BpsR: %.2f Mbps, Succ: %lu, Fail: %lu\n",
                role,
                time_index,
                phase_names[g_current_phase],
                client_get_current_target_connections(),
                g_concurrent_connections,
-               connections_opened_per_second,
                connections_opened_per_second,
                connections_closed_per_second,
                requests_per_second,

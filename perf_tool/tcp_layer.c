@@ -11,6 +11,7 @@
 #include "tcp_layer.h"
 #include "logger.h"
 #include "metrics.h"
+#include "scheduler.h"
 
 #define MAX_RECV_SZ 7000
 #define RECV_BUFFER_SZ 8192
@@ -195,7 +196,11 @@ ssize_t tcp_layer_write(tcp_conn_t *conn, const char *data, size_t len) {
     iov.iov_base = (void *)data;
     iov.iov_len = len;
     //LOG_DEBUG("TCP layer netbsd_write: %d:%s", len, data);
-    return netbsd_write(&conn->nh, &iov, 1);
+    ssize_t bytes_sent = netbsd_write(&conn->nh, &iov, 1);
+    if (bytes_sent > 0) {
+        scheduler_inc_stat(STAT_BYTES_SENT, bytes_sent);
+    }
+    return bytes_sent;
 }
 
 void tcp_layer_close(tcp_conn_t *conn) {
@@ -414,6 +419,7 @@ static void tcp_layer_read_cb(void *handle, int events) {
         ssize_t bytes_read = netbsd_read(nh, &iov, 1);
         LOG_DEBUG("tcp_layer_read_cb : %zd", bytes_read);
         if (bytes_read > 0) {
+            scheduler_inc_stat(STAT_BYTES_RECEIVED, bytes_read);
             // Null-terminate for safe logging
             buffer[bytes_read] = '\0';
             //LOG_DEBUG("tcp_layer_read_cb : %s", buffer);

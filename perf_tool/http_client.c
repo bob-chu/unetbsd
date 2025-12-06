@@ -76,7 +76,6 @@ static void on_encrypted_data_cb_client(ssl_layer_t *layer, const void *data, in
     LOG_DEBUG("HTTP on_encrypted_data_cb_client len:%d.", len);
     http_conn_t *http_conn = (http_conn_t*)SSL_get_ex_data(layer->ssl, 0);
     if (http_conn) {
-        scheduler_inc_stat(STAT_BYTES_SENT, len); // Track sent bytes for bandwidth
         tcp_layer_write(http_conn->tcp_conn, data, len);
     } else {
         LOG_ERROR("No HTTP connection data associated with SSL layer during encrypted data callback");
@@ -86,7 +85,6 @@ static void on_encrypted_data_cb_client(ssl_layer_t *layer, const void *data, in
 static void on_decrypted_data_cb_client(ssl_layer_t *layer, const void *data, int len) {
     http_conn_t *http_conn = (http_conn_t*)SSL_get_ex_data(layer->ssl, 0);
     if (http_conn) {
-        scheduler_inc_stat(STAT_BYTES_RECEIVED, len); // Track received bytes for bandwidth
         http_on_read(http_conn->tcp_conn, data, len);
     } else {
         LOG_ERROR("No HTTP connection data associated with SSL layer during decrypted data callback");
