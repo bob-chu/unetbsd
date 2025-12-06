@@ -102,7 +102,7 @@ void send_udp_packet(struct ev_loop *loop, perf_config_t *config) {
     server_addr.sin_family = AF_INET;
     int server_port = g_server_ports[g_current_server_port_index];
     server_addr.sin_port = htons(server_port);
-    inet_pton(AF_INET, config->network.dst_ip_start, &server_addr.sin_addr);
+    inet_pton(AF_INET, config->l3.dst_ip_start, &server_addr.sin_addr);
 
     g_current_server_port_index = (g_current_server_port_index + 1) % g_server_port_count;
 

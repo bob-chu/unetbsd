@@ -26,8 +26,8 @@ static void udp_server_read_cb(void *handle, int events);
 
 void udp_server_init(perf_config_t *config) {
     LOG_INFO("UDP Server initialized.");
-    int start_port = config->network.dst_port_start;
-    int end_port = config->network.dst_port_end;
+    int start_port = config->l4.dst_port_start;
+    int end_port = config->l4.dst_port_end;
     int num_ports = end_port - start_port + 1;
     for (int i = 0; i < num_ports; ++i) {
         int port = start_port + i;

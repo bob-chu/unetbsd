@@ -43,8 +43,8 @@ static void tcp_layer_accept_cb(void *handle, int events);
 static void tcp_layer_close_cb(void *handle, int events);
 
 void tcp_layer_init_local_port_pool(perf_config_t *config) {
-    int start_port = config->network.src_port_start;
-    int end_port = config->network.src_port_end;
+    int start_port = config->l4.src_port_start;
+    int end_port = config->l4.src_port_end;
     g_local_port_count = end_port - start_port + 1;
     
     g_local_ports = (int *)malloc(g_local_port_count * sizeof(int));
@@ -60,14 +60,14 @@ void tcp_layer_init_local_port_pool(perf_config_t *config) {
     g_current_port_index = 0;
     g_last_port_stats_log_time = 0.0;
 
-    g_server_port_count = config->network.dst_port_end - config->network.dst_port_start + 1;
+    g_server_port_count = config->l4.dst_port_end - config->l4.dst_port_start + 1;
     g_server_ports = (int *)malloc(g_server_port_count * sizeof(int));
     if (!g_server_ports) {
         g_server_port_count = 0;
         return;
     }
     for (int i = 0; i < g_server_port_count; i++) {
-        g_server_ports[i] = config->network.dst_port_start + i;
+        g_server_ports[i] = config->l4.dst_port_start + i;
     }
     g_current_server_port_index = 0;
 }
@@ -165,7 +165,7 @@ int tcp_layer_connect(struct ev_loop *loop, perf_config_t *config, int unused, t
     memset(&server_addr, 0, sizeof(server_addr));
     server_addr.sin_family = AF_INET;
     server_addr.sin_port = htons(server_port);
-    inet_pton(AF_INET, config->network.dst_ip_start, &server_addr.sin_addr);
+    inet_pton(AF_INET, config->l3.dst_ip_start, &server_addr.sin_addr);
 
     LOG_DEBUG("Connecting to server port: %d, from: %d", server_port, local_port);
     int ret = netbsd_connect(&conn->nh, (struct sockaddr *)&server_addr);
@@ -257,8 +257,8 @@ static void tcp_layer_close_cb(void *handle, int events) {
 int tcp_layer_server_init(perf_config_t *config, tcp_server_callbacks_t *callbacks) {
     g_server_callbacks = callbacks;
 
-    int dst_port_start = config->network.dst_port_start;
-    int dst_port_end = config->network.dst_port_end;
+    int dst_port_start = config->l4.dst_port_start;
+    int dst_port_end = config->l4.dst_port_end;
     num_listen_ports = dst_port_end - dst_port_start + 1;
     if (num_listen_ports <= 0) {
         LOG_ERROR("Invalid port range: start=%d, end=%d", dst_port_start, dst_port_end);

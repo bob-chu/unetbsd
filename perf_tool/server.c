@@ -16,9 +16,11 @@
 void run_server(struct ev_loop *loop, perf_config_t *config) {
     scheduler_init(loop, config);
 
-    if (strcmp(config->network.protocol, "TCP") == 0) {
+    if (strcmp(config->l4.protocol, "TCP") == 0) {
         http_server_init(config);
-    } else if (strcmp(config->network.protocol, "UDP") == 0) {
+    } else if (strcmp(config->l4.protocol, "UDP") == 0) {
         udp_server_init(config);
+    } else {
+        LOG_ERROR("Unsupported protocol: %s", config->l4.protocol);
     }
 }

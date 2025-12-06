@@ -84,16 +84,27 @@ int parse_config(const char *file_path, perf_config_t *config) {
     // Parse network config
     cJSON *network_json = cJSON_GetObjectItemCaseSensitive(json, "network");
     if (network_json) {
-        config->network.mac_address = get_string_from_json(network_json, "mac_address");
-        config->network.src_ip_start = get_string_from_json(network_json, "src_ip_start");
-        config->network.src_ip_end = get_string_from_json(network_json, "src_ip_end");
-        config->network.dst_ip_start = get_string_from_json(network_json, "dst_ip_start");
-        config->network.dst_ip_end = get_string_from_json(network_json, "dst_ip_end");
-        config->network.protocol = get_string_from_json(network_json, "protocol");
-        config->network.src_port_start = get_int_from_json(network_json, "src_port_start");
-        config->network.src_port_end = get_int_from_json(network_json, "src_port_end");
-        config->network.dst_port_start = get_int_from_json(network_json, "dst_port_start");
-        config->network.dst_port_end = get_int_from_json(network_json, "dst_port_end");
+        cJSON *l2_json = cJSON_GetObjectItemCaseSensitive(network_json, "l2");
+        if (l2_json) {
+            config->l2.mac_address = get_string_from_json(l2_json, "mac_address");
+        }
+
+        cJSON *l3_json = cJSON_GetObjectItemCaseSensitive(network_json, "l3");
+        if (l3_json) {
+            config->l3.src_ip_start = get_string_from_json(l3_json, "src_ip_start");
+            config->l3.src_ip_end = get_string_from_json(l3_json, "src_ip_end");
+            config->l3.dst_ip_start = get_string_from_json(l3_json, "dst_ip_start");
+            config->l3.dst_ip_end = get_string_from_json(l3_json, "dst_ip_end");
+        }
+
+        cJSON *l4_json = cJSON_GetObjectItemCaseSensitive(network_json, "l4");
+        if (l4_json) {
+            config->l4.protocol = get_string_from_json(l4_json, "protocol");
+            config->l4.src_port_start = get_int_from_json(l4_json, "src_port_start");
+            config->l4.src_port_end = get_int_from_json(l4_json, "src_port_end");
+            config->l4.dst_port_start = get_int_from_json(l4_json, "dst_port_start");
+            config->l4.dst_port_end = get_int_from_json(l4_json, "dst_port_end");
+        }
     }
 
     // Parse client payload
@@ -139,12 +150,12 @@ int parse_config(const char *file_path, perf_config_t *config) {
 void free_config(perf_config_t *config) {
     if (config) {
         free(config->objective.type);
-        free(config->network.mac_address);
-        free(config->network.src_ip_start);
-        free(config->network.src_ip_end);
-        free(config->network.dst_ip_start);
-        free(config->network.dst_ip_end);
-        free(config->network.protocol);
+        free(config->l2.mac_address);
+        free(config->l3.src_ip_start);
+        free(config->l3.src_ip_end);
+        free(config->l3.dst_ip_start);
+        free(config->l3.dst_ip_end);
+        free(config->l4.protocol);
         free(config->client_payload.data);
         free(config->server_response.data);
         free(config->http_config.client_request_path);

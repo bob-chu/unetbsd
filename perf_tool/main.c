@@ -38,7 +38,7 @@ int main(int argc, char *argv[]) {
     const char *coremask = argv[5];
 
     if (argc != 6) {
-        fprintf(stderr, "Usage: %s <client|server> <config.json> <interface_name> <file_prefix> <coremask>\n", argv[0]);
+        fprintf(stderr, "Usage: %s <client|server|standalone> <config.json> <interface_name> <file_prefix> <coremask>\n", argv[0]);
         return 1;
     }
 
@@ -88,11 +88,14 @@ int main(int argc, char *argv[]) {
     char *gateway_addr;
 
     if (strcmp(mode, "server") == 0) {
-        ip_addr = config.network.dst_ip_start;
-        gateway_addr = config.network.src_ip_start;
+        ip_addr = config.l3.dst_ip_start;
+        gateway_addr = config.l3.src_ip_start;
     } else if (strcmp(mode, "client") == 0) {
-        ip_addr = config.network.src_ip_start;
-        gateway_addr = config.network.dst_ip_start;
+        ip_addr = config.l3.src_ip_start;
+        gateway_addr = config.l3.dst_ip_start;
+    } else if (strcmp(mode, "standalone") == 0) {
+        ip_addr = config.l3.src_ip_start;
+        gateway_addr = config.l3.dst_ip_start;
     } else {
         LOG_ERROR("Invalid mode: %s. Choose 'client' or 'server'.\n", mode);
         free_config(&config);
@@ -120,6 +123,8 @@ int main(int argc, char *argv[]) {
         run_client(g_main_loop, &config);
     } else if (strcmp(mode, "server") == 0) {
         run_server(g_main_loop, &config);
+    } else if (strcmp(mode, "standalone") == 0) {
+        printf("Running in standalone mode.\n");
     } else {
         fprintf(stderr, "Invalid mode: %s. Choose 'client' or 'server'.\n", mode);
         free_config(&config);

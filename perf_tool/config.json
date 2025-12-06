@@ -12,11 +12,11 @@
     "requests_per_connection": 1
   },
   "http_config": {
-    "use_https":1,
+    "use_https":0,
     "cert_path":"./server.crt",
     "key_path":"./server.key",
     "client_request_path": "/hello",
-    "response_size_hello": 100, 
+    "response_size_hello": 1000000, 
     "response_size_another": 5242880,
     "response_size_default": 1024
   },
@@ -24,16 +24,22 @@
     "mtu": 2000
   },
   "network": {
-    "mac_address": "00:00:00:00:00:00",
-    "src_ip_start": "192.168.1.10",
-    "src_ip_end": "192.168.1.10",
-    "dst_ip_start": "192.168.1.1",
-    "dst_ip_end": "192.168.1.1",
-    "protocol": "TCP",
-    "src_port_start": 1000,
-    "src_port_end": 65000,
-    "dst_port_start": 8000,
-    "dst_port_end": 8000 
+    "l2": {
+      "mac_address": "00:00:00:00:00:00"
+    },
+    "l3": {
+      "src_ip_start": "192.168.1.10",
+      "src_ip_end": "192.168.1.10",
+      "dst_ip_start": "192.168.1.1",
+      "dst_ip_end": "192.168.1.1"
+    },
+    "l4": {
+      "protocol": "TCP",
+      "src_port_start": 1000,
+      "src_port_end": 65000,
+      "dst_port_start": 8000,
+      "dst_port_end": 8000 
+    }
   },
   "client_payload": {
     "data": "Hello from client!",
