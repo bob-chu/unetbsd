@@ -12,6 +12,48 @@
 #include "logger.h"
 #include "metrics.h"
 #include "scheduler.h"
+#include "common.h"
+#include <sys/queue.h>
+#include <stdbool.h>
+
+TAILQ_HEAD(tcp_conn_list, tcp_conn);
+static struct tcp_conn_list g_tcp_conn_pool;
+static tcp_conn_t g_tcp_conn_pool_storage[MAX_CONN_SIZE];
+static bool g_tcp_pool_initialized = false;
+
+static void tcp_layer_conn_pool_init(void);
+
+static tcp_conn_t* get_tcp_conn_from_pool() {
+    tcp_layer_conn_pool_init(); // Ensure pool is initialized
+    tcp_conn_t *conn = TAILQ_FIRST(&g_tcp_conn_pool);
+    if (conn) {
+        TAILQ_REMOVE(&g_tcp_conn_pool, conn, entries);
+        memset(conn, 0, sizeof(tcp_conn_t));
+    } else {
+        LOG_WARN("TCP connection pool is empty.");
+    }
+    return conn;
+}
+
+static void return_tcp_conn_to_pool(tcp_conn_t *conn) {
+    if (conn) {
+        // Here we assume that the conn is from the pool, 
+        // a check `(conn >= g_tcp_conn_pool_storage && conn < &g_tcp_conn_pool_storage[HTTP_CONN_POOL_SIZE])`
+        // can be added if we want to support mixed allocation.
+        TAILQ_INSERT_HEAD(&g_tcp_conn_pool, conn, entries);
+    }
+}
+
+static void tcp_layer_conn_pool_init() {
+    if (g_tcp_pool_initialized) return;
+
+    TAILQ_INIT(&g_tcp_conn_pool);
+    for (int i = 0; i < MAX_CONN_SIZE; i++) {
+        TAILQ_INSERT_TAIL(&g_tcp_conn_pool, &g_tcp_conn_pool_storage[i], entries);
+    }
+    g_tcp_pool_initialized = true;
+}
+
 
 #define MAX_RECV_SZ 7000
 #define RECV_BUFFER_SZ 8192
@@ -106,11 +148,10 @@ void tcp_layer_update_port_stats_if_needed(double current_time) {
 
 int tcp_layer_connect(struct ev_loop *loop, perf_config_t *config, int unused, tcp_callbacks_t *callbacks, void *upper_layer_data, tcp_conn_t **conn_out) {
     LOG_DEBUG("tcp_layer_connect start......");
-    tcp_conn_t *conn = (tcp_conn_t *)malloc(sizeof(tcp_conn_t));
+    tcp_conn_t *conn = get_tcp_conn_from_pool();
     if (!conn) {
         return -1;
     }
-    memset(conn, 0, sizeof(tcp_conn_t));
 
     conn->loop = loop;
     conn->callbacks = *callbacks;
@@ -129,7 +170,7 @@ int tcp_layer_connect(struct ev_loop *loop, perf_config_t *config, int unused, t
     conn->nh.on_event_queue = 0;
 
     if (netbsd_socket(&conn->nh) != 0) {
-        free(conn);
+        return_tcp_conn_to_pool(conn);
         return -1;
     }
 
@@ -139,7 +180,7 @@ int tcp_layer_connect(struct ev_loop *loop, perf_config_t *config, int unused, t
     int local_port = tcp_layer_get_local_port();
     if (local_port == -1) {
         netbsd_close(&conn->nh);
-        free(conn);
+        return_tcp_conn_to_pool(conn);
         return -1;
     }
     conn->local_port = local_port;
@@ -153,7 +194,7 @@ int tcp_layer_connect(struct ev_loop *loop, perf_config_t *config, int unused, t
         LOG_ERROR("Failed to bind TCP socket to local port %d: %s", local_port, strerror(errno));
         tcp_layer_return_local_port(local_port);
         netbsd_close(&conn->nh);
-        free(conn);
+        return_tcp_conn_to_pool(conn);
         return -1;
     }
 
@@ -173,7 +214,7 @@ int tcp_layer_connect(struct ev_loop *loop, perf_config_t *config, int unused, t
         LOG_ERROR("Failed to connect TCP socket to port %d: %s", server_port, strerror(errno));
         tcp_layer_return_local_port(local_port);
         netbsd_close(&conn->nh);
-        free(conn);
+        return_tcp_conn_to_pool(conn);
         return -1;
     }
 
@@ -182,11 +223,9 @@ int tcp_layer_connect(struct ev_loop *loop, perf_config_t *config, int unused, t
     conn->nh.close_cb = tcp_layer_close_cb;
     netbsd_io_start(&conn->nh);
     LOG_DEBUG("tcp_layer_connect set tcp_layer_connct_cb on write_cb");
-#if 0
     ev_timer_init(&conn->conn_timeout_timer, tcp_layer_timeout_cb, 100., 0.);
     conn->conn_timeout_timer.data = conn;
     ev_timer_start(conn->loop, &conn->conn_timeout_timer);
-#endif
     *conn_out = conn;
     return 0;
 }
@@ -250,7 +289,7 @@ static void tcp_layer_close_cb(void *handle, int events) {
         // Clear the handle data to prevent further use
         nh->data = NULL;
         // Free the connection structure
-        free(conn);
+        return_tcp_conn_to_pool(conn);
     }
 }
 
@@ -343,16 +382,14 @@ void tcp_layer_server_cleanup(perf_config_t *config) {
 
 static void tcp_layer_accept_cb(void *handle, int events) {
     LOG_DEBUG("Entering tcp_layer_accept_cb with events: %d", events);
-    struct netbsd_handle *nh = (struct netbsd_handle *)handle;
 
     struct netbsd_handle *listen_nh = (struct netbsd_handle *)handle;
 
     while (1) {
-        tcp_conn_t *conn = (tcp_conn_t *)malloc(sizeof(tcp_conn_t));
+        tcp_conn_t *conn = get_tcp_conn_from_pool();
         if (!conn) {
             break;
         }
-        memset(conn, 0, sizeof(tcp_conn_t));
 
         conn->nh.proto = PROTO_TCP;
         conn->nh.type = SOCK_STREAM;
@@ -368,7 +405,7 @@ static void tcp_layer_accept_cb(void *handle, int events) {
 
         int ret = netbsd_accept(listen_nh, &conn->nh);
         if (ret != 0) {
-            free(conn);
+            return_tcp_conn_to_pool(conn);
             break;
         }
         LOG_DEBUG("tcp accept on tcp_layer, nh: %p, nh->so: %p", &conn->nh, conn->nh.so);

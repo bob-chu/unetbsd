@@ -1,9 +1,44 @@
 #include "ssl_layer.h"
+#include "common.h"
 #include <openssl/err.h>
 #include "logger.h"
 #include <stdio.h>
 #include <stdlib.h> // For malloc/free
 #include <string.h>
+#include <stdbool.h>
+
+TAILQ_HEAD(ssl_layer_pool, ssl_layer);
+static struct ssl_layer_pool g_ssl_layer_pool;
+static ssl_layer_t g_ssl_layer_pool_storage[MAX_CONN_SIZE];
+static bool g_ssl_layer_pool_initialized = false;
+
+static void ssl_layer_pool_init(void) {
+    if (g_ssl_layer_pool_initialized) return;
+
+    TAILQ_INIT(&g_ssl_layer_pool);
+    for (int i = 0; i < MAX_CONN_SIZE; i++) {
+        TAILQ_INSERT_TAIL(&g_ssl_layer_pool, &g_ssl_layer_pool_storage[i], entries);
+    }
+    g_ssl_layer_pool_initialized = true;
+}
+
+static ssl_layer_t* get_ssl_layer_from_pool() {
+    ssl_layer_pool_init();
+    ssl_layer_t *layer = TAILQ_FIRST(&g_ssl_layer_pool);
+    if (layer) {
+        TAILQ_REMOVE(&g_ssl_layer_pool, layer, entries);
+        memset(layer, 0, sizeof(ssl_layer_t));
+    } else {
+        LOG_WARN("SSL layer pool is empty.");
+    }
+    return layer;
+}
+
+static void return_ssl_layer_to_pool(ssl_layer_t *layer) {
+    if (layer) {
+        TAILQ_INSERT_HEAD(&g_ssl_layer_pool, layer, entries);
+    }
+}
 
 static SSL_CTX *g_ssl_server_ctx = NULL;
 static SSL_CTX *g_ssl_client_ctx = NULL;
@@ -103,7 +138,7 @@ ssl_layer_create(int is_server,
                  on_handshake_complete_cb_t on_handshake_complete_cb,
                  on_encrypted_data_cb_t on_encrypted_data_cb,
                  on_decrypted_data_cb_t on_decrypted_data_cb) {
-    ssl_layer_t *layer = (ssl_layer_t *)malloc(sizeof(ssl_layer_t));
+    ssl_layer_t *layer = get_ssl_layer_from_pool();
     if (!layer) {
         return NULL;
     }
@@ -119,7 +154,7 @@ ssl_layer_create(int is_server,
     }
 
     if (!layer->ssl) {
-        free(layer);
+        return_ssl_layer_to_pool(layer);
         return NULL;
     }
 
@@ -130,7 +165,7 @@ ssl_layer_create(int is_server,
         if (layer->rbio) BIO_free(layer->rbio);
         if (layer->wbio) BIO_free(layer->wbio);
         SSL_free(layer->ssl);
-        free(layer);
+        return_ssl_layer_to_pool(layer);
         LOG_ERROR("BIO_new failed");
         ERR_print_errors_fp(stderr); // Print OpenSSL errors if any during BIO creation
         return NULL;
@@ -150,7 +185,7 @@ void ssl_layer_destroy(ssl_layer_t *layer) {
     if (layer) {
         SSL_free(layer->ssl);
         // BIOs are freed by SSL_free
-        free(layer);
+        return_ssl_layer_to_pool(layer);
     }
 }
 

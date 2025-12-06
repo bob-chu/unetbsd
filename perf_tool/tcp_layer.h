@@ -3,6 +3,7 @@
 
 #include <ev.h>
 #include <stdint.h>
+#include <sys/queue.h>
 #include "u_socket.h"
 #include "config.h"
 
@@ -28,6 +29,7 @@ typedef struct tcp_conn {
     int is_connected;
     ev_timer conn_timeout_timer;
     int local_port;
+    TAILQ_ENTRY(tcp_conn) entries;
 } tcp_conn_t;
 
 typedef void (*tcp_on_accept_cb)(tcp_conn_t *conn);

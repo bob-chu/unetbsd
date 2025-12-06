@@ -2,6 +2,7 @@
 #define __SSL_LAYER_H__
 
 #include <openssl/ssl.h>
+#include <sys/queue.h>
 
 typedef struct ssl_layer ssl_layer_t;
 
@@ -18,6 +19,7 @@ struct ssl_layer {
   on_handshake_complete_cb_t on_handshake_complete_cb;
   on_encrypted_data_cb_t on_encrypted_data_cb;
   on_decrypted_data_cb_t on_decrypted_data_cb;
+  TAILQ_ENTRY(ssl_layer) entries;
 };
 
 int ssl_layer_init_server(const char *cert_path, const char *key_path);

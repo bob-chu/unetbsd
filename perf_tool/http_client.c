@@ -15,6 +15,7 @@
 #include "scheduler.h"
 #include "tcp_layer.h"
 #include "ssl_layer.h"
+#include "common.h"
 #include "deps/picohttpparser/picohttpparser.h"
 
 #define MAX_RECV_SIZE 1024*10
@@ -42,7 +43,7 @@ typedef struct http_conn {
 TAILQ_HEAD(http_conn_list_head, http_conn);
 static struct http_conn_list_head g_http_conn_list;
 static struct http_conn_list_head g_http_conn_pool;
-static http_conn_t *g_http_conn_pool_storage = NULL;
+static http_conn_t g_http_conn_pool_storage[MAX_CONN_SIZE];
 
 static void http_on_connect(struct tcp_conn *conn, int status);
 static void http_on_read(struct tcp_conn *conn, const char *data, ssize_t len);
@@ -98,16 +99,8 @@ void http_client_init(perf_config_t *config) {
     TAILQ_INIT(&g_http_conn_list);
     TAILQ_INIT(&g_http_conn_pool);
 
-    int pool_size = config->objective.value;
-    if (pool_size > 0) {
-        g_http_conn_pool_storage = (http_conn_t *)malloc(sizeof(http_conn_t) * pool_size);
-        if (!g_http_conn_pool_storage) {
-            LOG_ERROR("Failed to allocate http connection pool");
-            return;
-        }
-        for (int i = 0; i < pool_size; i++) {
-            TAILQ_INSERT_TAIL(&g_http_conn_pool, &g_http_conn_pool_storage[i], entries);
-        }
+    for (int i = 0; i < MAX_CONN_SIZE; i++) {
+        TAILQ_INSERT_TAIL(&g_http_conn_pool, &g_http_conn_pool_storage[i], entries);
     }
 
     tcp_layer_init_local_port_pool(config);
