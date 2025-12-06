@@ -41,12 +41,15 @@ typedef struct http_conn {
 
 TAILQ_HEAD(http_conn_list_head, http_conn);
 static struct http_conn_list_head g_http_conn_list;
+static struct http_conn_list_head g_http_conn_pool;
+static http_conn_t *g_http_conn_pool_storage = NULL;
 
 static void http_on_connect(struct tcp_conn *conn, int status);
 static void http_on_read(struct tcp_conn *conn, const char *data, ssize_t len);
 static void https_on_read(struct tcp_conn *conn, const char *data, ssize_t len);
 static void http_on_write(struct tcp_conn *conn);
 static void http_on_close(struct tcp_conn *conn);
+static void return_http_conn_to_pool(http_conn_t *http_conn);
 
 static tcp_callbacks_t http_callbacks = {
     .on_connect = http_on_connect,
@@ -93,6 +96,20 @@ static void on_decrypted_data_cb_client(ssl_layer_t *layer, const void *data, in
 
 void http_client_init(perf_config_t *config) {
     TAILQ_INIT(&g_http_conn_list);
+    TAILQ_INIT(&g_http_conn_pool);
+
+    int pool_size = config->objective.value;
+    if (pool_size > 0) {
+        g_http_conn_pool_storage = (http_conn_t *)malloc(sizeof(http_conn_t) * pool_size);
+        if (!g_http_conn_pool_storage) {
+            LOG_ERROR("Failed to allocate http connection pool");
+            return;
+        }
+        for (int i = 0; i < pool_size; i++) {
+            TAILQ_INSERT_TAIL(&g_http_conn_pool, &g_http_conn_pool_storage[i], entries);
+        }
+    }
+
     tcp_layer_init_local_port_pool(config);
 
     if (config->use_https) {
@@ -104,10 +121,13 @@ void http_client_init(perf_config_t *config) {
 }
 
 void create_http_connection(struct ev_loop *loop, perf_config_t *config) {
-    //static int counter = 0;
-    //if (counter++ > 0) return;
+    http_conn_t *http_conn = TAILQ_FIRST(&g_http_conn_pool);
+    if (!http_conn) {
+        LOG_WARN("http_conn_pool is empty");
+        return;
+    }
+    TAILQ_REMOVE(&g_http_conn_pool, http_conn, entries);
 
-    http_conn_t *http_conn = (http_conn_t *)malloc(sizeof(http_conn_t));
     memset(http_conn, 0, sizeof(http_conn_t));
     http_conn->config = config;
     http_conn->recv_buffer_size = MAX_RECV_SIZE;
@@ -116,8 +136,7 @@ void create_http_connection(struct ev_loop *loop, perf_config_t *config) {
     http_conn->send_buffer_size = snprintf(NULL, 0, "GET %s HTTP/1.1\r\nHost: %s\r\n\r\n", request_path, config->l3.dst_ip_start);
     http_conn->send_buffer = (char *)malloc(http_conn->send_buffer_size + 1);
     snprintf(http_conn->send_buffer, http_conn->send_buffer_size + 1, "GET %s HTTP/1.1\r\nHost: %s\r\n\r\n", request_path, config->l3.dst_ip_start);
-        LOG_DEBUG("Connecting to %s:%d for request: %s",
-              config->l3.dst_ip_start, config->l4.dst_port_start, 0);
+    LOG_DEBUG("Connecting to %s:%d", config->l3.dst_ip_start, config->l4.dst_port_start);
     tcp_callbacks_t http_cbs = http_callbacks;
     if (config->use_https) {
         http_cbs.on_read = https_on_read;
@@ -129,11 +148,7 @@ void create_http_connection(struct ev_loop *loop, perf_config_t *config) {
             free(http_conn->send_buffer);
             http_conn->send_buffer = NULL;
         }
-        if (http_conn) {
-            free(http_conn);
-            http_conn = NULL;
-        }
-        //tcp_layer_return_local_port(local_port);
+        TAILQ_INSERT_HEAD(&g_http_conn_pool, http_conn, entries);
         return;
     }
 
@@ -173,28 +188,22 @@ static void http_on_connect(struct tcp_conn *conn, int status) {
         scheduler_inc_stat(STAT_CONCURRENT_CONNECTIONS, -1);
         TAILQ_REMOVE(&g_http_conn_list, http_conn, entries);
         // No need to call tcp_layer_close as it's already being closed by TCP layer
-        if (http_conn) {
-            if (http_conn->send_buffer) {
-                free(http_conn->send_buffer);
-                http_conn->send_buffer = NULL;
-            }
-            free(http_conn);
-            conn->upper_layer_data = NULL;
-        }
+        conn->upper_layer_data = NULL;
+        return_http_conn_to_pool(http_conn);
     }
 }
 
 static void https_on_read(struct tcp_conn *conn, const char *data, ssize_t len) {
     http_conn_t *http_conn = (http_conn_t *)conn->upper_layer_data;
 
-    LOG_DEBUG("https_on_read", len);
+    LOG_DEBUG("https_on_read, len: %zd", len);
     if (http_conn->config->use_https && len > 0) {
         ssl_layer_read_net_data(http_conn->ssl_layer, data, len);
         return;
     }
 }
 static void http_on_read(struct tcp_conn *conn, const char *data, ssize_t len) {
-    LOG_DEBUG("http_on_read", len);
+    LOG_DEBUG("http_on_read, len: %zd", len);
     http_conn_t *http_conn = (http_conn_t *)conn->upper_layer_data;
     if (len <= 0) {
         return;
@@ -275,6 +284,19 @@ static void http_on_write(struct tcp_conn *conn) {
     }
 }
 
+static void return_http_conn_to_pool(http_conn_t *http_conn)
+{
+    if (http_conn->config->use_https && http_conn->ssl_layer) {
+        ssl_layer_destroy(http_conn->ssl_layer);
+        http_conn->ssl_layer = NULL;
+    }
+    if (http_conn->send_buffer) {
+        free(http_conn->send_buffer);
+        http_conn->send_buffer = NULL;
+    }
+    TAILQ_INSERT_HEAD(&g_http_conn_pool, http_conn, entries);
+}
+
 static void http_on_close(struct tcp_conn *conn) {
     http_conn_t *http_conn = (http_conn_t *)conn->upper_layer_data;
     LOG_DEBUG("http_on_close on client");
@@ -285,16 +307,7 @@ static void http_on_close(struct tcp_conn *conn) {
         scheduler_inc_stat(STAT_CONNECTIONS_CLOSED, 1);
         TAILQ_REMOVE(&g_http_conn_list, http_conn, entries);
 
-        if (http_conn->config->use_https && http_conn->ssl_layer) {
-            ssl_layer_destroy(http_conn->ssl_layer);
-            http_conn->ssl_layer = NULL;
-        }
-
-        if (http_conn->send_buffer) {
-            free(http_conn->send_buffer);
-            http_conn->send_buffer = NULL;
-        }
-        free(http_conn);
+        return_http_conn_to_pool(http_conn);
     }
 }
 
@@ -310,18 +323,7 @@ void http_client_close_excess_connections(int excess) {
         scheduler_inc_stat(STAT_CONCURRENT_CONNECTIONS, -1);
         scheduler_inc_stat(STAT_CONNECTIONS_CLOSED, 1);
         // Free the resources here since on_close won't be called
-        if (http_conn->config->use_https && http_conn->ssl_layer) {
-            ssl_layer_destroy(http_conn->ssl_layer);
-            http_conn->ssl_layer = NULL;
-        }
-        if (http_conn->send_buffer) {
-            free(http_conn->send_buffer);
-            http_conn->send_buffer = NULL;
-        }
-        if (http_conn) {
-            free(http_conn);
-            http_conn = NULL;
-        }
+        return_http_conn_to_pool(http_conn);
         closed++;
     }
 }
