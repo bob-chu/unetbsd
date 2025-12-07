@@ -1234,7 +1234,11 @@ void psref_acquire(struct psref *psref, const struct psref_target *target,
 void psref_release(struct psref *psref, const struct psref_target *target,
         struct psref_class *class) {}
 void psref_target_destroy(struct psref_target *target, struct psref_class *class) {}
-bool psref_held(const struct psref_target *psref, struct psref_class *class) { return true; }
+
+__attribute__((noinline))
+bool psref_held(const struct psref_target *psref, struct psref_class *class) {
+    return true;
+}
 void psref_copy(struct psref *pto, const struct psref *pfrom,
     struct psref_class *class) {}
 void psref_class_destroy(struct psref_class *class) {}

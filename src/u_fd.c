@@ -39,8 +39,27 @@ struct netbsd_handle *fd_get(int fd)
 
 void u_fd_free(int fd)
 {
-    if (fd >= 0 && fd < MAX_FD) {
+    if (fd > 0 && fd < MAX_FD) {
+        // Check for double-free
+        if (fd_table[fd] == NULL) {
+            printf("WARNING: Double free of fd %d, stack_top=%d\n", 
+                    fd, fd_stack_top);
+            void *array[10];
+            size_t size = backtrace(array, 10);
+            backtrace_symbols_fd(array, size, 2);
+            return;
+            return;  // Already freed, don't push to stack again
+        }
+        
         fd_table[fd] = NULL;
+        
+        // Check for stack overflow before writing
+        if (fd_stack_top >= MAX_FD) {
+            printf("FATAL: fd_stack overflow! fd_stack_top=%d, MAX_FD=%d\n", 
+                    fd_stack_top, MAX_FD);
+            abort();  // This should never happen with double-free check above
+        }
+        
         fd_stack[fd_stack_top++] = fd;
     }
 }

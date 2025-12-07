@@ -12,6 +12,7 @@ add_project_arguments(
     '-Wno-implicit-function-declaration',
     '-Wno-implicit-int',
     '-Wno-int-conversion',
+    '-fno-inline',
     language : 'c'
 )
 
@@ -22,6 +23,7 @@ cflags_user = [
     '-funswitch-loops',
     '-fweb',
     '-Wno-format-truncation',
+    '-fno-inline',
 ]
 
 if get_option('use_dpdk')
@@ -187,7 +189,7 @@ libnetbsdstack_static = static_library(
         '-D_RUMPKERNEL',
         '-DINET',
         '-DINET6',
-        '-D__BSD_VISIBLE'
+        '-D__BSD_VISIBLE',
     ],
     override_options : ['cpp_std=none']
 )
