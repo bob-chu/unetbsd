@@ -156,7 +156,7 @@ static void client_stall_check_cb(struct ev_loop *loop, ev_timer *w, int revents
         tcp_layer_close(http_conn->tcp_conn);
         scheduler_inc_stat(STAT_CONCURRENT_CONNECTIONS, -1);
         scheduler_inc_stat(STAT_CONNECTIONS_CLOSED, 1);
-        return_http_conn_to_pool(http_conn);
+        //return_http_conn_to_pool(http_conn);
     }
 #endif
 }
@@ -225,6 +225,9 @@ static void http_on_connect(struct tcp_conn *conn, int status) {
             http_conn->request_send_time = ev_now(g_main_loop);
             LOG_INFO("HTTP write data: %s.", http_conn->send_buffer);
             tcp_layer_write(conn, http_conn->send_buffer, http_conn->send_buffer_size);
+            http_conn->data_received = 0;
+            http_conn->header_length = 0;
+            http_conn->content_length = 0;
         }
     } else {
         LOG_DEBUG("HTTP connection failed to connect.");
@@ -271,6 +274,12 @@ static void http_on_read(struct tcp_conn *conn, const char *data, ssize_t len) {
 
     // Try to parse the header if we haven't already.
     if (http_conn->header_length == 0 && http_conn->data_received > 0) {
+        if (strncmp(http_conn->recv_buffer, "HTTP", 4) != 0) {
+            LOG_DEBUG("Malformed response does not start with HTTP, discarding. Data: %.*s", (int)http_conn->data_received, http_conn->recv_buffer);
+            http_conn->data_received = 0; // Discard garbage
+            return;
+        }
+
         int pret, minor_version, status;
         const char *msg;
         size_t msg_len;
@@ -298,7 +307,7 @@ static void http_on_read(struct tcp_conn *conn, const char *data, ssize_t len) {
                 }
             }
         } else if (pret == -1) {
-            LOG_ERROR("HTTP response parse error, closing.");
+            LOG_ERROR("HTTP response parse error, closing. Malformed data: %.*s", (int)http_conn->data_received, http_conn->recv_buffer);
             tcp_layer_close(conn);
             return;
         }

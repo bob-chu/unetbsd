@@ -252,7 +252,7 @@ void tcp_layer_close(tcp_conn_t *conn) {
         conn->nh.data = conn;
         conn->nh.active = 0;
         conn->nh.is_closing = 1;
-#if 0
+#if 1
         // If on_close callback is set, call it to notify upper layer
         if (conn->callbacks.on_close) {
             conn->callbacks.on_close(conn);
@@ -346,7 +346,7 @@ int tcp_layer_server_init(perf_config_t *config, tcp_server_callbacks_t *callbac
             continue;
         }
 
-        if (netbsd_listen(&listen_data->listen_nh, SOMAXCONN) != 0) {
+        if (netbsd_listen(&listen_data->listen_nh, 4096) != 0) {
             LOG_ERROR("Failed to listen on socket for port %d", port);
             netbsd_close(&listen_data->listen_nh);
             continue;

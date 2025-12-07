@@ -20,23 +20,23 @@ void metrics_init(void) {
 }
 
 void metrics_report(void) {
-    LOG_INFO("\n--- Performance Metrics Report ---");
-    LOG_INFO("Connections per second: %lu", g_metrics.connections_per_second);
-    LOG_INFO("Bytes Sent per second: %lu (%.2f Mbps)", g_metrics.bytes_sent_per_second, (g_metrics.bytes_sent_per_second * 8.0) / 1000000.0);
-    LOG_INFO("Bytes Received per second: %lu (%.2f Mbps)", g_metrics.bytes_received_per_second, (g_metrics.bytes_received_per_second * 8.0) / 1000000.0);
-    LOG_INFO("Successful operations: %lu", g_metrics.success_count);
-    LOG_INFO("Failed operations: %lu", g_metrics.failure_count);
-    LOG_INFO("Ports Used: %lu/%lu", g_metrics.ports_used, g_metrics.total_ports);
+    printf("\n--- Performance Metrics Report ---");
+    printf("Connections per second: %lu", g_metrics.connections_per_second);
+    printf("Bytes Sent per second: %lu (%.2f Mbps)", g_metrics.bytes_sent_per_second, (g_metrics.bytes_sent_per_second * 8.0) / 1000000.0);
+    printf("Bytes Received per second: %lu (%.2f Mbps)", g_metrics.bytes_received_per_second, (g_metrics.bytes_received_per_second * 8.0) / 1000000.0);
+    printf("Successful operations: %lu", g_metrics.success_count);
+    printf("Failed operations: %lu", g_metrics.failure_count);
+    printf("Ports Used: %lu/%lu", g_metrics.ports_used, g_metrics.total_ports);
 
     if (g_latency_count > 0) {
         g_metrics.avg_latency_ms = g_latency_sum / g_latency_count;
-        LOG_INFO("Min Latency (ms): %lu", g_metrics.min_latency_ms);
-        LOG_INFO("Max Latency (ms): %lu", g_metrics.max_latency_ms);
-        LOG_INFO("Avg Latency (ms): %lu", g_metrics.avg_latency_ms);
+        printf("Min Latency (ms): %lu", g_metrics.min_latency_ms);
+        printf("Max Latency (ms): %lu", g_metrics.max_latency_ms);
+        printf("Avg Latency (ms): %lu", g_metrics.avg_latency_ms);
     } else {
-        LOG_INFO("No latency data available.");
+        printf("No latency data available.");
     }
-    LOG_INFO("----------------------------------");
+    printf("----------------------------------");
 }
 
 void metrics_inc_success(void) {

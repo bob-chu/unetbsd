@@ -183,9 +183,11 @@ void server_stall_check_cb(struct ev_loop *loop, ev_timer *w, int revents) {
     for (int i = 0; i < CLIENT_DATA_POOL_SIZE; i++) {
         client_data_t *data = &client_data_pool[i];
         if (data->in_use) {
-            if (now - data->last_activity_time > 10.0) {
+            if (now - data->last_activity_time > 5.0) {
                 LOG_WARN("Server closing stalled connection %p", data->tcp_conn);
-                tcp_layer_close(data->tcp_conn);
+                //tcp_layer_close(data->tcp_conn);
+                // try to re-send data
+                http_request_write_cb(data->tcp_conn);
             }
         }
     }
