@@ -24,8 +24,6 @@ double g_current_send_rate = 0.0;
 static ev_timer client_scheduler_watcher;
 static ev_timer client_idle_watcher;
 
-uint64_t g_concurrent_connections = 0;
-
 static void client_scheduler_cb(EV_P_ ev_timer *w, int revents);
 static void client_idle_cb(EV_P_ ev_timer *w, int revents);
 
@@ -134,20 +132,22 @@ static void client_idle_cb(EV_P_ ev_timer *w, int revents) {
     const char *type = config->objective.type;
 
     if (strcmp(type, "TCP_CONCURRENT") == 0 || strcmp(type, "HTTP_REQUESTS") == 0) {
-        int excess = (int)g_concurrent_connections - g_current_target_connections;
+#if 0
+        int excess = (int)g_stats.tcp_concurrent - g_current_target_connections;
         if (excess > 0) {
             http_client_close_excess_connections(excess);
         }
-        int connections_to_create = g_current_target_connections - (int)g_concurrent_connections;
+#endif
+        int connections_to_create = g_current_target_connections - (int)g_stats.tcp_concurrent;
         for (int i = 0; i < connections_to_create; i++) {
-            if (g_concurrent_connections >= (uint64_t)g_current_target_connections) {
+            if (g_stats.tcp_concurrent >= (uint64_t)g_current_target_connections) {
                 break;
             }
             create_http_connection(EV_A_ config);
         }
     } else if (strcmp(type, "TOTAL_CONNECTIONS") == 0) {
         if (phase == PHASE_CLOSE) {
-            http_client_close_excess_connections((int)g_concurrent_connections);
+            ;//http_client_close_excess_connections((int)g_stats.tcp_concurrent);
         } else if (scheduler_get_stats()->connections_opened < (uint64_t)g_current_target_total_connections) {
             create_http_connection(EV_A_ config);
         }

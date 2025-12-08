@@ -231,8 +231,8 @@ static void http_on_accept(tcp_conn_t *conn) {
         SSL_set_ex_data(data->ssl_layer->ssl, 0, data); // Use index 0 for client_data
     }
 
-    scheduler_inc_stat(STAT_CONCURRENT_CONNECTIONS, 1);
-    scheduler_inc_stat(STAT_CONNECTIONS_OPENED, 1);
+    STATS_INC(tcp_concurrent);
+    STATS_INC(connections_opened);
     metrics_update_cps(1); // Increment CPS for HTTP or HTTPS connection
 }
 
@@ -469,7 +469,7 @@ static void http_request_write_cb(tcp_conn_t *conn) {
 
 static void http_on_close(tcp_conn_t *conn) {
     client_data_t *data = (client_data_t *)conn->upper_layer_data;
-    scheduler_inc_stat(STAT_CONCURRENT_CONNECTIONS, -1);
-    scheduler_inc_stat(STAT_CONNECTIONS_CLOSED, 1);
+    STATS_DEC(tcp_concurrent);
+    STATS_INC(connections_closed);
     return_client_data_to_pool(data);
 }

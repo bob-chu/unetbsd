@@ -18,6 +18,7 @@
 #include "ssl_layer.h"
 #include "common.h"
 #include "deps/picohttpparser/picohttpparser.h"
+#include <stdbool.h>
 
 #define MAX_RECV_SIZE 1024*10
 #define MAX_STALLED_TO_CLOSE_PER_TICK 10
@@ -40,6 +41,7 @@ typedef struct http_conn {
     double request_send_time;
     double last_activity_time;
     int requests_sent_on_connection;
+    bool closing;
     TAILQ_ENTRY(http_conn) entries;
 } http_conn_t;
 
@@ -70,9 +72,8 @@ static void on_handshake_complete_cb_client(ssl_layer_t *layer) {
     if (http_conn) {
         http_conn->last_activity_time = ev_now(g_main_loop);
         LOG_INFO("SSL handshake complete for client %p", http_conn);
-        // Now that handshake is complete, send the first HTTP request
-        scheduler_inc_stat(STAT_CONNECTIONS_OPENED, 1);
-        scheduler_inc_stat(STAT_REQUESTS_SENT, 1);
+        STATS_INC(connections_opened);
+        STATS_INC(requests_sent);
         metrics_inc_success();
         metrics_update_cps(1); // Increment CPS for HTTPS
         http_conn->request_send_time = ev_now(g_main_loop);
@@ -154,8 +155,8 @@ static void client_stall_check_cb(struct ev_loop *loop, ev_timer *w, int revents
         // try to remove it from g_http_conn_list again.
         http_conn->tcp_conn->callbacks.on_close = NULL;
         tcp_layer_close(http_conn->tcp_conn);
-        scheduler_inc_stat(STAT_CONCURRENT_CONNECTIONS, -1);
-        scheduler_inc_stat(STAT_CONNECTIONS_CLOSED, 1);
+        STATS_DEC(tcp_concurrent);
+        STATS_INC(connections_closed);
         //return_http_conn_to_pool(http_conn);
     }
 #endif
@@ -163,6 +164,9 @@ static void client_stall_check_cb(struct ev_loop *loop, ev_timer *w, int revents
 
 
 void create_http_connection(struct ev_loop *loop, perf_config_t *config) {
+    //static int counter = 0;
+    //if (counter ++ > 1000) return;
+
     http_conn_t *http_conn = TAILQ_FIRST(&g_http_conn_pool);
     if (!http_conn) {
         LOG_WARN("http_conn_pool is empty");
@@ -171,6 +175,7 @@ void create_http_connection(struct ev_loop *loop, perf_config_t *config) {
     TAILQ_REMOVE(&g_http_conn_pool, http_conn, entries);
 
     memset(http_conn, 0, sizeof(http_conn_t));
+    http_conn->closing = false;
     http_conn->last_activity_time = ev_now(g_main_loop);
     http_conn->config = config;
     http_conn->recv_buffer_size = MAX_RECV_SIZE;
@@ -206,7 +211,7 @@ void create_http_connection(struct ev_loop *loop, perf_config_t *config) {
     }
     
     TAILQ_INSERT_TAIL(&g_http_conn_list, http_conn, entries);
-    scheduler_inc_stat(STAT_CONCURRENT_CONNECTIONS, 1);
+    STATS_INC(tcp_concurrent);
 }
 
 static void http_on_connect(struct tcp_conn *conn, int status) {
@@ -218,8 +223,8 @@ static void http_on_connect(struct tcp_conn *conn, int status) {
             ssl_layer_handshake(http_conn->ssl_layer);
         } else {
             LOG_INFO("HTTP connection established.");
-            scheduler_inc_stat(STAT_CONNECTIONS_OPENED, 1);
-            scheduler_inc_stat(STAT_REQUESTS_SENT, 1);
+            STATS_INC(connections_opened);
+            STATS_INC(requests_sent);
             metrics_inc_success();
             metrics_update_cps(1); // Increment CPS for HTTP
             http_conn->request_send_time = ev_now(g_main_loop);
@@ -228,11 +233,13 @@ static void http_on_connect(struct tcp_conn *conn, int status) {
             http_conn->data_received = 0;
             http_conn->header_length = 0;
             http_conn->content_length = 0;
+            STATS_INC(http_req_sent);
         }
     } else {
         LOG_DEBUG("HTTP connection failed to connect.");
+        STATS_INC(http_conn_fails);
         metrics_inc_failure();
-        scheduler_inc_stat(STAT_CONCURRENT_CONNECTIONS, -1);
+        STATS_DEC(tcp_concurrent);
         TAILQ_REMOVE(&g_http_conn_list, http_conn, entries);
         // No need to call tcp_layer_close as it's already being closed by TCP layer
         conn->upper_layer_data = NULL;
@@ -265,6 +272,7 @@ static void http_on_read(struct tcp_conn *conn, const char *data, ssize_t len) {
     if (http_conn->header_length == 0) {
         if (http_conn->data_received + len > http_conn->recv_buffer_size) {
             LOG_ERROR("Buffer overflow while reading header, closing.");
+            STATS_INC(http_rsp_hdr_overflow);
             tcp_layer_close(conn);
             return;
         }
@@ -277,6 +285,7 @@ static void http_on_read(struct tcp_conn *conn, const char *data, ssize_t len) {
         if (strncmp(http_conn->recv_buffer, "HTTP", 4) != 0) {
             LOG_DEBUG("Malformed response does not start with HTTP, discarding. Data: %.*s", (int)http_conn->data_received, http_conn->recv_buffer);
             http_conn->data_received = 0; // Discard garbage
+            STATS_INC(http_rsp_bad_hdrs);
             return;
         }
 
@@ -293,7 +302,7 @@ static void http_on_read(struct tcp_conn *conn, const char *data, ssize_t len) {
             uint64_t latency_ms = (uint64_t)((response_recv_time - http_conn->request_send_time) * 1000);
             metrics_add_latency(latency_ms);
             metrics_inc_success();
-            scheduler_inc_stat(STAT_RESPONSES_RECEIVED, 1);
+            STATS_INC(responses_received);
 
             http_conn->content_length = 0;
             for (size_t i = 0; i < num_headers; i++) {
@@ -307,6 +316,7 @@ static void http_on_read(struct tcp_conn *conn, const char *data, ssize_t len) {
                 }
             }
         } else if (pret == -1) {
+            STATS_INC(http_rsp_hdr_parse_err);
             LOG_ERROR("HTTP response parse error, closing. Malformed data: %.*s", (int)http_conn->data_received, http_conn->recv_buffer);
             tcp_layer_close(conn);
             return;
@@ -320,6 +330,7 @@ static void http_on_read(struct tcp_conn *conn, const char *data, ssize_t len) {
             
             // This is the non-keep-alive case.
             LOG_DEBUG("Full response received, closing connection.");
+            STATS_INC(http_rsp_recv_full);
             tcp_layer_close(conn);
             // NOTE: Any data that arrived in the same buffer as the end of the body is discarded.
             // This is fine for non-keep-alive, but will break pipelining.
@@ -356,13 +367,13 @@ static void return_http_conn_to_pool(http_conn_t *http_conn)
 static void http_on_close(struct tcp_conn *conn) {
     http_conn_t *http_conn = (http_conn_t *)conn->upper_layer_data;
     LOG_DEBUG("http_on_close on client");
-    if (http_conn) {
+    if (http_conn && !http_conn->closing) {
+        http_conn->closing = true;
         conn->upper_layer_data = NULL; // Prevent re-entry from other callbacks
 
-        scheduler_inc_stat(STAT_CONCURRENT_CONNECTIONS, -1);
-        scheduler_inc_stat(STAT_CONNECTIONS_CLOSED, 1);
+        STATS_DEC(tcp_concurrent);
+        STATS_INC(connections_closed);
         TAILQ_REMOVE(&g_http_conn_list, http_conn, entries);
-
         return_http_conn_to_pool(http_conn);
     }
 }
@@ -371,15 +382,13 @@ void http_client_close_excess_connections(int excess) {
     http_conn_t *http_conn;
     int closed = 0;
     
-    while ((http_conn = TAILQ_FIRST(&g_http_conn_list)) != NULL && closed < excess) {
-        TAILQ_REMOVE(&g_http_conn_list, http_conn, entries);
-        // Temporarily set on_close to NULL to prevent callback during active close
-        http_conn->tcp_conn->callbacks.on_close = NULL;
-        tcp_layer_close(http_conn->tcp_conn);
-        scheduler_inc_stat(STAT_CONCURRENT_CONNECTIONS, -1);
-        scheduler_inc_stat(STAT_CONNECTIONS_CLOSED, 1);
-        // Free the resources here since on_close won't be called
-        return_http_conn_to_pool(http_conn);
-        closed++;
+    TAILQ_FOREACH(http_conn, &g_http_conn_list, entries) {
+        if (closed >= excess) {
+            break;
+        }
+        if (!http_conn->closing) {
+            tcp_layer_close(http_conn->tcp_conn);
+            closed++;
+        }
     }
 }

@@ -10,8 +10,8 @@
 static perf_config_t *g_config;
 static struct ev_loop *g_loop;
 
-static scheduler_stats_t g_stats = {0};
-static scheduler_stats_t last_stats = {0};
+// Removed: static scheduler_stats_t g_stats = {0};
+static stats_t last_stats = {0};
 static metrics_t last_metrics = {0};
 static int time_index = 0;
 
@@ -51,7 +51,7 @@ void scheduler_update_stats(void) {
 void scheduler_inc_stat(int stat, int value) {
     switch (stat) {
         case STAT_CONCURRENT_CONNECTIONS:
-            g_concurrent_connections += value;
+            g_stats.tcp_concurrent += value;
             break;
         case STAT_CONNECTIONS_OPENED:
             g_stats.connections_opened += value;
@@ -85,7 +85,7 @@ void scheduler_set_current_phase(test_phase_t new_phase) {
     g_current_phase = new_phase;
 }
 
-const scheduler_stats_t *scheduler_get_stats(void) {
+const stats_t *scheduler_get_stats(void) {
     return &g_stats;
 }
 
@@ -126,7 +126,7 @@ void scheduler_check_phase_transition(const char *role) {
                time_index,
                phase_names[g_current_phase],
                client_get_current_target_connections(),
-               g_concurrent_connections,
+               g_stats.tcp_concurrent,
                connections_opened_per_second,
                connections_closed_per_second,
                requests_per_second,
@@ -140,7 +140,7 @@ void scheduler_check_phase_transition(const char *role) {
                time_index,
                phase_names[g_current_phase],
                client_get_current_target_connections(),
-               g_concurrent_connections,
+               g_stats.tcp_concurrent,
                connections_opened_per_second,
                connections_closed_per_second,
                requests_per_second,

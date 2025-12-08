@@ -4,6 +4,7 @@
 #include "config.h"
 #include <ev.h>
 #include <stdint.h>
+#include "metrics.h"
 
 typedef enum {
     STAT_CONCURRENT_CONNECTIONS,
@@ -24,23 +25,14 @@ typedef enum {
     PHASE_FINISHED
 } test_phase_t;
 
-typedef struct {
-    uint64_t connections_opened;
-    uint64_t connections_closed;
-    uint64_t requests_sent;
-    uint64_t responses_received;
-    uint64_t bytes_sent;
-    uint64_t bytes_received;
-} scheduler_stats_t;
-
-extern uint64_t g_concurrent_connections;
+#define scheduler_stats_t stats_t
 
 void scheduler_init(struct ev_loop *loop, perf_config_t *config);
 void scheduler_update_stats(void);
 void scheduler_inc_stat(int stat, int value);
 test_phase_t scheduler_get_current_phase(void);
 void scheduler_set_current_phase(test_phase_t phase);
-const scheduler_stats_t *scheduler_get_stats(void);
+const stats_t *scheduler_get_stats(void);
 double scheduler_get_current_time(void);
 double scheduler_get_current_phase_start_time(void);
 void scheduler_check_phase_transition(const char *role);

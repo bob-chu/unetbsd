@@ -18,6 +18,4 @@ int client_get_current_target_connections(void);
 
 void http_client_close_excess_connections(int excess);
 
-extern uint64_t g_concurrent_connections;
-
 #endif // CLIENT_H
