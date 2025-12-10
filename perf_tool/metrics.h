@@ -43,8 +43,6 @@ extern metrics_t g_metrics;
     X(connections_closed) \
     X(requests_sent) \
     X(responses_received) \
-    X(bytes_sent) \
-    X(bytes_received) \
     X(tcp_concurrent)
 
 #define STATS_HTTP_FIELDS \
@@ -73,13 +71,19 @@ extern metrics_t g_metrics;
     X(tcp_svr_accept_req) \
     X(tcp_svr_accept_netbsd) \
     X(tcp_svr_accept_netbsd_ok) \
+    X(tcp_bytes_sent) \
+    X(tcp_bytes_received)
 
+#define STATS_UDP_FIELDS \
+    X(udp_bytes_sent) \
+    X(udp_bytes_received)
 
 typedef struct {
 #define X(name) uint64_t name;
     STATS_FIELDS
     STATS_HTTP_FIELDS
     STATS_TCP_FIELDS
+    STATS_UDP_FIELDS
 #undef X
 } stats_t;
 

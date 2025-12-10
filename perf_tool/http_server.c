@@ -409,15 +409,13 @@ static ssize_t send_http_response(client_data_t *data, tcp_conn_t *conn) {
 
     } else {
         // Send header
-        size_t header_remaining = data->header_size - data->header_sent;
-        if (header_remaining > 0) {
-            sent = tcp_layer_write(conn, data->response_header + data->header_sent, header_remaining);
+        if (data->header_sent < data->header_size) {
+            sent = tcp_layer_write(conn, data->response_header + data->header_sent, data->header_size - data->header_sent);
             if (sent > 0) {
                 if (data->header_sent == 0) {
                     STATS_INC(http_rsp_hdr_send);
                 }
                 data->header_sent += sent;
-                header_remaining -= sent;
                 data->total_sent += sent;
                 LOG_DEBUG("Header sent: %zu bytes", sent);
             } else if (sent < 0/* && errno != EAGAIN && errno != EWOULDBLOCK*/) {
@@ -436,8 +434,8 @@ static ssize_t send_http_response(client_data_t *data, tcp_conn_t *conn) {
         }
 
         // Send body
-        size_t body_remaining = data->response_body_size - data->response_sent;
-        if (body_remaining > 0) {
+        if (data->response_sent < data->response_body_size) {
+            size_t body_remaining = data->response_body_size - data->response_sent;
             size_t chunk_size = (body_remaining > MAX_SEND_BUFFER_SIZE) ? MAX_SEND_BUFFER_SIZE : body_remaining;  // Send in chunks if large
             sent = tcp_layer_write(conn, data->response_body + data->response_sent, chunk_size);
             if (sent > 0) {
@@ -445,9 +443,8 @@ static ssize_t send_http_response(client_data_t *data, tcp_conn_t *conn) {
                     STATS_INC(http_rsp_body_send);
                 }
                 data->response_sent += sent;
-                body_remaining -= sent;
                 data->total_sent += sent;
-                LOG_DEBUG("Total sent: %zu, Body remain: %zu bytes", data->total_sent, body_remaining);
+                LOG_DEBUG("Total sent: %zu, Body remain: %zu bytes", data->total_sent, data->response_body_size - data->response_sent);
             } else if (sent < 0/* && errno != EAGAIN && errno != EWOULDBLOCK*/) {
                 LOG_ERROR("Failed to send body chunk: %zd (%s)", sent, strerror(errno));
                 STATS_INC(http_rsp_body_send_err);
@@ -466,7 +463,7 @@ static ssize_t send_http_response(client_data_t *data, tcp_conn_t *conn) {
 
 out:
     // If everything is sent, log but do not close the connection, let the client handle closure
-    if (data->response_body_size - data->response_sent == 0 && data->header_size - data->header_sent == 0) {
+    if (data->response_body_size > 0 && data->response_body_size == data->response_sent && data->header_size == data->header_sent) {
         LOG_DEBUG("Response fully sent (%zd bytes), waiting for client to close connection", data->total_sent);
         STATS_INC(http_rsp_body_send_done);
     }

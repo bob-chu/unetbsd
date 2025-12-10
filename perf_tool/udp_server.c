@@ -81,7 +81,7 @@ static void udp_server_read_cb(void *handle, int events) {
 
     ssize_t bytes_read = netbsd_recvfrom(nh, &iov, 1, (struct sockaddr *)&client_addr);
     if (bytes_read > 0) {
-        STATS_ADD(bytes_received, bytes_read);
+        STATS_ADD(udp_bytes_received, bytes_read);
         STATS_INC(requests_sent);  // Reuse for received
 
         if (data->config->server_response.size > 0) {
@@ -90,9 +90,9 @@ static void udp_server_read_cb(void *handle, int events) {
             resp_iov.iov_len = data->config->server_response.size;
             ssize_t bytes_sent = netbsd_sendto(nh, &resp_iov, 1, (struct sockaddr *)&client_addr);
             if (bytes_sent > 0) {
-                            STATS_ADD(bytes_sent, bytes_sent);
-                            STATS_INC(responses_received);
-                            metrics_inc_success();            } else {
+                STATS_ADD(udp_bytes_sent, bytes_sent);
+                STATS_INC(responses_received);
+                metrics_inc_success();            } else {
                 metrics_inc_failure();
             }
         } else {

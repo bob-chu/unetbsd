@@ -239,7 +239,7 @@ ssize_t tcp_layer_write(tcp_conn_t *conn, const char *data, size_t len) {
     //LOG_DEBUG("TCP layer netbsd_write: %d:%s", len, data);
     ssize_t bytes_sent = netbsd_write(&conn->nh, &iov, 1);
     if (bytes_sent > 0) {
-        STATS_ADD(bytes_sent, bytes_sent);
+        STATS_ADD(tcp_bytes_sent, bytes_sent);
     } else if (bytes_sent < 0) {
         tcp_layer_close(conn);
     }
@@ -468,7 +468,7 @@ static void tcp_layer_read_cb(void *handle, int events) {
         ssize_t bytes_read = netbsd_read(nh, &iov, 1);
         LOG_DEBUG("tcp_layer_read_cb : %zd", bytes_read);
         if (bytes_read > 0) {
-            STATS_ADD(bytes_received, bytes_read);
+            STATS_ADD(tcp_bytes_received, bytes_read);
             // Null-terminate for safe logging
             //buffer[bytes_read] = '\0';
             //LOG_DEBUG("tcp_layer_read_cb : %s", buffer);

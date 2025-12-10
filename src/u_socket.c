@@ -108,6 +108,16 @@ void netbsd_process_event()
             continue;
         }
 
+        if (events & (POLLIN | POLLRDNORM)) {
+            if (nh->read_cb && nh->so) { // Check nh->so before calling read_cb
+                nh->read_cb(nh, events);
+            }
+        }
+        if (events & (POLLOUT | POLLWRNORM)) {
+            if (nh->write_cb && nh->so) { // Check nh->so before calling write_cb
+                nh->write_cb(nh, events);
+            }
+        }
         // Prioritize close events
         if (events & POLLHUP) {
             if (nh->close_cb) {
@@ -133,16 +143,7 @@ void netbsd_process_event()
             continue;
         }
 
-        if (events & (POLLIN | POLLRDNORM)) {
-            if (nh->read_cb && nh->so) { // Check nh->so before calling read_cb
-                nh->read_cb(nh, events);
-            }
-        }
-        if (events & (POLLOUT | POLLWRNORM)) {
-            if (nh->write_cb && nh->so) { // Check nh->so before calling write_cb
-                nh->write_cb(nh, events);
-            }
-        }
+
         free(ev, M_TEMP);
     }
 }

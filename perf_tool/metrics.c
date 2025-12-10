@@ -32,6 +32,7 @@ static void print_stats(const stats_t *m) {
     STATS_FIELDS
     STATS_HTTP_FIELDS
     STATS_TCP_FIELDS
+    STATS_UDP_FIELDS
 #undef X
 }
 
