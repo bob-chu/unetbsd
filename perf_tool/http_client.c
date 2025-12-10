@@ -162,10 +162,9 @@ static void client_stall_check_cb(struct ev_loop *loop, ev_timer *w, int revents
 #endif
 }
 
-
 void create_http_connection(struct ev_loop *loop, perf_config_t *config) {
     //static int counter = 0;
-    //if (counter ++ > 1000) return;
+    //if (counter ++ > 10000) return;
 
     http_conn_t *http_conn = TAILQ_FIRST(&g_http_conn_pool);
     if (!http_conn) {

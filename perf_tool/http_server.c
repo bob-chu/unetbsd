@@ -20,7 +20,7 @@
 
 #define BUFFER_SIZE 7000
 #define CLIENT_DATA_POOL_SIZE 16384
-#define MAX_SEND_BUFFER_SIZE 1024*5
+#define MAX_SEND_BUFFER_SIZE 1024*4
 
 char *response_buffer_hello = NULL;
 char *response_buffer_another = NULL;
@@ -210,7 +210,9 @@ static void http_on_accept(tcp_conn_t *conn) {
     data->tcp_conn = conn;
     conn->upper_layer_data = data;
     data->recv_pos = 0;
+    data->header_size = 0;
     data->header_sent = 0;
+    data->response_body_size = 0;
     data->response_sent = 0;
     data->last_activity_time = ev_now(g_main_loop);
 
@@ -279,10 +281,12 @@ static void process_http_request(client_data_t *data, const char *buf, int nbyte
         LOG_DEBUG("phr_parse_request, ret: %d", ret);
         if (ret == -1) {
             LOG_ERROR("Parse error on request, closing connection");
+            STATS_INC(http_rep_hdr_parse_err);
             goto close_conn;
         }
         if (ret > 0) {
             LOG_INFO("Request parsed: %.*s %.*s HTTP/1.%d", (int)method_len, method, (int)path_len, path, minor_version);
+            STATS_INC(http_req_rcvd);
             data->method = method;
             data->method_len = method_len;
             data->path = path;
@@ -406,22 +410,28 @@ static ssize_t send_http_response(client_data_t *data, tcp_conn_t *conn) {
     } else {
         // Send header
         size_t header_remaining = data->header_size - data->header_sent;
-        while (header_remaining > 0) {
+        if (header_remaining > 0) {
             sent = tcp_layer_write(conn, data->response_header + data->header_sent, header_remaining);
             if (sent > 0) {
+                if (data->header_sent == 0) {
+                    STATS_INC(http_rsp_hdr_send);
+                }
                 data->header_sent += sent;
                 header_remaining -= sent;
                 data->total_sent += sent;
                 LOG_DEBUG("Header sent: %zu bytes", sent);
-            } else if (sent < 0 && errno != EAGAIN && errno != EWOULDBLOCK) {
+            } else if (sent < 0/* && errno != EAGAIN && errno != EWOULDBLOCK*/) {
                 LOG_ERROR("Failed to send header: %zd (%s)", sent, strerror(errno));
+                STATS_INC(http_rsp_hdr_send_err);
                 http_on_close(conn);
                 tcp_layer_close(conn);
-                return data->total_sent;
+                goto out;
+                //return data->total_sent;
             } else {
                 // EAGAIN or EWOULDBLOCK (sent == 0 or sent < 0), wait for next write event
                 LOG_DEBUG("Partial header send (%zd), waiting for next write event", data->total_sent);
-                return data->total_sent;
+                goto out;
+                //return data->total_sent;
             }
         }
 
@@ -431,27 +441,34 @@ static ssize_t send_http_response(client_data_t *data, tcp_conn_t *conn) {
             size_t chunk_size = (body_remaining > MAX_SEND_BUFFER_SIZE) ? MAX_SEND_BUFFER_SIZE : body_remaining;  // Send in chunks if large
             sent = tcp_layer_write(conn, data->response_body + data->response_sent, chunk_size);
             if (sent > 0) {
+                if (data->response_sent == 0) {
+                    STATS_INC(http_rsp_body_send);
+                }
                 data->response_sent += sent;
                 body_remaining -= sent;
                 data->total_sent += sent;
                 LOG_DEBUG("Total sent: %zu, Body remain: %zu bytes", data->total_sent, body_remaining);
-            } else if (sent < 0 && errno != EAGAIN && errno != EWOULDBLOCK) {
+            } else if (sent < 0/* && errno != EAGAIN && errno != EWOULDBLOCK*/) {
                 LOG_ERROR("Failed to send body chunk: %zd (%s)", sent, strerror(errno));
-                http_on_close(conn);
-                tcp_layer_close(conn);
-                return data->total_sent;
+                STATS_INC(http_rsp_body_send_err);
+                //http_on_close(conn);
+                //tcp_layer_close(conn);
+                goto out;
+                //return data->total_sent;
             } else {
                 // EAGAIN or EWOULDBLOCK (sent == 0 or sent < 0), wait for next write event
                 LOG_DEBUG("Partial body send (%zd), waiting for next write event", data->total_sent);
-                return data->total_sent;
+                goto out;
+                //return data->total_sent;
             }
         }
     }
 
-
+out:
     // If everything is sent, log but do not close the connection, let the client handle closure
     if (data->response_body_size - data->response_sent == 0 && data->header_size - data->header_sent == 0) {
         LOG_DEBUG("Response fully sent (%zd bytes), waiting for client to close connection", data->total_sent);
+        STATS_INC(http_rsp_body_send_done);
     }
 
     return data->total_sent;

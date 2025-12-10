@@ -31,6 +31,7 @@ static void print_stats(const stats_t *m) {
 #define X(name) printf("%s: %lu\n", #name, (unsigned long)m->name);
     STATS_FIELDS
     STATS_HTTP_FIELDS
+    STATS_TCP_FIELDS
 #undef X
 }
 

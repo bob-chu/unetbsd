@@ -50,16 +50,36 @@ extern metrics_t g_metrics;
 #define STATS_HTTP_FIELDS \
     X(http_conn_fails) \
     X(http_req_sent) \
+    X(http_req_rcvd) \
+    X(http_rep_hdr_parse_err) \
     X(http_rsp_bad_hdrs) \
     X(http_rsp_hdr_overflow) \
     X(http_rsp_hdr_parse_err) \
-    X(http_rsp_recv_full)
+    X(http_rsp_recv_full) \
+    X(http_rsp_hdr_send) \
+    X(http_rsp_hdr_send_err) \
+    X(http_rsp_body_send) \
+    X(http_rsp_body_send_err) \
+    X(http_rsp_body_send_done)
+
+#define STATS_TCP_FIELDS \
+    X(tcp_cli_open_req) \
+    X(tcp_cli_open_req_done) \
+    X(tcp_cli_open_ack_ok) \
+    X(tcp_cli_open_ack_failed) \
+    X(tcp_cli_close_req) \
+    X(tcp_cli_close_req_netbsd) \
+    X(tcp_cli_close_cb) \
+    X(tcp_svr_accept_req) \
+    X(tcp_svr_accept_netbsd) \
+    X(tcp_svr_accept_netbsd_ok) \
 
 
 typedef struct {
 #define X(name) uint64_t name;
     STATS_FIELDS
     STATS_HTTP_FIELDS
+    STATS_TCP_FIELDS
 #undef X
 } stats_t;
 

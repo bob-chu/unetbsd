@@ -169,6 +169,7 @@ int tcp_layer_connect(struct ev_loop *loop, perf_config_t *config, int unused, t
     conn->nh.events = 0;
     conn->nh.on_event_queue = 0;
 
+    STATS_INC(tcp_cli_open_req);
     if (netbsd_socket(&conn->nh) != 0) {
         return_tcp_conn_to_pool(conn);
         return -1;
@@ -227,6 +228,7 @@ int tcp_layer_connect(struct ev_loop *loop, perf_config_t *config, int unused, t
     conn->conn_timeout_timer.data = conn;
     ev_timer_start(conn->loop, &conn->conn_timeout_timer);
     *conn_out = conn;
+    STATS_INC(tcp_cli_open_req_done);
     return 0;
 }
 
@@ -238,11 +240,14 @@ ssize_t tcp_layer_write(tcp_conn_t *conn, const char *data, size_t len) {
     ssize_t bytes_sent = netbsd_write(&conn->nh, &iov, 1);
     if (bytes_sent > 0) {
         STATS_ADD(bytes_sent, bytes_sent);
+    } else if (bytes_sent < 0) {
+        tcp_layer_close(conn);
     }
     return bytes_sent;
 }
 
 void tcp_layer_close(tcp_conn_t *conn) {
+    STATS_INC(tcp_cli_close_req);
     if (conn && !conn->nh.is_closing) {
         ev_timer_stop(conn->loop, &conn->conn_timeout_timer);
 
@@ -260,6 +265,7 @@ void tcp_layer_close(tcp_conn_t *conn) {
             conn->callbacks.on_close = NULL;
         }
 #endif
+        STATS_INC(tcp_cli_close_req_netbsd);
         netbsd_close(&conn->nh);
         // Do not free(conn) here as it will be done in close_cb when triggered by netbsd_close
     }
@@ -270,6 +276,7 @@ static void tcp_layer_close_cb(void *handle, int events) {
     struct netbsd_handle *nh = (struct netbsd_handle *)handle;
     LOG_DEBUG("netbsd_handle: %p", nh);
     tcp_conn_t *conn = (tcp_conn_t *)nh->data;
+    STATS_INC(tcp_cli_close_cb);
     
     if (conn && nh->data) {
         // Ensure the connection is marked as closing
@@ -387,6 +394,7 @@ static void tcp_layer_accept_cb(void *handle, int events) {
 
     while (1) {
         tcp_conn_t *conn = get_tcp_conn_from_pool();
+        STATS_INC(tcp_svr_accept_req);
         if (!conn) {
             break;
         }
@@ -403,6 +411,7 @@ static void tcp_layer_accept_cb(void *handle, int events) {
         conn->nh.events = 0;
         conn->nh.on_event_queue = 0;
 
+        STATS_INC(tcp_svr_accept_netbsd);
         int ret = netbsd_accept(listen_nh, &conn->nh);
         if (ret != 0) {
             return_tcp_conn_to_pool(conn);
@@ -410,6 +419,7 @@ static void tcp_layer_accept_cb(void *handle, int events) {
         }
         LOG_DEBUG("tcp accept on tcp_layer, nh: %p, nh->so: %p", &conn->nh, conn->nh.so);
 
+        STATS_INC(tcp_svr_accept_netbsd_ok);
         netbsd_io_start(&conn->nh);
 
         if (g_server_callbacks->on_accept) {
@@ -426,6 +436,7 @@ static void tcp_layer_connect_cb(void *handle, int events) {
 
     int socket_err = netbsd_socket_error(nh);
     if (socket_err == 0) {
+        STATS_INC(tcp_cli_open_ack_ok);
         conn->is_connected = 1;
         ev_timer_stop(conn->loop, &conn->conn_timeout_timer);
         nh->read_cb = tcp_layer_read_cb;
@@ -435,6 +446,7 @@ static void tcp_layer_connect_cb(void *handle, int events) {
             conn->callbacks.on_connect(conn, 0);
         }
     } else {
+        STATS_INC(tcp_cli_open_ack_failed);
         if (conn->callbacks.on_connect) {
             conn->callbacks.on_connect(conn, socket_err);
         }
@@ -458,7 +470,7 @@ static void tcp_layer_read_cb(void *handle, int events) {
         if (bytes_read > 0) {
             STATS_ADD(bytes_received, bytes_read);
             // Null-terminate for safe logging
-            buffer[bytes_read] = '\0';
+            //buffer[bytes_read] = '\0';
             //LOG_DEBUG("tcp_layer_read_cb : %s", buffer);
             if (conn->callbacks.on_read) {
                 conn->callbacks.on_read(conn, buffer, bytes_read);
