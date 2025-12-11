@@ -25,8 +25,14 @@
 
 extern struct ev_loop *g_main_loop;
 
-static char *g_http_request_buffer = NULL;
-static size_t g_http_request_size = 0;
+typedef struct {
+    char *request;
+    size_t request_size;
+} path_request_data_t;
+
+static path_request_data_t *g_path_requests = NULL;
+static int g_path_requests_count = 0;
+static int g_next_path_index = 0;
 
 typedef struct http_conn {
     tcp_conn_t *tcp_conn;
@@ -116,21 +122,28 @@ void http_client_init(perf_config_t *config) {
         TAILQ_INSERT_TAIL(&g_http_conn_pool, &g_http_conn_pool_storage[i], entries);
     }
 
-    const char *request_path = config->http_config.client_request_path;
-    size_t headers_len = 0;
-    for (int i = 0; i < config->http_config.request_headers_count; i++) {
-        headers_len += strlen(config->http_config.request_headers[i]) + 2; // +2 for \r\n
-    }
+    g_path_requests_count = config->http_config.paths_count;
+    g_path_requests = (path_request_data_t*)malloc(g_path_requests_count * sizeof(path_request_data_t));
 
-    g_http_request_size = snprintf(NULL, 0, "GET %s HTTP/1.1\r\nHost: %s\r\n", request_path, config->l3.dst_ip_start) + headers_len + 2; // +2 for final \r\n
-    g_http_request_buffer = (char *)malloc(g_http_request_size + 1);
+    for (int i = 0; i < g_path_requests_count; i++) {
+        http_path_config_t *path_config = &config->http_config.paths[i];
+        path_request_data_t *path_request = &g_path_requests[i];
 
-    char *p = g_http_request_buffer;
-    p += sprintf(p, "GET %s HTTP/1.1\r\nHost: %s\r\n", request_path, config->l3.dst_ip_start);
-    for (int i = 0; i < config->http_config.request_headers_count; i++) {
-        p += sprintf(p, "%s\r\n", config->http_config.request_headers[i]);
+        size_t headers_len = 0;
+        for (int j = 0; j < path_config->request_headers_count; j++) {
+            headers_len += strlen(path_config->request_headers[j]) + 2; // for \r\n
+        }
+
+        path_request->request_size = snprintf(NULL, 0, "GET %s HTTP/1.1\r\nHost: %s\r\n", path_config->path, config->l3.dst_ip_start) + headers_len + 2;
+        path_request->request = (char*)malloc(path_request->request_size + 1);
+        
+        char *p = path_request->request;
+        p += sprintf(p, "GET %s HTTP/1.1\r\nHost: %s\r\n", path_config->path, config->l3.dst_ip_start);
+        for (int j = 0; j < path_config->request_headers_count; j++) {
+            p += sprintf(p, "%s\r\n", path_config->request_headers[j]);
+        }
+        sprintf(p, "\r\n");
     }
-    sprintf(p, "\r\n");
 
     tcp_layer_init_local_port_pool(config);
 
@@ -198,8 +211,16 @@ void create_http_connection(struct ev_loop *loop, perf_config_t *config) {
     http_conn->config = config;
     http_conn->recv_buffer_size = MAX_RECV_SIZE;
 
-    http_conn->send_buffer = g_http_request_buffer;
-    http_conn->send_buffer_size = g_http_request_size;
+    if (g_path_requests_count > 0) {
+        int path_index = g_next_path_index;
+        g_next_path_index = (g_next_path_index + 1) % g_path_requests_count;
+
+        http_conn->send_buffer = g_path_requests[path_index].request;
+        http_conn->send_buffer_size = g_path_requests[path_index].request_size;
+    } else {
+        http_conn->send_buffer = NULL;
+        http_conn->send_buffer_size = 0;
+    }
     LOG_DEBUG("Connecting to %s:%d", config->l3.dst_ip_start, config->l4.dst_port_start);
     tcp_callbacks_t http_cbs = http_callbacks;
     if (config->use_https) {
@@ -389,6 +410,15 @@ static void http_on_close(struct tcp_conn *conn) {
         STATS_INC(connections_closed);
         TAILQ_REMOVE(&g_http_conn_list, http_conn, entries);
         return_http_conn_to_pool(http_conn);
+    }
+}
+
+void http_client_cleanup(void) {
+    if (g_path_requests) {
+        for (int i = 0; i < g_path_requests_count; i++) {
+            free(g_path_requests[i].request);
+        }
+        free(g_path_requests);
     }
 }
 

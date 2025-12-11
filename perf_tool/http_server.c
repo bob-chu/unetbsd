@@ -22,19 +22,16 @@
 #define CLIENT_DATA_POOL_SIZE 16384
 #define MAX_SEND_BUFFER_SIZE 1024*4
 
-char *response_buffer_hello = NULL;
-char *response_buffer_another = NULL;
-char *response_buffer_default = NULL;
-size_t response_size_hello = 0;
-size_t response_size_another = 0;
-size_t response_size_default = 0;
+typedef struct {
+    const char *path;
+    char *response_body;
+    size_t response_body_size;
+    char *response_header;
+    size_t response_header_size;
+} path_response_data_t;
 
-static char *g_http_header_hello;
-static size_t g_http_header_hello_size;
-static char *g_http_header_another;
-static size_t g_http_header_another_size;
-static char *g_http_header_default;
-static size_t g_http_header_default_size;
+static path_response_data_t *g_path_responses = NULL;
+static int g_path_responses_count = 0;
 
 static client_data_t client_data_pool[CLIENT_DATA_POOL_SIZE];
 TAILQ_HEAD(client_data_free_list, client_data);
@@ -62,101 +59,55 @@ void init_response_buffers(perf_config_t *config) {
     const char *words[] = { "hello", "world", "random", "text", "human", "readable", "response", "server", "data", "content" };
     const int word_count = sizeof(words) / sizeof(words[0]);
 
-    response_size_hello = config->http_config.response_size_hello;
-    if (response_size_hello > 0) {
-        response_buffer_hello = malloc(response_size_hello);
-        int pos = 0;
-        while (pos < (int)response_size_hello) {
-            const char *word = words[rand() % word_count];
-            int len = strlen(word);
-            if (pos + len > (int)response_size_hello) len = response_size_hello - pos;
-            memcpy(response_buffer_hello + pos, word, len);
-            pos += len;
-            if (pos < (int)response_size_hello) {
-                response_buffer_hello[pos++] = ' ';
+    g_path_responses_count = config->http_config.paths_count;
+    g_path_responses = (path_response_data_t*)malloc(g_path_responses_count * sizeof(path_response_data_t));
+
+    for (int i = 0; i < g_path_responses_count; i++) {
+        http_path_config_t *path_config = &config->http_config.paths[i];
+        path_response_data_t *path_response = &g_path_responses[i];
+
+        path_response->path = path_config->path;
+        path_response->response_body_size = path_config->response_body_size;
+        path_response->response_body = (char*)malloc(path_response->response_body_size);
+
+        if (path_response->response_body_size > 0) {
+            int pos = 0;
+            while (pos < (int)path_response->response_body_size) {
+                const char *word = words[rand() % word_count];
+                int len = strlen(word);
+                if (pos + len > (int)path_response->response_body_size) len = path_response->response_body_size - pos;
+                memcpy(path_response->response_body + pos, word, len);
+                pos += len;
+                if (pos < (int)path_response->response_body_size) {
+                    path_response->response_body[pos++] = ' ';
+                }
             }
         }
-    }
-    
-    response_size_another = config->http_config.response_size_another;
-    if (response_size_another > 0) {
-        response_buffer_another = malloc(response_size_another);
-        int pos = 0;
-        while (pos < (int)response_size_another) {
-            const char *word = words[rand() % word_count];
-            int len = strlen(word);
-            if (pos + len > (int)response_size_another) len = response_size_another - pos;
-            memcpy(response_buffer_another + pos, word, len);
-            pos += len;
-            if (pos < (int)response_size_another) {
-                response_buffer_another[pos++] = ' ';
-            }
+
+        char temp_header[4096];
+        char *p = temp_header;
+
+        p += snprintf(p, sizeof(temp_header), "HTTP/1.1 200 OK\r\n");
+        for (int j = 0; j < path_config->response_headers_count; j++) {
+            p += snprintf(p, sizeof(temp_header) - (p - temp_header), "%s\r\n", path_config->response_headers[j]);
         }
+        p += snprintf(p, sizeof(temp_header) - (p - temp_header), "Content-Length: %zu\r\n", path_response->response_body_size);
+        p += snprintf(p, sizeof(temp_header) - (p - temp_header), "Connection: close\r\n\r\n");
+        
+        path_response->response_header_size = p - temp_header;
+        path_response->response_header = (char*)malloc(path_response->response_header_size);
+        memcpy(path_response->response_header, temp_header, path_response->response_header_size);
     }
-    
-    response_size_default = config->http_config.response_size_default;
-    if (response_size_default > 0) {
-        response_buffer_default = malloc(response_size_default);
-        int pos = 0;
-        while (pos < (int)response_size_default) {
-            const char *word = words[rand() % word_count];
-            int len = strlen(word);
-            if (pos + len > (int)response_size_default) len = response_size_default - pos;
-            memcpy(response_buffer_default + pos, word, len);
-            pos += len;
-            if (pos < (int)response_size_default) {
-                response_buffer_default[pos++] = ' ';
-            }
-        }
-    }
-
-    char temp_header[4096];
-    char *p;
-
-    // Header for /hello
-    p = temp_header;
-    p += snprintf(p, sizeof(temp_header), "HTTP/1.1 200 OK\r\n");
-    for (int i = 0; i < config->http_config.response_headers_count; i++) {
-        p += snprintf(p, sizeof(temp_header) - (p - temp_header), "%s\r\n", config->http_config.response_headers[i]);
-    }
-    p += snprintf(p, sizeof(temp_header) - (p - temp_header), "Content-Length: %zu\r\n", response_size_hello);
-    p += snprintf(p, sizeof(temp_header) - (p - temp_header), "Connection: close\r\n\r\n");
-    g_http_header_hello_size = p - temp_header;
-    g_http_header_hello = malloc(g_http_header_hello_size);
-    memcpy(g_http_header_hello, temp_header, g_http_header_hello_size);
-
-    // Header for /another
-    p = temp_header;
-    p += snprintf(p, sizeof(temp_header), "HTTP/1.1 200 OK\r\n");
-    for (int i = 0; i < config->http_config.response_headers_count; i++) {
-        p += snprintf(p, sizeof(temp_header) - (p - temp_header), "%s\r\n", config->http_config.response_headers[i]);
-    }
-    p += snprintf(p, sizeof(temp_header) - (p - temp_header), "Content-Length: %zu\r\n", response_size_another);
-    p += snprintf(p, sizeof(temp_header) - (p - temp_header), "Connection: close\r\n\r\n");
-    g_http_header_another_size = p - temp_header;
-    g_http_header_another = malloc(g_http_header_another_size);
-    memcpy(g_http_header_another, temp_header, g_http_header_another_size);
-
-    // Header for default
-    p = temp_header;
-    p += snprintf(p, sizeof(temp_header), "HTTP/1.1 200 OK\r\n");
-    for (int i = 0; i < config->http_config.response_headers_count; i++) {
-        p += snprintf(p, sizeof(temp_header) - (p - temp_header), "%s\r\n", config->http_config.response_headers[i]);
-    }
-    p += snprintf(p, sizeof(temp_header) - (p - temp_header), "Content-Length: %zu\r\n", response_size_default);
-    p += snprintf(p, sizeof(temp_header) - (p - temp_header), "Connection: close\r\n\r\n");
-    g_http_header_default_size = p - temp_header;
-    g_http_header_default = malloc(g_http_header_default_size);
-    memcpy(g_http_header_default, temp_header, g_http_header_default_size);
 }
 
 void free_response_buffers(void) {
-    free(response_buffer_hello);
-    free(response_buffer_another);
-    free(response_buffer_default);
-    free(g_http_header_hello);
-    free(g_http_header_another);
-    free(g_http_header_default);
+    if (g_path_responses) {
+        for (int i = 0; i < g_path_responses_count; i++) {
+            free(g_path_responses[i].response_body);
+            free(g_path_responses[i].response_header);
+        }
+        free(g_path_responses);
+    }
     for (int i = 0; i < CLIENT_DATA_POOL_SIZE; i++) {
         free(client_data_pool[i].recv_buffer);
         client_data_pool[i].recv_buffer = NULL;
@@ -389,22 +340,24 @@ static void http_request_read_cb(tcp_conn_t *conn, const char *buf, ssize_t nbyt
 
 
 static void prepare_http_response(client_data_t *data) {
-    if (data->path_len == 6 && strncmp(data->path, "/hello", 6) == 0) {
-        data->response_body = response_buffer_hello;
-        data->response_body_size = response_size_hello;
-        data->response_header = g_http_header_hello;
-        data->header_size = g_http_header_hello_size;
-    } else if (data->path_len == 8 && strncmp(data->path, "/another", 8) == 0) {
-        data->response_body = response_buffer_another;
-        data->response_body_size = response_size_another;
-        data->response_header = g_http_header_another;
-        data->header_size = g_http_header_another_size;
-    } else {
-        data->response_body = response_buffer_default;
-        data->response_body_size = response_size_default;
-        data->response_header = g_http_header_default;
-        data->header_size = g_http_header_default_size;
+    for (int i = 0; i < g_path_responses_count; i++) {
+        if (data->path_len == strlen(g_path_responses[i].path) && 
+            strncmp(data->path, g_path_responses[i].path, data->path_len) == 0) {
+            data->response_body = g_path_responses[i].response_body;
+            data->response_body_size = g_path_responses[i].response_body_size;
+            data->response_header = g_path_responses[i].response_header;
+            data->header_size = g_path_responses[i].response_header_size;
+            return;
+        }
     }
+
+    // Default case if no path matches
+    // You may want to handle this differently, e.g., send a 404 response.
+    // For now, we'll send an empty response, and the connection will be closed.
+    data->response_body = NULL;
+    data->response_body_size = 0;
+    data->response_header = "HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\n";
+    data->header_size = strlen(data->response_header);
 }
 
 static ssize_t send_http_response(client_data_t *data, tcp_conn_t *conn) {

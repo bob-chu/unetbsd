@@ -127,8 +127,14 @@ int main(int argc, char *argv[]) {
 
     metrics_report();
     dpdk_cleanup();
+
+    if (strcmp(mode, "client") == 0) {
+        http_client_cleanup();
+    } else if (strcmp(mode, "server") == 0) {
+        http_server_cleanup(&config);
+    }
+
     free_config(&config);
-    free_response_buffers();
 
     return 0;
 }

@@ -158,15 +158,27 @@ int parse_config(const char *file_path, perf_config_t *config) {
     // Parse http config
     cJSON *http_config_json = cJSON_GetObjectItemCaseSensitive(json, "http_config");
     if (http_config_json) {
-        config->http_config.client_request_path = get_string_from_json(http_config_json, "client_request_path");
-        config->http_config.response_size_hello = get_int_from_json(http_config_json, "response_size_hello");
-        config->http_config.response_size_another = get_int_from_json(http_config_json, "response_size_another");
-        config->http_config.response_size_default = get_int_from_json(http_config_json, "response_size_default");
         config->http_config.use_https = get_int_from_json(http_config_json, "use_https");
         config->http_config.cert_path = get_string_from_json(http_config_json, "cert_path");
         config->http_config.key_path = get_string_from_json(http_config_json, "key_path");
-        config->http_config.request_headers = parse_string_array(http_config_json, "request_headers", &config->http_config.request_headers_count);
-        config->http_config.response_headers = parse_string_array(http_config_json, "response_headers", &config->http_config.response_headers_count);
+
+        cJSON *paths_json = cJSON_GetObjectItemCaseSensitive(http_config_json, "paths");
+        if (cJSON_IsArray(paths_json)) {
+            config->http_config.paths_count = cJSON_GetArraySize(paths_json);
+            config->http_config.paths = (http_path_config_t*)malloc(config->http_config.paths_count * sizeof(http_path_config_t));
+            for (int i = 0; i < config->http_config.paths_count; i++) {
+                cJSON *path_item_json = cJSON_GetArrayItem(paths_json, i);
+                http_path_config_t *path_config = &config->http_config.paths[i];
+
+                path_config->path = get_string_from_json(path_item_json, "path");
+                path_config->response_body_size = get_int_from_json(path_item_json, "response_body_size");
+                path_config->request_headers = parse_string_array(path_item_json, "request_headers", &path_config->request_headers_count);
+                path_config->response_headers = parse_string_array(path_item_json, "response_headers", &path_config->response_headers_count);
+            }
+        } else {
+            config->http_config.paths_count = 0;
+            config->http_config.paths = NULL;
+        }
     }
 
     config->use_https = config->http_config.use_https;
@@ -196,22 +208,27 @@ void free_config(perf_config_t *config) {
         free(config->dpdk.args);
         free(config->client_payload.data);
         free(config->server_response.data);
-        free(config->http_config.client_request_path);
         free(config->http_config.cert_path);
         free(config->http_config.key_path);
 
-        if (config->http_config.request_headers) {
-            for (int i = 0; i < config->http_config.request_headers_count; i++) {
-                free(config->http_config.request_headers[i]);
+        if (config->http_config.paths) {
+            for (int i = 0; i < config->http_config.paths_count; i++) {
+                http_path_config_t *path_config = &config->http_config.paths[i];
+                free(path_config->path);
+                if (path_config->request_headers) {
+                    for (int j = 0; j < path_config->request_headers_count; j++) {
+                        free(path_config->request_headers[j]);
+                    }
+                    free(path_config->request_headers);
+                }
+                if (path_config->response_headers) {
+                    for (int j = 0; j < path_config->response_headers_count; j++) {
+                        free(path_config->response_headers[j]);
+                    }
+                    free(path_config->response_headers);
+                }
             }
-            free(config->http_config.request_headers);
-        }
-
-        if (config->http_config.response_headers) {
-            for (int i = 0; i < config->http_config.response_headers_count; i++) {
-                free(config->http_config.response_headers[i]);
-            }
-            free(config->http_config.response_headers);
+            free(config->http_config.paths);
         }
     }
 }
