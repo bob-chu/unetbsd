@@ -230,7 +230,7 @@ static void http_on_accept(tcp_conn_t *conn) {
             return;
         }
         // Associate the ssl_layer with the client_data for callbacks
-        SSL_set_ex_data(data->ssl_layer->ssl, 0, data); // Use index 0 for client_data
+        SSL_set_ex_data(data->ssl_layer->ssl, s_ex_data_idx, data); // Use index 0 for client_data
     }
 
     STATS_INC(tcp_concurrent);
@@ -240,7 +240,7 @@ static void http_on_accept(tcp_conn_t *conn) {
 
 static void on_handshake_complete_cb(ssl_layer_t *layer) {
     LOG_INFO("SSL handshake complete");
-    client_data_t *client_data = (client_data_t*)SSL_get_ex_data(layer->ssl, 0);
+    client_data_t *client_data = (client_data_t*)SSL_get_ex_data(layer->ssl, s_ex_data_idx);
     if (client_data) {
         client_data->last_activity_time = ev_now(g_main_loop);
         metrics_update_cps(1); // Increment CPS for HTTPS specifically on handshake completion
@@ -248,7 +248,7 @@ static void on_handshake_complete_cb(ssl_layer_t *layer) {
 }
 
 static void on_encrypted_data_cb(ssl_layer_t *layer, const void *data, int len) {
-    client_data_t *client_data = (client_data_t*)SSL_get_ex_data(layer->ssl, 0);
+    client_data_t *client_data = (client_data_t*)SSL_get_ex_data(layer->ssl, s_ex_data_idx);
     if (client_data) {
         client_data->last_activity_time = ev_now(g_main_loop);
         tcp_layer_write(client_data->tcp_conn, data, len);
@@ -317,7 +317,7 @@ close_conn:
 }
 
 static void on_decrypted_data_cb(ssl_layer_t *layer, const void *buf, int nbytes) {
-    client_data_t *data = (client_data_t*)SSL_get_ex_data(layer->ssl, 0);
+    client_data_t *data = (client_data_t*)SSL_get_ex_data(layer->ssl, s_ex_data_idx);
     if (data) {
         data->last_activity_time = ev_now(g_main_loop);
         process_http_request(data, buf, nbytes);
@@ -366,7 +366,7 @@ static ssize_t send_http_response(client_data_t *data, tcp_conn_t *conn) {
     LOG_DEBUG("send_http_response, conn:%p", conn);
 
     if (data->config->use_https) {
-        client_data_t *check_data = SSL_get_ex_data(data->ssl_layer->ssl, 0);
+        client_data_t *check_data = SSL_get_ex_data(data->ssl_layer->ssl, s_ex_data_idx);
         if (check_data != data) {
             LOG_ERROR("FATAL: SSL context corruption on conn=%p! expected_ctx=%p, actual_ctx=%p",
                       conn, data, check_data);

@@ -77,7 +77,7 @@ static tcp_callbacks_t http_callbacks = {
 };
 
 static void on_handshake_complete_cb_client(ssl_layer_t *layer) {
-    http_conn_t *http_conn = (http_conn_t*)SSL_get_ex_data(layer->ssl, 0);
+    http_conn_t *http_conn = (http_conn_t*)SSL_get_ex_data(layer->ssl, s_ex_data_idx);
     if (http_conn) {
         http_conn->last_activity_time = ev_now(g_main_loop);
         LOG_INFO("SSL handshake complete for client %p", http_conn);
@@ -95,7 +95,7 @@ static void on_handshake_complete_cb_client(ssl_layer_t *layer) {
 
 static void on_encrypted_data_cb_client(ssl_layer_t *layer, const void *data, int len) {
     LOG_DEBUG("HTTP on_encrypted_data_cb_client len:%d.", len);
-    http_conn_t *http_conn = (http_conn_t*)SSL_get_ex_data(layer->ssl, 0);
+    http_conn_t *http_conn = (http_conn_t*)SSL_get_ex_data(layer->ssl, s_ex_data_idx);
     if (http_conn) {
         http_conn->last_activity_time = ev_now(g_main_loop);
         tcp_layer_write(http_conn->tcp_conn, data, len);
@@ -105,7 +105,7 @@ static void on_encrypted_data_cb_client(ssl_layer_t *layer, const void *data, in
 }
 
 static void on_decrypted_data_cb_client(ssl_layer_t *layer, const void *data, int len) {
-    http_conn_t *http_conn = (http_conn_t*)SSL_get_ex_data(layer->ssl, 0);
+    http_conn_t *http_conn = (http_conn_t*)SSL_get_ex_data(layer->ssl, s_ex_data_idx);
     if (http_conn) {
         http_conn->last_activity_time = ev_now(g_main_loop);
         http_on_read(http_conn->tcp_conn, data, len);
@@ -243,7 +243,7 @@ void create_http_connection(struct ev_loop *loop, perf_config_t *config) {
             tcp_layer_close(http_conn->tcp_conn);
             return;
         }
-        SSL_set_ex_data(http_conn->ssl_layer->ssl, 0, http_conn); // Use index 0 for http_conn
+        SSL_set_ex_data(http_conn->ssl_layer->ssl, s_ex_data_idx, http_conn); // Use index 0 for http_conn
     }
     
     TAILQ_INSERT_TAIL(&g_http_conn_list, http_conn, entries);
