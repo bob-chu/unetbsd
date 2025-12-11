@@ -29,6 +29,13 @@ size_t response_size_hello = 0;
 size_t response_size_another = 0;
 size_t response_size_default = 0;
 
+static char *g_http_header_hello;
+static size_t g_http_header_hello_size;
+static char *g_http_header_another;
+static size_t g_http_header_another_size;
+static char *g_http_header_default;
+static size_t g_http_header_default_size;
+
 static client_data_t client_data_pool[CLIENT_DATA_POOL_SIZE];
 TAILQ_HEAD(client_data_free_list, client_data);
 static struct client_data_free_list free_client_data_list = TAILQ_HEAD_INITIALIZER(free_client_data_list);
@@ -102,12 +109,54 @@ void init_response_buffers(perf_config_t *config) {
             }
         }
     }
+
+    char temp_header[4096];
+    char *p;
+
+    // Header for /hello
+    p = temp_header;
+    p += snprintf(p, sizeof(temp_header), "HTTP/1.1 200 OK\r\n");
+    for (int i = 0; i < config->http_config.response_headers_count; i++) {
+        p += snprintf(p, sizeof(temp_header) - (p - temp_header), "%s\r\n", config->http_config.response_headers[i]);
+    }
+    p += snprintf(p, sizeof(temp_header) - (p - temp_header), "Content-Length: %zu\r\n", response_size_hello);
+    p += snprintf(p, sizeof(temp_header) - (p - temp_header), "Connection: close\r\n\r\n");
+    g_http_header_hello_size = p - temp_header;
+    g_http_header_hello = malloc(g_http_header_hello_size);
+    memcpy(g_http_header_hello, temp_header, g_http_header_hello_size);
+
+    // Header for /another
+    p = temp_header;
+    p += snprintf(p, sizeof(temp_header), "HTTP/1.1 200 OK\r\n");
+    for (int i = 0; i < config->http_config.response_headers_count; i++) {
+        p += snprintf(p, sizeof(temp_header) - (p - temp_header), "%s\r\n", config->http_config.response_headers[i]);
+    }
+    p += snprintf(p, sizeof(temp_header) - (p - temp_header), "Content-Length: %zu\r\n", response_size_another);
+    p += snprintf(p, sizeof(temp_header) - (p - temp_header), "Connection: close\r\n\r\n");
+    g_http_header_another_size = p - temp_header;
+    g_http_header_another = malloc(g_http_header_another_size);
+    memcpy(g_http_header_another, temp_header, g_http_header_another_size);
+
+    // Header for default
+    p = temp_header;
+    p += snprintf(p, sizeof(temp_header), "HTTP/1.1 200 OK\r\n");
+    for (int i = 0; i < config->http_config.response_headers_count; i++) {
+        p += snprintf(p, sizeof(temp_header) - (p - temp_header), "%s\r\n", config->http_config.response_headers[i]);
+    }
+    p += snprintf(p, sizeof(temp_header) - (p - temp_header), "Content-Length: %zu\r\n", response_size_default);
+    p += snprintf(p, sizeof(temp_header) - (p - temp_header), "Connection: close\r\n\r\n");
+    g_http_header_default_size = p - temp_header;
+    g_http_header_default = malloc(g_http_header_default_size);
+    memcpy(g_http_header_default, temp_header, g_http_header_default_size);
 }
 
 void free_response_buffers(void) {
     free(response_buffer_hello);
     free(response_buffer_another);
     free(response_buffer_default);
+    free(g_http_header_hello);
+    free(g_http_header_another);
+    free(g_http_header_default);
     for (int i = 0; i < CLIENT_DATA_POOL_SIZE; i++) {
         free(client_data_pool[i].recv_buffer);
         client_data_pool[i].recv_buffer = NULL;
@@ -340,23 +389,22 @@ static void http_request_read_cb(tcp_conn_t *conn, const char *buf, ssize_t nbyt
 
 
 static void prepare_http_response(client_data_t *data) {
-    char *body = NULL;
-    size_t body_size = 0;
     if (data->path_len == 6 && strncmp(data->path, "/hello", 6) == 0) {
-        body = response_buffer_hello;
-        body_size = response_size_hello;
+        data->response_body = response_buffer_hello;
+        data->response_body_size = response_size_hello;
+        data->response_header = g_http_header_hello;
+        data->header_size = g_http_header_hello_size;
     } else if (data->path_len == 8 && strncmp(data->path, "/another", 8) == 0) {
-        body = response_buffer_another;
-        body_size = response_size_another;
+        data->response_body = response_buffer_another;
+        data->response_body_size = response_size_another;
+        data->response_header = g_http_header_another;
+        data->header_size = g_http_header_another_size;
     } else {
-        body = response_buffer_default;
-        body_size = response_size_default;
+        data->response_body = response_buffer_default;
+        data->response_body_size = response_size_default;
+        data->response_header = g_http_header_default;
+        data->header_size = g_http_header_default_size;
     }
-    data->response_body = body;
-    data->response_body_size = body_size;
-    data->header_size = snprintf(data->response_header, sizeof(data->response_header),
-                                 "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: %zu\r\nConnection: close\r\n\r\n",
-                                 body_size);
 }
 
 static ssize_t send_http_response(client_data_t *data, tcp_conn_t *conn) {

@@ -25,6 +25,9 @@
 
 extern struct ev_loop *g_main_loop;
 
+static char *g_http_request_buffer = NULL;
+static size_t g_http_request_size = 0;
+
 typedef struct http_conn {
     tcp_conn_t *tcp_conn;
     ssl_layer_t *ssl_layer;
@@ -113,6 +116,22 @@ void http_client_init(perf_config_t *config) {
         TAILQ_INSERT_TAIL(&g_http_conn_pool, &g_http_conn_pool_storage[i], entries);
     }
 
+    const char *request_path = config->http_config.client_request_path;
+    size_t headers_len = 0;
+    for (int i = 0; i < config->http_config.request_headers_count; i++) {
+        headers_len += strlen(config->http_config.request_headers[i]) + 2; // +2 for \r\n
+    }
+
+    g_http_request_size = snprintf(NULL, 0, "GET %s HTTP/1.1\r\nHost: %s\r\n", request_path, config->l3.dst_ip_start) + headers_len + 2; // +2 for final \r\n
+    g_http_request_buffer = (char *)malloc(g_http_request_size + 1);
+
+    char *p = g_http_request_buffer;
+    p += sprintf(p, "GET %s HTTP/1.1\r\nHost: %s\r\n", request_path, config->l3.dst_ip_start);
+    for (int i = 0; i < config->http_config.request_headers_count; i++) {
+        p += sprintf(p, "%s\r\n", config->http_config.request_headers[i]);
+    }
+    sprintf(p, "\r\n");
+
     tcp_layer_init_local_port_pool(config);
 
     if (config->use_https) {
@@ -164,7 +183,7 @@ static void client_stall_check_cb(struct ev_loop *loop, ev_timer *w, int revents
 
 void create_http_connection(struct ev_loop *loop, perf_config_t *config) {
     //static int counter = 0;
-    //if (counter ++ > 10000) return;
+    //if (counter ++ > 100000) return;
 
     http_conn_t *http_conn = TAILQ_FIRST(&g_http_conn_pool);
     if (!http_conn) {
@@ -179,10 +198,8 @@ void create_http_connection(struct ev_loop *loop, perf_config_t *config) {
     http_conn->config = config;
     http_conn->recv_buffer_size = MAX_RECV_SIZE;
 
-    const char *request_path = config->http_config.client_request_path;
-    http_conn->send_buffer_size = snprintf(NULL, 0, "GET %s HTTP/1.1\r\nHost: %s\r\n\r\n", request_path, config->l3.dst_ip_start);
-    http_conn->send_buffer = (char *)malloc(http_conn->send_buffer_size + 1);
-    snprintf(http_conn->send_buffer, http_conn->send_buffer_size + 1, "GET %s HTTP/1.1\r\nHost: %s\r\n\r\n", request_path, config->l3.dst_ip_start);
+    http_conn->send_buffer = g_http_request_buffer;
+    http_conn->send_buffer_size = g_http_request_size;
     LOG_DEBUG("Connecting to %s:%d", config->l3.dst_ip_start, config->l4.dst_port_start);
     tcp_callbacks_t http_cbs = http_callbacks;
     if (config->use_https) {
@@ -192,7 +209,6 @@ void create_http_connection(struct ev_loop *loop, perf_config_t *config) {
     if (tcp_layer_connect(loop, config, 0, &http_cbs, http_conn, &http_conn->tcp_conn) != 0) {
         LOG_ERROR("Failed to create TCP connection.");
         if (http_conn->send_buffer) {
-            free(http_conn->send_buffer);
             http_conn->send_buffer = NULL;
         }
         TAILQ_INSERT_HEAD(&g_http_conn_pool, http_conn, entries);
@@ -357,7 +373,6 @@ static void return_http_conn_to_pool(http_conn_t *http_conn)
         http_conn->ssl_layer = NULL;
     }
     if (http_conn->send_buffer) {
-        free(http_conn->send_buffer);
         http_conn->send_buffer = NULL;
     }
     TAILQ_INSERT_HEAD(&g_http_conn_pool, http_conn, entries);

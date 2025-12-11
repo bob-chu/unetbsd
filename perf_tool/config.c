@@ -22,6 +22,33 @@ static int get_int_from_json(cJSON *json, const char *key) {
     return 0; // Default value
 }
 
+// Helper function to parse a string array from a cJSON object
+static char** parse_string_array(cJSON *json, const char *key, int *count) {
+    cJSON *array_json = cJSON_GetObjectItemCaseSensitive(json, key);
+    if (!cJSON_IsArray(array_json)) {
+        *count = 0;
+        return NULL;
+    }
+
+    *count = cJSON_GetArraySize(array_json);
+    char **array = (char**)malloc(*count * sizeof(char*));
+    if (!array) {
+        *count = 0;
+        return NULL;
+    }
+
+    for (int i = 0; i < *count; i++) {
+        cJSON *item = cJSON_GetArrayItem(array_json, i);
+        if (cJSON_IsString(item) && (item->valuestring != NULL)) {
+            array[i] = strdup(item->valuestring);
+        } else {
+            array[i] = NULL;
+        }
+    }
+    return array;
+}
+
+
 int parse_config(const char *file_path, perf_config_t *config) {
     char *buffer = NULL;
     long length;
@@ -138,6 +165,8 @@ int parse_config(const char *file_path, perf_config_t *config) {
         config->http_config.use_https = get_int_from_json(http_config_json, "use_https");
         config->http_config.cert_path = get_string_from_json(http_config_json, "cert_path");
         config->http_config.key_path = get_string_from_json(http_config_json, "key_path");
+        config->http_config.request_headers = parse_string_array(http_config_json, "request_headers", &config->http_config.request_headers_count);
+        config->http_config.response_headers = parse_string_array(http_config_json, "response_headers", &config->http_config.response_headers_count);
     }
 
     config->use_https = config->http_config.use_https;
@@ -170,5 +199,19 @@ void free_config(perf_config_t *config) {
         free(config->http_config.client_request_path);
         free(config->http_config.cert_path);
         free(config->http_config.key_path);
+
+        if (config->http_config.request_headers) {
+            for (int i = 0; i < config->http_config.request_headers_count; i++) {
+                free(config->http_config.request_headers[i]);
+            }
+            free(config->http_config.request_headers);
+        }
+
+        if (config->http_config.response_headers) {
+            for (int i = 0; i < config->http_config.response_headers_count; i++) {
+                free(config->http_config.response_headers[i]);
+            }
+            free(config->http_config.response_headers);
+        }
     }
 }

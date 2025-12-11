@@ -55,6 +55,10 @@ typedef struct {
   int use_https;
   char *cert_path;
   char *key_path;
+  char **request_headers;
+  int request_headers_count;
+  char **response_headers;
+  int response_headers_count;
 } http_config_t;
 
 typedef struct {

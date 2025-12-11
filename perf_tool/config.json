@@ -18,7 +18,15 @@
     "client_request_path": "/hello",
     "response_size_hello": 100, 
     "response_size_another": 5242880,
-    "response_size_default": 1024
+    "response_size_default": 1024,
+    "request_headers": [
+      "User-Agent: perf_tool/1.0",
+      "Accept: */*"
+    ],
+    "response_headers": [
+      "Server: unetbsd",
+      "Content-Type: text/plain"
+    ]
   },
   "interface": {
     "mtu": 2000
@@ -38,7 +46,7 @@
       "src_port_start": 1000,
       "src_port_end": 65000,
       "dst_port_start": 8000,
-      "dst_port_end": 8000 
+      "dst_port_end": 8010
     }
   },
   "dpdk": {
