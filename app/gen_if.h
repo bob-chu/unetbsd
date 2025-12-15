@@ -10,6 +10,7 @@ int gen_if_up(void);
 int dpdk_init(int argc, char **argv);
 void open_interface(char *if_name);
 void configure_interface(char *ip_addr, char *gateway_addr);
+void add_interface_ip(char *ip_addr);
 void set_mtu(int mtu);
 void dpdk_read();
 

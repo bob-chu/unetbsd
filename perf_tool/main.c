@@ -2,6 +2,8 @@
 #include <string.h>
 #include <unistd.h>
 #include <sys/prctl.h>
+#include <arpa/inet.h>
+#include <stdlib.h>
 
 #include <ev.h>
 #include <init.h>
@@ -84,19 +86,23 @@ int main(int argc, char *argv[]) {
 
     free(dpdk_args_copy);
 
-    char *ip_addr;
+    char *ip_addr_start;
+    char *ip_addr_end;
     char *gateway_addr;
 
     if (strcmp(mode, "server") == 0) {
-        ip_addr = config.l3.dst_ip_start;
+        ip_addr_start = config.l3.dst_ip_start;
+        ip_addr_end = config.l3.dst_ip_end;
         gateway_addr = config.l3.src_ip_start;
         prctl(PR_SET_NAME, "perf_server");
     } else if (strcmp(mode, "client") == 0) {
-        ip_addr = config.l3.src_ip_start;
+        ip_addr_start = config.l3.src_ip_start;
+        ip_addr_end = config.l3.src_ip_end;
         gateway_addr = config.l3.dst_ip_start;
         prctl(PR_SET_NAME, "perf_client");
     } else if (strcmp(mode, "standalone") == 0) {
-        ip_addr = config.l3.src_ip_start;
+        ip_addr_start = config.l3.src_ip_start;
+        ip_addr_end = config.l3.src_ip_end;
         gateway_addr = config.l3.dst_ip_start;
         prctl(PR_SET_NAME, "perf_standalone");
     } else {
@@ -104,7 +110,35 @@ int main(int argc, char *argv[]) {
         free_config(&config);
         return 1;
     }
-    configure_interface(ip_addr, gateway_addr);
+
+    struct in_addr start_ip, end_ip;
+    if (inet_pton(AF_INET, ip_addr_start, &start_ip) == 1 &&
+        inet_pton(AF_INET, ip_addr_end, &end_ip) == 1) {
+        uint32_t start = ntohl(start_ip.s_addr);
+        uint32_t end = ntohl(end_ip.s_addr);
+
+        if (start <= end) {
+            for (uint32_t i = 0; i <= (end - start); i++) {
+                struct in_addr current_addr;
+                current_addr.s_addr = htonl(start + i);
+                char ip_str[INET_ADDRSTRLEN];
+                inet_ntop(AF_INET, &current_addr, ip_str, INET_ADDRSTRLEN);
+
+                if (i == 0) {
+                    configure_interface(ip_str, gateway_addr);
+                } else {
+                    char ip[256];
+                    snprintf(ip, sizeof(ip), "add ip: %s:%u inet %s netmask 255.255.255.0",
+                             config.dpdk.iface, i - 1, ip_str);
+                    add_interface_ip(ip_str);
+                }
+            }
+        } else {
+            configure_interface(ip_addr_start, gateway_addr);
+        }
+    } else {
+        configure_interface(ip_addr_start, gateway_addr);
+    }
 
 
     g_main_loop = EV_DEFAULT;
