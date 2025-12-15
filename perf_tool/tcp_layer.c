@@ -29,6 +29,7 @@ static tcp_conn_t* get_tcp_conn_from_pool() {
     if (conn) {
         TAILQ_REMOVE(&g_tcp_conn_pool, conn, entries);
         memset(conn, 0, sizeof(tcp_conn_t));
+        STATS_INC(tcp_alloc_pool);
     } else {
         LOG_WARN("TCP connection pool is empty.");
     }
@@ -41,6 +42,7 @@ static void return_tcp_conn_to_pool(tcp_conn_t *conn) {
         // a check `(conn >= g_tcp_conn_pool_storage && conn < &g_tcp_conn_pool_storage[HTTP_CONN_POOL_SIZE])`
         // can be added if we want to support mixed allocation.
         TAILQ_INSERT_HEAD(&g_tcp_conn_pool, conn, entries);
+        STATS_INC(tcp_return_pool);
     }
 }
 
@@ -58,6 +60,7 @@ static void tcp_layer_conn_pool_init() {
 #define MAX_RECV_SZ 7000
 #define RECV_BUFFER_SZ 8192
 
+int g_current_server_ip_index = 0;
 int g_current_server_port_index = 0;
 int g_server_port_count = 0;
 int *g_server_ports = NULL;
@@ -66,6 +69,14 @@ static int *g_local_ports = NULL;
 static int g_local_port_count = 0;
 static int g_local_port_used = 0;
 static int g_current_port_index = 0;
+
+static struct in_addr *g_local_ips = NULL;
+static int g_local_ip_count = 0;
+static int g_current_ip_index = 0;
+
+static struct in_addr *g_server_ips = NULL;
+static int g_server_ip_count = 0;
+
 static double g_last_port_stats_log_time = 0.0;
 
 static tcp_server_callbacks_t *g_server_callbacks = NULL;
@@ -102,6 +113,49 @@ void tcp_layer_init_local_port_pool(perf_config_t *config) {
     g_current_port_index = 0;
     g_last_port_stats_log_time = 0.0;
 
+    struct in_addr start_ip, end_ip;
+    if (inet_pton(AF_INET, config->l3.src_ip_start, &start_ip) == 1 &&
+        inet_pton(AF_INET, config->l3.src_ip_end, &end_ip) == 1) {
+        uint32_t start = ntohl(start_ip.s_addr);
+        uint32_t end = ntohl(end_ip.s_addr);
+
+        if (start <= end) {
+            g_local_ip_count = end - start + 1;
+            g_local_ips = (struct in_addr *)malloc(g_local_ip_count * sizeof(struct in_addr));
+            if (!g_local_ips) {
+                LOG_ERROR("Failed to allocate memory for local IPs");
+                g_local_ip_count = 0;
+            } else {
+                for (int i = 0; i < g_local_ip_count; i++) {
+                    uint32_t current_ip_h = start + i;
+                    g_local_ips[i].s_addr = htonl(current_ip_h);
+                }
+            }
+        }
+    }
+    g_current_ip_index = 0;
+
+    struct in_addr server_start_ip, server_end_ip;
+    if (inet_pton(AF_INET, config->l3.dst_ip_start, &server_start_ip) == 1 &&
+        inet_pton(AF_INET, config->l3.dst_ip_end, &server_end_ip) == 1) {
+        uint32_t start = ntohl(server_start_ip.s_addr);
+        uint32_t end = ntohl(server_end_ip.s_addr);
+
+        if (start <= end) {
+            g_server_ip_count = end - start + 1;
+            g_server_ips = (struct in_addr *)malloc(g_server_ip_count * sizeof(struct in_addr));
+            if (!g_server_ips) {
+                LOG_ERROR("Failed to allocate memory for server IPs");
+                g_server_ip_count = 0;
+            } else {
+                for (int i = 0; i < g_server_ip_count; i++) {
+                    uint32_t current_ip_h = start + i;
+                    g_server_ips[i].s_addr = htonl(current_ip_h);
+                }
+            }
+        }
+    }
+
     g_server_port_count = config->l4.dst_port_end - config->l4.dst_port_start + 1;
     g_server_ports = (int *)malloc(g_server_port_count * sizeof(int));
     if (!g_server_ports) {
@@ -111,7 +165,20 @@ void tcp_layer_init_local_port_pool(perf_config_t *config) {
     for (int i = 0; i < g_server_port_count; i++) {
         g_server_ports[i] = config->l4.dst_port_start + i;
     }
+    g_current_server_ip_index = 0;
     g_current_server_port_index = 0;
+}
+
+static struct in_addr tcp_layer_get_local_ip(void) {
+    if (g_local_ip_count > 0) {
+        struct in_addr ip = g_local_ips[g_current_ip_index];
+        g_current_ip_index = (g_current_ip_index + 1) % g_local_ip_count;
+        return ip;
+    } else {
+        struct in_addr any_addr;
+        any_addr.s_addr = INADDR_ANY;
+        return any_addr;
+    }
 }
 
 int tcp_layer_get_local_port(void) {
@@ -169,6 +236,7 @@ int tcp_layer_connect(struct ev_loop *loop, perf_config_t *config, int unused, t
     conn->nh.events = 0;
     conn->nh.on_event_queue = 0;
 
+    STATS_INC(tcp_cli_open_req);
     if (netbsd_socket(&conn->nh) != 0) {
         return_tcp_conn_to_pool(conn);
         return -1;
@@ -176,6 +244,10 @@ int tcp_layer_connect(struct ev_loop *loop, perf_config_t *config, int unused, t
 
     int optval = 1;
     netbsd_reuseaddr(&conn->nh, &optval, sizeof(optval));
+
+    if (netbsd_nodelay(&conn->nh, &optval, sizeof(optval))) {
+        printf("Set nodelay option failed.\n");
+    }
 
     int local_port = tcp_layer_get_local_port();
     if (local_port == -1) {
@@ -189,7 +261,7 @@ int tcp_layer_connect(struct ev_loop *loop, perf_config_t *config, int unused, t
     memset(&local_addr, 0, sizeof(local_addr));
     local_addr.sin_family = AF_INET;
     local_addr.sin_port = htons(local_port);
-    local_addr.sin_addr.s_addr = INADDR_ANY;
+    local_addr.sin_addr = tcp_layer_get_local_ip();
     if (netbsd_bind(&conn->nh, (struct sockaddr *)&local_addr) != 0) {
         LOG_ERROR("Failed to bind TCP socket to local port %d: %s", local_port, strerror(errno));
         tcp_layer_return_local_port(local_port);
@@ -198,15 +270,32 @@ int tcp_layer_connect(struct ev_loop *loop, perf_config_t *config, int unused, t
         return -1;
     }
 
-    // Cycle through destination ports
+    // Cycle through destination IPs first, then ports
+    struct in_addr server_ip;
+    if (g_server_ip_count > 0) {
+        server_ip = g_server_ips[g_current_server_ip_index];
+    } else {
+        // Fallback if no server IP range is defined
+        inet_pton(AF_INET, config->l3.dst_ip_start, &server_ip);
+    }
+    
     int server_port = g_server_ports[g_current_server_port_index];
-    g_current_server_port_index = (g_current_server_port_index + 1) % g_server_port_count;
+
+    if (g_server_ip_count > 0) {
+        g_current_server_ip_index++;
+        if (g_current_server_ip_index >= g_server_ip_count) {
+            g_current_server_ip_index = 0;
+            g_current_server_port_index = (g_current_server_port_index + 1) % g_server_port_count;
+        }
+    } else {
+        g_current_server_port_index = (g_current_server_port_index + 1) % g_server_port_count;
+    }
 
     struct sockaddr_in server_addr;
     memset(&server_addr, 0, sizeof(server_addr));
     server_addr.sin_family = AF_INET;
     server_addr.sin_port = htons(server_port);
-    inet_pton(AF_INET, config->l3.dst_ip_start, &server_addr.sin_addr);
+    server_addr.sin_addr = server_ip;
 
     LOG_DEBUG("Connecting to server port: %d, from: %d", server_port, local_port);
     int ret = netbsd_connect(&conn->nh, (struct sockaddr *)&server_addr);
@@ -227,6 +316,7 @@ int tcp_layer_connect(struct ev_loop *loop, perf_config_t *config, int unused, t
     conn->conn_timeout_timer.data = conn;
     ev_timer_start(conn->loop, &conn->conn_timeout_timer);
     *conn_out = conn;
+    STATS_INC(tcp_cli_open_req_done);
     return 0;
 }
 
@@ -237,12 +327,15 @@ ssize_t tcp_layer_write(tcp_conn_t *conn, const char *data, size_t len) {
     //LOG_DEBUG("TCP layer netbsd_write: %d:%s", len, data);
     ssize_t bytes_sent = netbsd_write(&conn->nh, &iov, 1);
     if (bytes_sent > 0) {
-        scheduler_inc_stat(STAT_BYTES_SENT, bytes_sent);
+        STATS_ADD(tcp_bytes_sent, bytes_sent);
+    } else if (bytes_sent < 0) {
+        tcp_layer_close(conn);
     }
     return bytes_sent;
 }
 
 void tcp_layer_close(tcp_conn_t *conn) {
+    STATS_INC(tcp_cli_close_req);
     if (conn && !conn->nh.is_closing) {
         ev_timer_stop(conn->loop, &conn->conn_timeout_timer);
 
@@ -260,8 +353,13 @@ void tcp_layer_close(tcp_conn_t *conn) {
             conn->callbacks.on_close = NULL;
         }
 #endif
-        netbsd_close(&conn->nh);
+        STATS_INC(tcp_cli_close_req_netbsd);
+        int ret = netbsd_close(&conn->nh);
         // Do not free(conn) here as it will be done in close_cb when triggered by netbsd_close
+        if (ret == 0 && conn->nh.data != NULL) {
+            LOG_DEBUG("netbsd_close completed synchronously, cleaning up");
+            tcp_layer_close_cb(&conn->nh, 0);
+        }
     }
 }
 
@@ -270,8 +368,10 @@ static void tcp_layer_close_cb(void *handle, int events) {
     struct netbsd_handle *nh = (struct netbsd_handle *)handle;
     LOG_DEBUG("netbsd_handle: %p", nh);
     tcp_conn_t *conn = (tcp_conn_t *)nh->data;
+    STATS_INC(tcp_cli_close_cb);
     
     if (conn && nh->data) {
+        LOG_DEBUG("  -> Cleaning up conn=%p, port=%d", conn, conn->local_port);
         // Ensure the connection is marked as closing
         conn->nh.is_closing = 1;
         // Stop any timers associated with this connection
@@ -290,6 +390,8 @@ static void tcp_layer_close_cb(void *handle, int events) {
         nh->data = NULL;
         // Free the connection structure
         return_tcp_conn_to_pool(conn);
+    } else {
+        LOG_DEBUG("  -> SKIPPED CLEANUP: conn=%p, nh->data=%p", conn, nh->data);
     }
 }
 
@@ -298,11 +400,14 @@ int tcp_layer_server_init(perf_config_t *config, tcp_server_callbacks_t *callbac
 
     int dst_port_start = config->l4.dst_port_start;
     int dst_port_end = config->l4.dst_port_end;
-    num_listen_ports = dst_port_end - dst_port_start + 1;
-    if (num_listen_ports <= 0) {
+    int port_count = dst_port_end - dst_port_start + 1;
+    if (port_count <= 0) {
         LOG_ERROR("Invalid port range: start=%d, end=%d", dst_port_start, dst_port_end);
         return -1;
     }
+
+    int ip_count = (g_server_ip_count > 0) ? g_server_ip_count : 1;
+    num_listen_ports = ip_count * port_count;
 
     listen_datas = malloc(num_listen_ports * sizeof(listen_watcher_data_t));
     if (!listen_datas) {
@@ -312,49 +417,61 @@ int tcp_layer_server_init(perf_config_t *config, tcp_server_callbacks_t *callbac
     memset(listen_datas, 0, num_listen_ports * sizeof(listen_watcher_data_t));
 
     int success_count = 0;
-    for (int i = 0; i < num_listen_ports; i++) {
-        int port = dst_port_start + i;
-        listen_watcher_data_t *listen_data = &listen_datas[i];
+    int listen_index = 0;
+    for (int i = 0; i < ip_count; i++) {
+        for (int j = 0; j < port_count; j++) {
+            int port = dst_port_start + j;
+            listen_watcher_data_t *listen_data = &listen_datas[listen_index++];
 
-        listen_data->listen_nh.proto = PROTO_TCP;
-        listen_data->listen_nh.type = SOCK_STREAM;
-        listen_data->listen_nh.is_ipv4 = 1;
-        listen_data->listen_nh.read_cb = tcp_layer_accept_cb;
-        listen_data->listen_nh.write_cb = NULL;
-        listen_data->listen_nh.close_cb = tcp_layer_close_cb;
-        listen_data->listen_nh.data = listen_data;
-        listen_data->listen_nh.active = 0;
-        listen_data->listen_nh.is_closing = 0;
-        listen_data->listen_nh.events = 0;
-        listen_data->listen_nh.on_event_queue = 0;
+            listen_data->listen_nh.proto = PROTO_TCP;
+            listen_data->listen_nh.type = SOCK_STREAM;
+            listen_data->listen_nh.is_ipv4 = 1;
+            listen_data->listen_nh.read_cb = tcp_layer_accept_cb;
+            listen_data->listen_nh.write_cb = NULL;
+            listen_data->listen_nh.close_cb = tcp_layer_close_cb;
+            listen_data->listen_nh.data = listen_data;
+            listen_data->listen_nh.active = 0;
+            listen_data->listen_nh.is_closing = 0;
+            listen_data->listen_nh.events = 0;
+            listen_data->listen_nh.on_event_queue = 0;
 
-        int ret = netbsd_socket(&listen_data->listen_nh);
-        if (ret != 0) {
-            LOG_ERROR("Failed to create listen socket for port %d: %d", port, ret);
-            continue;
+            int ret = netbsd_socket(&listen_data->listen_nh);
+            if (ret != 0) {
+                LOG_ERROR("Failed to create listen socket for port %d: %d", port, ret);
+                continue;
+            }
+
+            struct sockaddr_in addr;
+            memset(&addr, 0, sizeof(addr));
+            addr.sin_family = AF_INET;
+            addr.sin_port = htons(port);
+            if (g_server_ip_count > 0) {
+                addr.sin_addr = g_server_ips[i];
+            } else {
+                addr.sin_addr.s_addr = INADDR_ANY;
+            }
+
+            if (netbsd_bind(&listen_data->listen_nh, (struct sockaddr *)&addr) != 0) {
+                char ip_str[INET_ADDRSTRLEN];
+                inet_ntop(AF_INET, &addr.sin_addr, ip_str, INET_ADDRSTRLEN);
+                LOG_ERROR("Failed to bind listen socket for %s:%d", ip_str, port);
+                netbsd_close(&listen_data->listen_nh);
+                continue;
+            }
+
+            if (netbsd_listen(&listen_data->listen_nh, 4096) != 0) {
+                LOG_ERROR("Failed to listen on socket for port %d", port);
+                netbsd_close(&listen_data->listen_nh);
+                continue;
+            }
+
+            netbsd_io_start(&listen_data->listen_nh);
+            
+            char ip_str[INET_ADDRSTRLEN];
+            inet_ntop(AF_INET, &addr.sin_addr, ip_str, INET_ADDRSTRLEN);
+            LOG_INFO("TCP Server listening on %s:%d", ip_str, port);
+            success_count++;
         }
-
-        struct sockaddr_in addr;
-        memset(&addr, 0, sizeof(addr));
-        addr.sin_family = AF_INET;
-        addr.sin_port = htons(port);
-        addr.sin_addr.s_addr = INADDR_ANY;
-
-        if (netbsd_bind(&listen_data->listen_nh, (struct sockaddr *)&addr) != 0) {
-            LOG_ERROR("Failed to bind listen socket for port %d", port);
-            netbsd_close(&listen_data->listen_nh);
-            continue;
-        }
-
-        if (netbsd_listen(&listen_data->listen_nh, SOMAXCONN) != 0) {
-            LOG_ERROR("Failed to listen on socket for port %d", port);
-            netbsd_close(&listen_data->listen_nh);
-            continue;
-        }
-
-        netbsd_io_start(&listen_data->listen_nh);
-        LOG_INFO("TCP Server listening on port %d", port);
-        success_count++;
     }
 
     if (success_count == 0) {
@@ -387,6 +504,7 @@ static void tcp_layer_accept_cb(void *handle, int events) {
 
     while (1) {
         tcp_conn_t *conn = get_tcp_conn_from_pool();
+        STATS_INC(tcp_svr_accept_req);
         if (!conn) {
             break;
         }
@@ -403,6 +521,7 @@ static void tcp_layer_accept_cb(void *handle, int events) {
         conn->nh.events = 0;
         conn->nh.on_event_queue = 0;
 
+        STATS_INC(tcp_svr_accept_netbsd);
         int ret = netbsd_accept(listen_nh, &conn->nh);
         if (ret != 0) {
             return_tcp_conn_to_pool(conn);
@@ -410,6 +529,13 @@ static void tcp_layer_accept_cb(void *handle, int events) {
         }
         LOG_DEBUG("tcp accept on tcp_layer, nh: %p, nh->so: %p", &conn->nh, conn->nh.so);
 
+        int optval = 1;
+        if (netbsd_nodelay(&conn->nh, &optval, sizeof(optval))) {
+            printf("Set nodelay option failed.\n");
+        }
+        netbsd_reuseaddr(&conn->nh, &optval, sizeof(optval));
+
+        STATS_INC(tcp_svr_accept_netbsd_ok);
         netbsd_io_start(&conn->nh);
 
         if (g_server_callbacks->on_accept) {
@@ -426,6 +552,7 @@ static void tcp_layer_connect_cb(void *handle, int events) {
 
     int socket_err = netbsd_socket_error(nh);
     if (socket_err == 0) {
+        STATS_INC(tcp_cli_open_ack_ok);
         conn->is_connected = 1;
         ev_timer_stop(conn->loop, &conn->conn_timeout_timer);
         nh->read_cb = tcp_layer_read_cb;
@@ -435,6 +562,7 @@ static void tcp_layer_connect_cb(void *handle, int events) {
             conn->callbacks.on_connect(conn, 0);
         }
     } else {
+        STATS_INC(tcp_cli_open_ack_failed);
         if (conn->callbacks.on_connect) {
             conn->callbacks.on_connect(conn, socket_err);
         }
@@ -456,9 +584,9 @@ static void tcp_layer_read_cb(void *handle, int events) {
         ssize_t bytes_read = netbsd_read(nh, &iov, 1);
         LOG_DEBUG("tcp_layer_read_cb : %zd", bytes_read);
         if (bytes_read > 0) {
-            scheduler_inc_stat(STAT_BYTES_RECEIVED, bytes_read);
+            STATS_ADD(tcp_bytes_received, bytes_read);
             // Null-terminate for safe logging
-            buffer[bytes_read] = '\0';
+            //buffer[bytes_read] = '\0';
             //LOG_DEBUG("tcp_layer_read_cb : %s", buffer);
             if (conn->callbacks.on_read) {
                 conn->callbacks.on_read(conn, buffer, bytes_read);

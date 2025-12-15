@@ -17,7 +17,6 @@ void send_udp_packet(struct ev_loop *loop, perf_config_t *config);
 int client_get_current_target_connections(void);
 
 void http_client_close_excess_connections(int excess);
-
-extern uint64_t g_concurrent_connections;
+void http_client_cleanup(void);
 
 #endif // CLIENT_H

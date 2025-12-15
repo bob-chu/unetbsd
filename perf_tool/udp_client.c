@@ -111,11 +111,11 @@ void send_udp_packet(struct ev_loop *loop, perf_config_t *config) {
     iov.iov_len = conn_data->send_buffer_size;
 
     conn_data->request_send_time = ev_now(loop);
-    ssize_t bytes_sent = netbsd_sendto(&conn_data->nh, &iov, 1, (struct sockaddr *)&server_addr);
+    ssize_t sent = netbsd_sendto(&conn_data->nh, &iov, 1, (struct sockaddr *)&server_addr);
 
-    if (bytes_sent > 0) {
-        scheduler_inc_stat(STAT_BYTES_SENT, bytes_sent);
-        scheduler_inc_stat(STAT_REQUESTS_SENT, 1);
+    if (sent > 0) {
+        STATS_ADD(udp_bytes_sent,sent);
+        STATS_INC(requests_sent);
         metrics_inc_success();
 
         conn_data->nh.data = conn_data;
@@ -145,12 +145,12 @@ static void udp_client_conn_read_cb(void *handle, int events) {
     ssize_t bytes_read = netbsd_recvfrom(nh, &iov, 1, (struct sockaddr *)&server_addr);
 
     if (bytes_read > 0) {
-        scheduler_inc_stat(STAT_BYTES_RECEIVED, bytes_read);
+        STATS_ADD(udp_bytes_received, bytes_read);
         double response_recv_time = ev_now(g_main_loop);
         uint64_t latency_ms = (uint64_t)((response_recv_time - conn_data->request_send_time) * 1000);
         metrics_add_latency(latency_ms);
         metrics_inc_success();
-        scheduler_inc_stat(STAT_RESPONSES_RECEIVED, 1);
+        STATS_INC(responses_received);
     } else {
         metrics_inc_failure();
     }

@@ -10,8 +10,8 @@
 static perf_config_t *g_config;
 static struct ev_loop *g_loop;
 
-static scheduler_stats_t g_stats = {0};
-static scheduler_stats_t last_stats = {0};
+// Removed: static scheduler_stats_t g_stats = {0};
+static stats_t last_stats = {0};
 static metrics_t last_metrics = {0};
 static int time_index = 0;
 
@@ -51,8 +51,9 @@ void scheduler_update_stats(void) {
 void scheduler_inc_stat(int stat, int value) {
     switch (stat) {
         case STAT_CONCURRENT_CONNECTIONS:
-            g_concurrent_connections += value;
+            g_stats.tcp_concurrent += value;
             break;
+#if 0
         case STAT_CONNECTIONS_OPENED:
             g_stats.connections_opened += value;
             break;
@@ -71,6 +72,7 @@ void scheduler_inc_stat(int stat, int value) {
         case STAT_BYTES_RECEIVED:
             g_stats.bytes_received += value;
             break;
+#endif
         default:
             LOG_WARN("Unknown scheduler stat: %d", stat);
             break;
@@ -85,7 +87,7 @@ void scheduler_set_current_phase(test_phase_t new_phase) {
     g_current_phase = new_phase;
 }
 
-const scheduler_stats_t *scheduler_get_stats(void) {
+const stats_t *scheduler_get_stats(void) {
     return &g_stats;
 }
 
@@ -107,8 +109,8 @@ void scheduler_check_phase_transition(const char *role) {
     uint64_t connections_opened_per_second = (current_stats->connections_opened - last_stats.connections_opened);
     uint64_t connections_closed_per_second = (current_stats->connections_closed - last_stats.connections_closed);
     uint64_t requests_per_second = (current_stats->requests_sent - last_stats.requests_sent);
-    uint64_t bytes_sent_per_second = (current_stats->bytes_sent - last_stats.bytes_sent);
-    uint64_t bytes_received_per_second = (current_stats->bytes_received - last_stats.bytes_received);
+    uint64_t bytes_sent_per_second = (current_stats->tcp_bytes_sent - last_stats.tcp_bytes_sent);
+    uint64_t bytes_received_per_second = (current_stats->tcp_bytes_received - last_stats.tcp_bytes_received);
     uint64_t success_per_second = (current_metrics.success_count - last_metrics.success_count);
     uint64_t failure_per_second = (current_metrics.failure_count - last_metrics.failure_count);
 
@@ -126,7 +128,7 @@ void scheduler_check_phase_transition(const char *role) {
                time_index,
                phase_names[g_current_phase],
                client_get_current_target_connections(),
-               g_concurrent_connections,
+               g_stats.tcp_concurrent,
                connections_opened_per_second,
                connections_closed_per_second,
                requests_per_second,
@@ -140,7 +142,7 @@ void scheduler_check_phase_transition(const char *role) {
                time_index,
                phase_names[g_current_phase],
                client_get_current_target_connections(),
-               g_concurrent_connections,
+               g_stats.tcp_concurrent,
                connections_opened_per_second,
                connections_closed_per_second,
                requests_per_second,

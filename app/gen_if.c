@@ -224,7 +224,8 @@ gen_if_output(void *m, long unsigned int total, void *arg)
     }
     for (i = 0; i < count; i++) {
         data = rte_pktmbuf_append(buf, iov[i].iov_len);
-        if (!data){
+        if (!data) {
+            rte_pktmbuf_free(buf);
             break;
         }
         rte_memcpy(data, iov[i].iov_base, iov[i].iov_len);
@@ -567,4 +568,12 @@ void configure_interface(char *ip_addr, char *gateway_addr)
     unsigned netmask = 24; // Assuming /24 netmask
     virt_if_add_addr(v_if, &addr, netmask, 1);
     virt_if_add_gateway(v_if, &gw);
+}
+
+void add_interface_ip(char *ip_addr)
+{
+    struct in_addr addr;
+    inet_pton(AF_INET, ip_addr, &addr);
+    unsigned netmask = 24; // Assuming /24 netmask
+    virt_if_add_addr(v_if, &addr, netmask, 1);
 }

@@ -20,14 +20,18 @@
 
 #define BUFFER_SIZE 7000
 #define CLIENT_DATA_POOL_SIZE 16384
-#define MAX_SEND_BUFFER_SIZE 1024*5
+#define MAX_SEND_BUFFER_SIZE 1024*4
 
-char *response_buffer_hello = NULL;
-char *response_buffer_another = NULL;
-char *response_buffer_default = NULL;
-size_t response_size_hello = 0;
-size_t response_size_another = 0;
-size_t response_size_default = 0;
+typedef struct {
+    const char *path;
+    char *response_body;
+    size_t response_body_size;
+    char *response_header;
+    size_t response_header_size;
+} path_response_data_t;
+
+static path_response_data_t *g_path_responses = NULL;
+static int g_path_responses_count = 0;
 
 static client_data_t client_data_pool[CLIENT_DATA_POOL_SIZE];
 TAILQ_HEAD(client_data_free_list, client_data);
@@ -55,59 +59,55 @@ void init_response_buffers(perf_config_t *config) {
     const char *words[] = { "hello", "world", "random", "text", "human", "readable", "response", "server", "data", "content" };
     const int word_count = sizeof(words) / sizeof(words[0]);
 
-    response_size_hello = config->http_config.response_size_hello;
-    if (response_size_hello > 0) {
-        response_buffer_hello = malloc(response_size_hello);
-        int pos = 0;
-        while (pos < (int)response_size_hello) {
-            const char *word = words[rand() % word_count];
-            int len = strlen(word);
-            if (pos + len > (int)response_size_hello) len = response_size_hello - pos;
-            memcpy(response_buffer_hello + pos, word, len);
-            pos += len;
-            if (pos < (int)response_size_hello) {
-                response_buffer_hello[pos++] = ' ';
+    g_path_responses_count = config->http_config.paths_count;
+    g_path_responses = (path_response_data_t*)malloc(g_path_responses_count * sizeof(path_response_data_t));
+
+    for (int i = 0; i < g_path_responses_count; i++) {
+        http_path_config_t *path_config = &config->http_config.paths[i];
+        path_response_data_t *path_response = &g_path_responses[i];
+
+        path_response->path = path_config->path;
+        path_response->response_body_size = path_config->response_body_size;
+        path_response->response_body = (char*)malloc(path_response->response_body_size);
+
+        if (path_response->response_body_size > 0) {
+            int pos = 0;
+            while (pos < (int)path_response->response_body_size) {
+                const char *word = words[rand() % word_count];
+                int len = strlen(word);
+                if (pos + len > (int)path_response->response_body_size) len = path_response->response_body_size - pos;
+                memcpy(path_response->response_body + pos, word, len);
+                pos += len;
+                if (pos < (int)path_response->response_body_size) {
+                    path_response->response_body[pos++] = ' ';
+                }
             }
         }
-    }
-    
-    response_size_another = config->http_config.response_size_another;
-    if (response_size_another > 0) {
-        response_buffer_another = malloc(response_size_another);
-        int pos = 0;
-        while (pos < (int)response_size_another) {
-            const char *word = words[rand() % word_count];
-            int len = strlen(word);
-            if (pos + len > (int)response_size_another) len = response_size_another - pos;
-            memcpy(response_buffer_another + pos, word, len);
-            pos += len;
-            if (pos < (int)response_size_another) {
-                response_buffer_another[pos++] = ' ';
-            }
+
+        char temp_header[4096];
+        char *p = temp_header;
+
+        p += snprintf(p, sizeof(temp_header), "HTTP/1.1 200 OK\r\n");
+        for (int j = 0; j < path_config->response_headers_count; j++) {
+            p += snprintf(p, sizeof(temp_header) - (p - temp_header), "%s\r\n", path_config->response_headers[j]);
         }
-    }
-    
-    response_size_default = config->http_config.response_size_default;
-    if (response_size_default > 0) {
-        response_buffer_default = malloc(response_size_default);
-        int pos = 0;
-        while (pos < (int)response_size_default) {
-            const char *word = words[rand() % word_count];
-            int len = strlen(word);
-            if (pos + len > (int)response_size_default) len = response_size_default - pos;
-            memcpy(response_buffer_default + pos, word, len);
-            pos += len;
-            if (pos < (int)response_size_default) {
-                response_buffer_default[pos++] = ' ';
-            }
-        }
+        p += snprintf(p, sizeof(temp_header) - (p - temp_header), "Content-Length: %zu\r\n", path_response->response_body_size);
+        p += snprintf(p, sizeof(temp_header) - (p - temp_header), "Connection: close\r\n\r\n");
+        
+        path_response->response_header_size = p - temp_header;
+        path_response->response_header = (char*)malloc(path_response->response_header_size);
+        memcpy(path_response->response_header, temp_header, path_response->response_header_size);
     }
 }
 
 void free_response_buffers(void) {
-    free(response_buffer_hello);
-    free(response_buffer_another);
-    free(response_buffer_default);
+    if (g_path_responses) {
+        for (int i = 0; i < g_path_responses_count; i++) {
+            free(g_path_responses[i].response_body);
+            free(g_path_responses[i].response_header);
+        }
+        free(g_path_responses);
+    }
     for (int i = 0; i < CLIENT_DATA_POOL_SIZE; i++) {
         free(client_data_pool[i].recv_buffer);
         client_data_pool[i].recv_buffer = NULL;
@@ -183,9 +183,11 @@ void server_stall_check_cb(struct ev_loop *loop, ev_timer *w, int revents) {
     for (int i = 0; i < CLIENT_DATA_POOL_SIZE; i++) {
         client_data_t *data = &client_data_pool[i];
         if (data->in_use) {
-            if (now - data->last_activity_time > 10.0) {
+            if (now - data->last_activity_time > 5.0) {
                 LOG_WARN("Server closing stalled connection %p", data->tcp_conn);
-                tcp_layer_close(data->tcp_conn);
+                //tcp_layer_close(data->tcp_conn);
+                // try to re-send data
+                http_request_write_cb(data->tcp_conn);
             }
         }
     }
@@ -208,7 +210,9 @@ static void http_on_accept(tcp_conn_t *conn) {
     data->tcp_conn = conn;
     conn->upper_layer_data = data;
     data->recv_pos = 0;
+    data->header_size = 0;
     data->header_sent = 0;
+    data->response_body_size = 0;
     data->response_sent = 0;
     data->last_activity_time = ev_now(g_main_loop);
 
@@ -226,17 +230,17 @@ static void http_on_accept(tcp_conn_t *conn) {
             return;
         }
         // Associate the ssl_layer with the client_data for callbacks
-        SSL_set_ex_data(data->ssl_layer->ssl, 0, data); // Use index 0 for client_data
+        SSL_set_ex_data(data->ssl_layer->ssl, s_ex_data_idx, data); // Use index 0 for client_data
     }
 
-    scheduler_inc_stat(STAT_CONCURRENT_CONNECTIONS, 1);
-    scheduler_inc_stat(STAT_CONNECTIONS_OPENED, 1);
+    STATS_INC(tcp_concurrent);
+    STATS_INC(connections_opened);
     metrics_update_cps(1); // Increment CPS for HTTP or HTTPS connection
 }
 
 static void on_handshake_complete_cb(ssl_layer_t *layer) {
     LOG_INFO("SSL handshake complete");
-    client_data_t *client_data = (client_data_t*)SSL_get_ex_data(layer->ssl, 0);
+    client_data_t *client_data = (client_data_t*)SSL_get_ex_data(layer->ssl, s_ex_data_idx);
     if (client_data) {
         client_data->last_activity_time = ev_now(g_main_loop);
         metrics_update_cps(1); // Increment CPS for HTTPS specifically on handshake completion
@@ -244,7 +248,7 @@ static void on_handshake_complete_cb(ssl_layer_t *layer) {
 }
 
 static void on_encrypted_data_cb(ssl_layer_t *layer, const void *data, int len) {
-    client_data_t *client_data = (client_data_t*)SSL_get_ex_data(layer->ssl, 0);
+    client_data_t *client_data = (client_data_t*)SSL_get_ex_data(layer->ssl, s_ex_data_idx);
     if (client_data) {
         client_data->last_activity_time = ev_now(g_main_loop);
         tcp_layer_write(client_data->tcp_conn, data, len);
@@ -277,10 +281,12 @@ static void process_http_request(client_data_t *data, const char *buf, int nbyte
         LOG_DEBUG("phr_parse_request, ret: %d", ret);
         if (ret == -1) {
             LOG_ERROR("Parse error on request, closing connection");
+            STATS_INC(http_rep_hdr_parse_err);
             goto close_conn;
         }
         if (ret > 0) {
             LOG_INFO("Request parsed: %.*s %.*s HTTP/1.%d", (int)method_len, method, (int)path_len, path, minor_version);
+            STATS_INC(http_req_rcvd);
             data->method = method;
             data->method_len = method_len;
             data->path = path;
@@ -311,7 +317,7 @@ close_conn:
 }
 
 static void on_decrypted_data_cb(ssl_layer_t *layer, const void *buf, int nbytes) {
-    client_data_t *data = (client_data_t*)SSL_get_ex_data(layer->ssl, 0);
+    client_data_t *data = (client_data_t*)SSL_get_ex_data(layer->ssl, s_ex_data_idx);
     if (data) {
         data->last_activity_time = ev_now(g_main_loop);
         process_http_request(data, buf, nbytes);
@@ -334,23 +340,24 @@ static void http_request_read_cb(tcp_conn_t *conn, const char *buf, ssize_t nbyt
 
 
 static void prepare_http_response(client_data_t *data) {
-    char *body = NULL;
-    size_t body_size = 0;
-    if (data->path_len == 6 && strncmp(data->path, "/hello", 6) == 0) {
-        body = response_buffer_hello;
-        body_size = response_size_hello;
-    } else if (data->path_len == 8 && strncmp(data->path, "/another", 8) == 0) {
-        body = response_buffer_another;
-        body_size = response_size_another;
-    } else {
-        body = response_buffer_default;
-        body_size = response_size_default;
+    for (int i = 0; i < g_path_responses_count; i++) {
+        if (data->path_len == strlen(g_path_responses[i].path) && 
+            strncmp(data->path, g_path_responses[i].path, data->path_len) == 0) {
+            data->response_body = g_path_responses[i].response_body;
+            data->response_body_size = g_path_responses[i].response_body_size;
+            data->response_header = g_path_responses[i].response_header;
+            data->header_size = g_path_responses[i].response_header_size;
+            return;
+        }
     }
-    data->response_body = body;
-    data->response_body_size = body_size;
-    data->header_size = snprintf(data->response_header, sizeof(data->response_header),
-                                 "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: %zu\r\nConnection: close\r\n\r\n",
-                                 body_size);
+
+    // Default case if no path matches
+    // You may want to handle this differently, e.g., send a 404 response.
+    // For now, we'll send an empty response, and the connection will be closed.
+    data->response_body = NULL;
+    data->response_body_size = 0;
+    data->response_header = "HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\n";
+    data->header_size = strlen(data->response_header);
 }
 
 static ssize_t send_http_response(client_data_t *data, tcp_conn_t *conn) {
@@ -359,7 +366,7 @@ static ssize_t send_http_response(client_data_t *data, tcp_conn_t *conn) {
     LOG_DEBUG("send_http_response, conn:%p", conn);
 
     if (data->config->use_https) {
-        client_data_t *check_data = SSL_get_ex_data(data->ssl_layer->ssl, 0);
+        client_data_t *check_data = SSL_get_ex_data(data->ssl_layer->ssl, s_ex_data_idx);
         if (check_data != data) {
             LOG_ERROR("FATAL: SSL context corruption on conn=%p! expected_ctx=%p, actual_ctx=%p",
                       conn, data, check_data);
@@ -403,53 +410,63 @@ static ssize_t send_http_response(client_data_t *data, tcp_conn_t *conn) {
 
     } else {
         // Send header
-        size_t header_remaining = data->header_size - data->header_sent;
-        while (header_remaining > 0) {
-            sent = tcp_layer_write(conn, data->response_header + data->header_sent, header_remaining);
+        if (data->header_sent < data->header_size) {
+            sent = tcp_layer_write(conn, data->response_header + data->header_sent, data->header_size - data->header_sent);
             if (sent > 0) {
+                if (data->header_sent == 0) {
+                    STATS_INC(http_rsp_hdr_send);
+                }
                 data->header_sent += sent;
-                header_remaining -= sent;
                 data->total_sent += sent;
                 LOG_DEBUG("Header sent: %zu bytes", sent);
-            } else if (sent < 0 && errno != EAGAIN && errno != EWOULDBLOCK) {
+            } else if (sent < 0/* && errno != EAGAIN && errno != EWOULDBLOCK*/) {
                 LOG_ERROR("Failed to send header: %zd (%s)", sent, strerror(errno));
+                STATS_INC(http_rsp_hdr_send_err);
                 http_on_close(conn);
                 tcp_layer_close(conn);
-                return data->total_sent;
+                goto out;
+                //return data->total_sent;
             } else {
                 // EAGAIN or EWOULDBLOCK (sent == 0 or sent < 0), wait for next write event
                 LOG_DEBUG("Partial header send (%zd), waiting for next write event", data->total_sent);
-                return data->total_sent;
+                goto out;
+                //return data->total_sent;
             }
         }
 
         // Send body
-        size_t body_remaining = data->response_body_size - data->response_sent;
-        if (body_remaining > 0) {
+        if (data->response_sent < data->response_body_size) {
+            size_t body_remaining = data->response_body_size - data->response_sent;
             size_t chunk_size = (body_remaining > MAX_SEND_BUFFER_SIZE) ? MAX_SEND_BUFFER_SIZE : body_remaining;  // Send in chunks if large
             sent = tcp_layer_write(conn, data->response_body + data->response_sent, chunk_size);
             if (sent > 0) {
+                if (data->response_sent == 0) {
+                    STATS_INC(http_rsp_body_send);
+                }
                 data->response_sent += sent;
-                body_remaining -= sent;
                 data->total_sent += sent;
-                LOG_DEBUG("Total sent: %zu, Body remain: %zu bytes", data->total_sent, body_remaining);
-            } else if (sent < 0 && errno != EAGAIN && errno != EWOULDBLOCK) {
+                LOG_DEBUG("Total sent: %zu, Body remain: %zu bytes", data->total_sent, data->response_body_size - data->response_sent);
+            } else if (sent < 0/* && errno != EAGAIN && errno != EWOULDBLOCK*/) {
                 LOG_ERROR("Failed to send body chunk: %zd (%s)", sent, strerror(errno));
-                http_on_close(conn);
-                tcp_layer_close(conn);
-                return data->total_sent;
+                STATS_INC(http_rsp_body_send_err);
+                //http_on_close(conn);
+                //tcp_layer_close(conn);
+                goto out;
+                //return data->total_sent;
             } else {
                 // EAGAIN or EWOULDBLOCK (sent == 0 or sent < 0), wait for next write event
                 LOG_DEBUG("Partial body send (%zd), waiting for next write event", data->total_sent);
-                return data->total_sent;
+                goto out;
+                //return data->total_sent;
             }
         }
     }
 
-
+out:
     // If everything is sent, log but do not close the connection, let the client handle closure
-    if (data->response_body_size - data->response_sent == 0 && data->header_size - data->header_sent == 0) {
+    if (data->response_body_size > 0 && data->response_body_size == data->response_sent && data->header_size == data->header_sent) {
         LOG_DEBUG("Response fully sent (%zd bytes), waiting for client to close connection", data->total_sent);
+        STATS_INC(http_rsp_body_send_done);
     }
 
     return data->total_sent;
@@ -467,7 +484,7 @@ static void http_request_write_cb(tcp_conn_t *conn) {
 
 static void http_on_close(tcp_conn_t *conn) {
     client_data_t *data = (client_data_t *)conn->upper_layer_data;
-    scheduler_inc_stat(STAT_CONCURRENT_CONNECTIONS, -1);
-    scheduler_inc_stat(STAT_CONNECTIONS_CLOSED, 1);
+    STATS_DEC(tcp_concurrent);
+    STATS_INC(connections_closed);
     return_client_data_to_pool(data);
 }

@@ -187,6 +187,9 @@ void cc_client_connect() {
         return;
     }
     int optval = 1;
+    if (netbsd_nodelay(nh, &optval, sizeof(optval))) {
+        printf("Set nodelay option failed.\n");
+    }
     if (netbsd_reuseaddr(nh, &optval, sizeof(optval))) {
         printf("Set reuseaddr option failed.\n");
         netbsd_close(nh);
@@ -302,6 +305,10 @@ static void tcp_accept(void *handle, int events) {
     if (netbsd_accept(&tcp_server, tcp_client)) {
         printf("Accept tcp client error\n");
         return;
+    }
+    int optval = 1;
+    if (netbsd_nodelay(tcp_client, &optval, sizeof(optval))) {
+        printf("Set nodelay option failed.\n");
     }
     total_accept_cls++;
     netbsd_io_start(tcp_client);

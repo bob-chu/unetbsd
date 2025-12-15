@@ -48,13 +48,20 @@ typedef struct {
 } payload_config_t;
 
 typedef struct {
-  char *client_request_path;
-  int response_size_hello;
-  int response_size_another;
-  int response_size_default;
+  char *path;
+  char **request_headers;
+  int request_headers_count;
+  char **response_headers;
+  int response_headers_count;
+  int response_body_size;
+} http_path_config_t;
+
+typedef struct {
   int use_https;
   char *cert_path;
   char *key_path;
+  http_path_config_t *paths;
+  int paths_count;
 } http_config_t;
 
 typedef struct {

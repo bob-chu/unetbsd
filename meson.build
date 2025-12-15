@@ -2,6 +2,7 @@ project('unetbsd', 'c')
 
 cc = meson.get_compiler('c')
 
+
 add_project_arguments(
     '-g',
     '-O2',
@@ -15,6 +16,7 @@ add_project_arguments(
     '-fno-inline',
     language : 'c'
 )
+
 
 cflags_user = [
     '-g',

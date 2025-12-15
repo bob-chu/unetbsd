@@ -58,6 +58,7 @@ int netbsd_sendto(struct netbsd_handle *nh, const struct iovec *iov, int iovcnt,
 
 int netbsd_reuseaddr(struct netbsd_handle *nh, const void *optval, socklen_t optlen);
 int netbsd_reuseport(struct netbsd_handle *nh, const void *optval, socklen_t optlen);
+int netbsd_nodelay(struct netbsd_handle *nh, const void *optval, socklen_t optlen);
 int netbsd_linger_set(struct netbsd_handle *nh, struct linger *l);
 
 void netbsd_process_event();

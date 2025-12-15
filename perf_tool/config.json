@@ -12,13 +12,47 @@
     "requests_per_connection": 1
   },
   "http_config": {
-    "use_https":1,
-    "cert_path":"./server.crt",
-    "key_path":"./server.key",
-    "client_request_path": "/hello",
-    "response_size_hello": 100, 
-    "response_size_another": 5242880,
-    "response_size_default": 1024
+    "use_https": 1,
+    "cert_path": "./server.crt",
+    "key_path": "./server.key",
+    "paths": [
+      {
+        "path": "/hello",
+        "request_headers": [
+          "User-Agent: perf_tool/1.0",
+          "Accept: */*"
+        ],
+        "response_headers": [
+          "Server: unetbsd",
+          "Content-Type: text/plain"
+        ],
+        "response_body_size": 100
+      },
+      {
+        "path": "/another",
+        "request_headers": [
+          "User-Agent: perf_tool/1.0",
+          "Accept: */*"
+        ],
+        "response_headers": [
+          "Server: unetbsd",
+          "Content-Type: text/plain"
+        ],
+        "response_body_size": 5242880
+      },
+      {
+        "path": "/",
+        "request_headers": [
+          "User-Agent: perf_tool/1.0",
+          "Accept: */*"
+        ],
+        "response_headers": [
+          "Server: unetbsd",
+          "Content-Type: text/plain"
+        ],
+        "response_body_size": 1024
+      }
+    ]
   },
   "interface": {
     "mtu": 2000
@@ -29,16 +63,16 @@
     },
     "l3": {
       "src_ip_start": "192.168.1.10",
-      "src_ip_end": "192.168.1.10",
-      "dst_ip_start": "192.168.1.1",
-      "dst_ip_end": "192.168.1.1"
+      "src_ip_end": "192.168.1.20",
+      "dst_ip_start": "192.168.1.100",
+      "dst_ip_end": "192.168.1.110"
     },
     "l4": {
       "protocol": "TCP",
       "src_port_start": 1000,
       "src_port_end": 65000,
       "dst_port_start": 8000,
-      "dst_port_end": 8000 
+      "dst_port_end": 8010
     }
   },
   "dpdk": {

@@ -6,12 +6,14 @@
 #include <string.h>
 #include <time.h>
 
-static metrics_t g_metrics;
+metrics_t g_metrics;
+stats_t g_stats; // Defined here
 static uint64_t g_latency_sum;
 static uint64_t g_latency_count;
 
 void metrics_init(void) {
     memset(&g_metrics, 0, sizeof(metrics_t));
+    memset(&g_stats, 0, sizeof(stats_t)); // Initialise g_stats
     g_metrics.min_latency_ms = -1; // Initialize with a very large value
     g_metrics.total_ports = 65536; // Assuming a default total number of ports, adjust as needed
     g_latency_sum = 0;
@@ -19,24 +21,43 @@ void metrics_init(void) {
     LOG_INFO("Metrics initialized.");
 }
 
+static void print_metrics(const metrics_t *m) {
+#define X(name) printf("%s: %lu\n", #name, (unsigned long)m->name);
+    METRICS_FIELDS
+#undef X
+}
+
+static void print_stats(const stats_t *m) {
+#define X(name) printf("%s: %lu\n", #name, (unsigned long)m->name);
+    STATS_FIELDS
+    STATS_HTTP_FIELDS
+    STATS_TCP_FIELDS
+    STATS_UDP_FIELDS
+#undef X
+}
+
+static void print_ms()
+{
+    print_metrics(&g_metrics);
+    print_stats(&g_stats);
+}
+
 void metrics_report(void) {
-    LOG_INFO("\n--- Performance Metrics Report ---");
-    LOG_INFO("Connections per second: %lu", g_metrics.connections_per_second);
-    LOG_INFO("Bytes Sent per second: %lu (%.2f Mbps)", g_metrics.bytes_sent_per_second, (g_metrics.bytes_sent_per_second * 8.0) / 1000000.0);
-    LOG_INFO("Bytes Received per second: %lu (%.2f Mbps)", g_metrics.bytes_received_per_second, (g_metrics.bytes_received_per_second * 8.0) / 1000000.0);
-    LOG_INFO("Successful operations: %lu", g_metrics.success_count);
-    LOG_INFO("Failed operations: %lu", g_metrics.failure_count);
-    LOG_INFO("Ports Used: %lu/%lu", g_metrics.ports_used, g_metrics.total_ports);
+    printf("\n--- Performance Metrics Report ---\n");
+    printf("Bytes Sent per second: %lu (%.2f Mbps)\n", g_metrics.bytes_sent_per_second, (g_metrics.bytes_sent_per_second * 8.0) / 1000000.0);
+    printf("Bytes Received per second: %lu (%.2f Mbps)\n", g_metrics.bytes_received_per_second, (g_metrics.bytes_received_per_second * 8.0) / 1000000.0);
+    printf("Ports Used: %lu/%lu\n", g_metrics.ports_used, g_metrics.total_ports);
 
     if (g_latency_count > 0) {
         g_metrics.avg_latency_ms = g_latency_sum / g_latency_count;
-        LOG_INFO("Min Latency (ms): %lu", g_metrics.min_latency_ms);
-        LOG_INFO("Max Latency (ms): %lu", g_metrics.max_latency_ms);
-        LOG_INFO("Avg Latency (ms): %lu", g_metrics.avg_latency_ms);
+        printf("Min Latency (ms): %lu\n", g_metrics.min_latency_ms);
+        printf("Max Latency (ms): %lu\n", g_metrics.max_latency_ms);
+        printf("Avg Latency (ms): %lu\n", g_metrics.avg_latency_ms);
     } else {
-        LOG_INFO("No latency data available.");
+        printf("No latency data available.\n");
     }
-    LOG_INFO("----------------------------------");
+    printf("----------------------------------\n");
+    print_ms();
 }
 
 void metrics_inc_success(void) {
@@ -74,6 +95,14 @@ void metrics_update_port_usage(uint64_t ports_used, uint64_t total_ports) {
 
 void metrics_update_cps(uint64_t cps) {
     g_metrics.connections_per_second = cps;
+}
+
+void metrics_update_cps_http(uint64_t cps) {
+    g_metrics.connections_per_second_http = cps;
+}
+
+void metrics_update_cps_https(uint64_t cps) {
+    g_metrics.connections_per_second_https = cps;
 }
 
 void metrics_update_bytes_sent(uint64_t bytes) {

@@ -22,7 +22,7 @@ typedef struct client_data {
     size_t recv_buffer_size;
     size_t recv_pos;
     int cleaning_up;
-    char response_header[BUFFER_SIZE];
+    const char *response_header;
     size_t header_size;
     int header_sent;
     int in_use;

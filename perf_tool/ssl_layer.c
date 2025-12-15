@@ -52,6 +52,13 @@ static void initialize_openssl_libraries() {
         OpenSSL_add_all_algorithms();
         SSL_load_error_strings();
         openssl_initialized = 1;
+        if (s_ex_data_idx == -1) {
+            s_ex_data_idx = SSL_get_ex_new_index(0, NULL, NULL, NULL, NULL);
+            if (s_ex_data_idx == -1) {
+                LOG_ERROR("SSL_get_ex_new_index failed");
+                ERR_print_errors_fp(stderr);
+            }
+        }
     }
 }
 
@@ -89,16 +96,7 @@ int ssl_layer_init_server(const char *cert_path, const char *key_path) {
         return -1;
     }
 
-    if (s_ex_data_idx == -1) {
-        s_ex_data_idx = SSL_CTX_get_ex_new_index(0, NULL, NULL, NULL, NULL);
-        if (s_ex_data_idx == -1) {
-            LOG_ERROR("SSL_CTX_get_ex_new_index failed");
-            ERR_print_errors_fp(stderr);
-            SSL_CTX_free(g_ssl_server_ctx);
-            g_ssl_server_ctx = NULL;
-            return -1;
-        }
-    }
+
 
     return 0;
 }
@@ -119,16 +117,7 @@ int ssl_layer_init_client() {
     SSL_CTX_set_mode(g_ssl_client_ctx, SSL_MODE_ENABLE_PARTIAL_WRITE |
                      SSL_MODE_ACCEPT_MOVING_WRITE_BUFFER);
 
-    if (s_ex_data_idx == -1) {
-        s_ex_data_idx = SSL_CTX_get_ex_new_index(0, NULL, NULL, NULL, NULL);
-        if (s_ex_data_idx == -1) {
-            LOG_ERROR("SSL_CTX_get_ex_new_index failed for client");
-            ERR_print_errors_fp(stderr);
-            SSL_CTX_free(g_ssl_client_ctx);
-            g_ssl_client_ctx = NULL;
-            return -1;
-        }
-    }
+
 
     return 0;
 }
@@ -258,11 +247,14 @@ int ssl_layer_read_net_data(ssl_layer_t *layer, const void *data, int len) {
         LOG_DEBUG("ssl data, call SSL_read");
         nbytes = SSL_read(layer->ssl, buf, sizeof(buf));
         if (nbytes > 0) {
+            total_decrypted_bytes += nbytes;
             if (layer->on_decrypted_data_cb) {
                 LOG_DEBUG("ssl data, call on_decrypted_data_cb");
                 layer->on_decrypted_data_cb(layer, buf, nbytes);
+                // The callback may have closed the connection and freed the layer.
+                // To prevent a use-after-free, we stop processing more data in this cycle.
+                break;
             }
-            total_decrypted_bytes += nbytes;
         } else if (nbytes < 0) {
             int err = SSL_get_error(layer->ssl, nbytes);
             if (err == SSL_ERROR_WANT_READ || err == SSL_ERROR_WANT_WRITE) {

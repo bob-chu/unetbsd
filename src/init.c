@@ -1,5 +1,7 @@
 #include "stub.h"
 #include "init.h"
+#include "u_softint.h"
+#include "u_fd.h"
 
 typedef struct kauth_cred *kauth_cred_t;
 kauth_cred_t cred0 = NULL;
@@ -80,9 +82,6 @@ void cpu_startup()
 {
 }
 
-#include "u_softint.h"
-#include "u_fd.h"
-
 static int g_shutdown = 0;
 
 
@@ -115,12 +114,38 @@ void netbsd_init()
 }
 
 
+extern int tcp_delack_ticks;
+extern int somaxconn;
+
+extern int tcp_msl_enable;
+extern int tcp_msl_loop;
 extern int tcp_msl_local;
+extern int tcp_msl_remote;
+extern int tcbhashsize;
 
 void sysctl_tun(char *name, int val)
 {
     if (strcmp(name, "tcp_msl_local") == 0) {
         tcp_msl_local = val;
+    }
+    if (strcmp(name, "tcp_msl_enable") == 0) {
+        tcp_msl_enable = val;
+    }
+    if (strcmp(name, "tcp_msl_loop") == 0) {
+        tcp_msl_loop = val;
+    }
+    if (strcmp(name, "tcp_msl_remote") == 0) {
+        tcp_msl_remote = val;
+    }
+
+    if (strcmp(name, "tcp_delack_ticks") == 0) {
+        tcp_delack_ticks = val;
+    }
+    if (strcmp(name, "somaxconn") == 0) {
+        tcp_delack_ticks = val;
+    }
+    if (strcmp(name, "tcbhashsize") == 0) {
+        tcp_delack_ticks = val;
     }
 }
 

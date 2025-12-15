@@ -293,7 +293,7 @@ long netbsd_mbufvec(void *mp, struct iovec *iov, int *n_iov)
 }
 
 void netbsd_freembuf(void *mbuf) {
-    m_free(mbuf);
+    m_freem(mbuf);
 }
 
 void *netbsd_mget_hdr(void *data, int len)
