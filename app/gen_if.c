@@ -224,7 +224,8 @@ gen_if_output(void *m, long unsigned int total, void *arg)
     }
     for (i = 0; i < count; i++) {
         data = rte_pktmbuf_append(buf, iov[i].iov_len);
-        if (!data){
+        if (!data) {
+            rte_pktmbuf_free(buf);
             break;
         }
         rte_memcpy(data, iov[i].iov_base, iov[i].iov_len);

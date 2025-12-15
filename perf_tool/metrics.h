@@ -58,7 +58,9 @@ extern metrics_t g_metrics;
     X(http_rsp_hdr_send_err) \
     X(http_rsp_body_send) \
     X(http_rsp_body_send_err) \
-    X(http_rsp_body_send_done)
+    X(http_rsp_body_send_done) \
+    X(http_alloc_pool) \
+    X(http_return_pool)
 
 #define STATS_TCP_FIELDS \
     X(tcp_cli_open_req) \
@@ -72,7 +74,9 @@ extern metrics_t g_metrics;
     X(tcp_svr_accept_netbsd) \
     X(tcp_svr_accept_netbsd_ok) \
     X(tcp_bytes_sent) \
-    X(tcp_bytes_received)
+    X(tcp_bytes_received) \
+    X(tcp_alloc_pool) \
+    X(tcp_return_pool)
 
 #define STATS_UDP_FIELDS \
     X(udp_bytes_sent) \

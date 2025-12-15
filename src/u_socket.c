@@ -5,10 +5,12 @@
 #include <sys/malloc.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
+#include <netinet/tcp.h>
 #include <sys/mbuf.h>
 #include <sys/poll.h>
 #include <sys/types.h>
 #include <sys/uio.h>
+
 
 extern struct lwp *curlwp;
 
@@ -81,7 +83,8 @@ static void soupcall_cb(struct socket *so, void *arg, int events, int waitflag)
 void netbsd_process_event()
 {
     struct netbsd_event *ev;
-    while ((ev = TAILQ_FIRST(&event_queue)) != NULL) {
+    int count = 16;
+    while ((ev = TAILQ_FIRST(&event_queue)) != NULL && count-- > 0) {
         struct netbsd_handle *nh = ev->nh;
         int events;
         TAILQ_REMOVE(&event_queue, ev, next);
@@ -176,6 +179,16 @@ int netbsd_socket(struct netbsd_handle *nh)
         printf("socreate failed with error: %d\n", error);
         return error;
     }
+
+    int optval = 1;
+    struct sockopt sopt;
+    bzero(&sopt, sizeof(sopt));
+    sopt.sopt_level = SOL_SOCKET;
+    sopt.sopt_name = SO_DEBUG;
+    sopt.sopt_data = &optval;
+    sopt.sopt_size = sizeof(optval);
+    sosetopt(nh->so, &sopt);
+
     nh->fd = u_fd_alloc(nh);
     if (nh->fd < 0) {
         soclose(nh->so);
@@ -304,6 +317,9 @@ int netbsd_close(struct netbsd_handle *nh)
         
         // Enqueue a close event to notify the application
         enqueue_event(nh, POLLHUP);
+        //if (nh->close_cb) {
+        //    nh->close_cb(nh, POLLHUP);
+        //}
     }
     return 0;
 }
@@ -475,6 +491,29 @@ int netbsd_reuseaddr(struct netbsd_handle *nh, const void *optval, socklen_t opt
     error = sosetopt(so, &sopt);
     if (error) {
         printf("netbsd_reuseport failed: level=%d, optname=%d, error=%d\n",
+                sopt.sopt_level, sopt.sopt_name, error);
+    }
+
+    return error;
+}
+
+int netbsd_nodelay(struct netbsd_handle *nh, const void *optval, socklen_t optlen)
+{
+    struct socket *so = nh->so;
+    if (so == NULL || optval == NULL || optlen <= 0) {
+        return EINVAL;
+    }
+
+    struct sockopt sopt;
+    bzero(&sopt, sizeof(sopt));
+    sopt.sopt_level = IPPROTO_TCP;
+    sopt.sopt_name = TCP_NODELAY;
+    sopt.sopt_data = (void *)optval;
+    sopt.sopt_size = optlen;
+
+    int error = sosetopt(so, &sopt);
+    if (error) {
+        printf("netbsd_nodelay failed: level=%d, optname=%d, error=%d\n",
                 sopt.sopt_level, sopt.sopt_name, error);
     }
 

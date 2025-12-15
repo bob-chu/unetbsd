@@ -1,6 +1,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <unistd.h>
+#include <sys/prctl.h>
 
 #include <ev.h>
 #include <init.h>
@@ -69,6 +70,14 @@ int main(int argc, char *argv[]) {
 
     netbsd_init();
 
+    sysctl_tun("tcp_msl_loop", 1);      // 0.5 seconds (PR_SLOWHZ=2)
+    sysctl_tun("tcp_msl_local", 1);     // 1 second
+    sysctl_tun("tcp_msl_remote", 2);    // 2 seconds
+
+    sysctl_tun("tcp_delack_ticks", 1);
+    sysctl_tun("somaxconn", 262144);
+    sysctl_tun("tcbhashsize", 8192);
+
     dpdk_init(dpdk_argc, dpdk_argv);
     open_interface(config.dpdk.iface);
     set_mtu(config.interface.mtu);
@@ -81,12 +90,15 @@ int main(int argc, char *argv[]) {
     if (strcmp(mode, "server") == 0) {
         ip_addr = config.l3.dst_ip_start;
         gateway_addr = config.l3.src_ip_start;
+        prctl(PR_SET_NAME, "perf_server");
     } else if (strcmp(mode, "client") == 0) {
         ip_addr = config.l3.src_ip_start;
         gateway_addr = config.l3.dst_ip_start;
+        prctl(PR_SET_NAME, "perf_client");
     } else if (strcmp(mode, "standalone") == 0) {
         ip_addr = config.l3.src_ip_start;
         gateway_addr = config.l3.dst_ip_start;
+        prctl(PR_SET_NAME, "perf_standalone");
     } else {
         LOG_ERROR("Invalid mode: %s. Choose 'client' or 'server'.\n", mode);
         free_config(&config);

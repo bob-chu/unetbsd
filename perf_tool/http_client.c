@@ -196,11 +196,12 @@ static void client_stall_check_cb(struct ev_loop *loop, ev_timer *w, int revents
 
 void create_http_connection(struct ev_loop *loop, perf_config_t *config) {
     //static int counter = 0;
-    //if (counter ++ > 100000) return;
+    //if (counter ++ > 20) return;
 
+    STATS_INC(http_alloc_pool);
     http_conn_t *http_conn = TAILQ_FIRST(&g_http_conn_pool);
     if (!http_conn) {
-        LOG_WARN("http_conn_pool is empty");
+        LOG_ERROR("http_conn_pool is empty");
         return;
     }
     TAILQ_REMOVE(&g_http_conn_pool, http_conn, entries);
@@ -298,6 +299,7 @@ static void http_on_read(struct tcp_conn *conn, const char *data, ssize_t len) {
     http_conn_t *http_conn = (http_conn_t *)conn->upper_layer_data;
     http_conn->last_activity_time = ev_now(g_main_loop);
     if (len <= 0) {
+        tcp_layer_close(conn);
         return;
     }
 
@@ -337,7 +339,7 @@ static void http_on_read(struct tcp_conn *conn, const char *data, ssize_t len) {
             double response_recv_time = ev_now(g_main_loop);
             uint64_t latency_ms = (uint64_t)((response_recv_time - http_conn->request_send_time) * 1000);
             metrics_add_latency(latency_ms);
-            metrics_inc_success();
+            //metrics_inc_success();
             STATS_INC(responses_received);
 
             http_conn->content_length = 0;
@@ -389,6 +391,7 @@ static void http_on_write(struct tcp_conn *conn) {
 
 static void return_http_conn_to_pool(http_conn_t *http_conn)
 {
+    STATS_INC(http_return_pool);
     if (http_conn->config->use_https && http_conn->ssl_layer) {
         ssl_layer_destroy(http_conn->ssl_layer);
         http_conn->ssl_layer = NULL;
@@ -405,6 +408,7 @@ static void http_on_close(struct tcp_conn *conn) {
     if (http_conn && !http_conn->closing) {
         http_conn->closing = true;
         conn->upper_layer_data = NULL; // Prevent re-entry from other callbacks
+        http_conn->tcp_conn = NULL; // Prevent re-entry from other callbacks
 
         STATS_DEC(tcp_concurrent);
         STATS_INC(connections_closed);

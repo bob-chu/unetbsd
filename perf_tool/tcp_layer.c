@@ -29,6 +29,7 @@ static tcp_conn_t* get_tcp_conn_from_pool() {
     if (conn) {
         TAILQ_REMOVE(&g_tcp_conn_pool, conn, entries);
         memset(conn, 0, sizeof(tcp_conn_t));
+        STATS_INC(tcp_alloc_pool);
     } else {
         LOG_WARN("TCP connection pool is empty.");
     }
@@ -41,6 +42,7 @@ static void return_tcp_conn_to_pool(tcp_conn_t *conn) {
         // a check `(conn >= g_tcp_conn_pool_storage && conn < &g_tcp_conn_pool_storage[HTTP_CONN_POOL_SIZE])`
         // can be added if we want to support mixed allocation.
         TAILQ_INSERT_HEAD(&g_tcp_conn_pool, conn, entries);
+        STATS_INC(tcp_return_pool);
     }
 }
 
@@ -178,6 +180,10 @@ int tcp_layer_connect(struct ev_loop *loop, perf_config_t *config, int unused, t
     int optval = 1;
     netbsd_reuseaddr(&conn->nh, &optval, sizeof(optval));
 
+    if (netbsd_nodelay(&conn->nh, &optval, sizeof(optval))) {
+        printf("Set nodelay option failed.\n");
+    }
+
     int local_port = tcp_layer_get_local_port();
     if (local_port == -1) {
         netbsd_close(&conn->nh);
@@ -257,7 +263,7 @@ void tcp_layer_close(tcp_conn_t *conn) {
         conn->nh.data = conn;
         conn->nh.active = 0;
         conn->nh.is_closing = 1;
-#if 1
+#if 0
         // If on_close callback is set, call it to notify upper layer
         if (conn->callbacks.on_close) {
             conn->callbacks.on_close(conn);
@@ -266,8 +272,12 @@ void tcp_layer_close(tcp_conn_t *conn) {
         }
 #endif
         STATS_INC(tcp_cli_close_req_netbsd);
-        netbsd_close(&conn->nh);
+        int ret = netbsd_close(&conn->nh);
         // Do not free(conn) here as it will be done in close_cb when triggered by netbsd_close
+        if (ret == 0 && conn->nh.data != NULL) {
+            LOG_DEBUG("netbsd_close completed synchronously, cleaning up");
+            tcp_layer_close_cb(&conn->nh, 0);
+        }
     }
 }
 
@@ -279,6 +289,7 @@ static void tcp_layer_close_cb(void *handle, int events) {
     STATS_INC(tcp_cli_close_cb);
     
     if (conn && nh->data) {
+        LOG_DEBUG("  -> Cleaning up conn=%p, port=%d", conn, conn->local_port);
         // Ensure the connection is marked as closing
         conn->nh.is_closing = 1;
         // Stop any timers associated with this connection
@@ -297,6 +308,8 @@ static void tcp_layer_close_cb(void *handle, int events) {
         nh->data = NULL;
         // Free the connection structure
         return_tcp_conn_to_pool(conn);
+    } else {
+        LOG_DEBUG("  -> SKIPPED CLEANUP: conn=%p, nh->data=%p", conn, nh->data);
     }
 }
 
@@ -418,6 +431,12 @@ static void tcp_layer_accept_cb(void *handle, int events) {
             break;
         }
         LOG_DEBUG("tcp accept on tcp_layer, nh: %p, nh->so: %p", &conn->nh, conn->nh.so);
+
+        int optval = 1;
+        if (netbsd_nodelay(&conn->nh, &optval, sizeof(optval))) {
+            printf("Set nodelay option failed.\n");
+        }
+        netbsd_reuseaddr(&conn->nh, &optval, sizeof(optval));
 
         STATS_INC(tcp_svr_accept_netbsd_ok);
         netbsd_io_start(&conn->nh);

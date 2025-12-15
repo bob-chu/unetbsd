@@ -3,7 +3,7 @@
 
 #include "u_socket.h"
 
-#define MAX_FD 65535
+#define MAX_FD 2048*2048 
 
 extern int fd_stack[MAX_FD];
 extern int fd_stack_top;
