@@ -948,7 +948,11 @@ int kauth_authorize_network(struct kauth_cred * cred, kauth_action_t action, enu
 
 kauth_listener_t kauth_listen_scope(const char *scope, kauth_scope_callback_t cb, void *arg) { return NULL; }
 uid_t kauth_cred_geteuid(kauth_cred_t cred) { return 0; }  /* Root UID */
-struct uidinfo *uid_find(uid_t uid) { static struct uidinfo ui = {0}; return &ui; }
+struct uidinfo *uid_find(uid_t uid) {
+    static struct uidinfo ui = {0};
+    ui.ui_uid = 0;
+    return &ui;
+}
 gid_t kauth_cred_getegid(kauth_cred_t cred) { return 0; }  /* Root GID */
 kauth_cred_t kauth_cred_hold(kauth_cred_t cred) { return cred; }
 void kauth_cred_free(kauth_cred_t cred) {}

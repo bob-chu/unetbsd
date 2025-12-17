@@ -10,6 +10,7 @@
 
 #include "config.h"
 #include "gen_if.h"
+#include "dpdk_client.h" // Added for DPDK client functionality
 #include "logger.h"
 #include "server.h"
 #include "client.h"
@@ -59,17 +60,6 @@ int main(int argc, char *argv[]) {
 
     metrics_init();
 
-    char *dpdk_args_copy = strdup(config.dpdk.args);
-    char *dpdk_argv[64];
-    int dpdk_argc = 0;
-    dpdk_argv[dpdk_argc++] = "tt"; // Dummy program name
-    char *token = strtok(dpdk_args_copy, " ");
-    while (token != NULL && dpdk_argc < 63) {
-        dpdk_argv[dpdk_argc++] = token;
-        token = strtok(NULL, " ");
-    }
-    dpdk_argv[dpdk_argc] = NULL;
-
     netbsd_init();
 
     sysctl_tun("tcp_msl_loop", 1);      // 0.5 seconds (PR_SLOWHZ=2)
@@ -78,13 +68,33 @@ int main(int argc, char *argv[]) {
 
     sysctl_tun("tcp_delack_ticks", 1);
     sysctl_tun("somaxconn", 262144);
-    sysctl_tun("tcbhashsize", 8192);
+    sysctl_tun("tcbhashsize", 8192*8);
 
-    dpdk_init(dpdk_argc, dpdk_argv);
-    open_interface(config.dpdk.iface);
+    if (config.dpdk.is_dpdk_client) {
+        if (dpdk_client_init(&config) != 0) {
+            fprintf(stderr, "Failed to initialize DPDK client.\n");
+            free_config(&config);
+            return 1;
+        }
+    } else {
+        char dpdk_args[512];
+        snprintf(dpdk_args, sizeof(dpdk_args), "-l%d %s", config.dpdk.core_id, config.dpdk.args);
+        char *dpdk_args_copy = strdup(dpdk_args);
+        char *dpdk_argv[64];
+        int dpdk_argc = 0;
+        dpdk_argv[dpdk_argc++] = "tt"; // Dummy program name
+        char *token = strtok(dpdk_args_copy, " ");
+        while (token != NULL && dpdk_argc < 63) {
+            dpdk_argv[dpdk_argc++] = token;
+            token = strtok(NULL, " ");
+        }
+        dpdk_argv[dpdk_argc] = NULL;
+
+        dpdk_init(dpdk_argc, dpdk_argv);
+        open_interface(config.dpdk.iface);
+        free(dpdk_args_copy);
+    }
     set_mtu(config.interface.mtu);
-
-    free(dpdk_args_copy);
 
     char *ip_addr_start;
     char *ip_addr_end;
@@ -154,6 +164,7 @@ int main(int argc, char *argv[]) {
     ev_timer_start(g_main_loop, &timer_1s_watcher);
 
     ev_idle_init(&idle_watcher, idle_cb);
+    idle_watcher.data = (void *)&config; // Pass config to the watcher
     ev_idle_start(g_main_loop, &idle_watcher);
 
     if (strcmp(mode, "client") == 0) {

@@ -273,7 +273,8 @@ perf_tool_srcs = [
     'perf_tool/scheduler.c',
     'perf_tool/metrics.c',
     'perf_tool/ssl_layer.c',
-    'perf_tool/deps/picohttpparser/picohttpparser.c'
+    'perf_tool/deps/picohttpparser/picohttpparser.c',
+    'perf_tool/dpdk_client.c'
 ]
 
 executable(
@@ -328,3 +329,15 @@ shared_library(
     link_args : ['-static-libgcc', '-Wl,--whole-archive', '-lpthread', '-lnuma', '-Wl,--no-whole-archive'],
     install : true
 )
+
+if get_option('use_dpdk')
+    executable(
+        'lb',
+        ['perf_tool/loadbalance.c', 'perf_tool/deps/cjson/cJSON.c'],
+        c_args : cflags_user + ['-I/usr/local/include'],
+        include_directories : [include_directories('include'), include_directories('app'), include_directories('src'), include_directories('perf_tool/deps/cjson')],
+        link_with : libnetbsdstack_static,
+        dependencies : [dpdk_dep_static, libev_dep, pthread_dep],
+        install : true
+    )
+endif
