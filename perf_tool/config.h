@@ -40,6 +40,10 @@ typedef struct {
 typedef struct {
   char *iface;
   char *args;
+  int client_ring_idx;
+  int client_lcore_id;
+  int core_id;
+  int is_dpdk_client; // New flag to indicate DPDK client mode
 } dpdk_config_t;
 
 typedef struct {

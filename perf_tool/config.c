@@ -139,6 +139,10 @@ int parse_config(const char *file_path, perf_config_t *config) {
     if (dpdk_json) {
         config->dpdk.iface = get_string_from_json(dpdk_json, "iface");
         config->dpdk.args = get_string_from_json(dpdk_json, "args");
+        config->dpdk.client_ring_idx = get_int_from_json(dpdk_json, "client_ring_idx");
+        config->dpdk.client_lcore_id = get_int_from_json(dpdk_json, "client_lcore_id");
+        config->dpdk.core_id = get_int_from_json(dpdk_json, "core_id");
+        config->dpdk.is_dpdk_client = get_int_from_json(dpdk_json, "is_dpdk_client"); // New field
     }
 
     // Parse client payload

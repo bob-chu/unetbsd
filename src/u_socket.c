@@ -188,6 +188,7 @@ int netbsd_socket(struct netbsd_handle *nh)
     sopt.sopt_data = &optval;
     sopt.sopt_size = sizeof(optval);
     sosetopt(nh->so, &sopt);
+    nh->so->so_uidinfo->ui_uid = 0; // Bypass the entire uid check
 
     nh->fd = u_fd_alloc(nh);
     if (nh->fd < 0) {

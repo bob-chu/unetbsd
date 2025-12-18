@@ -11,8 +11,10 @@ int dpdk_init(int argc, char **argv);
 void open_interface(char *if_name);
 void configure_interface(char *ip_addr, char *gateway_addr);
 void add_interface_ip(char *ip_addr);
+void single_mbuf_input(struct rte_mbuf *pkt);
 void set_mtu(int mtu);
 void dpdk_read();
+void dump_mbuf_hex(struct rte_mbuf *mbuf, char *msg);
 
 struct client_ring {
 	struct rte_ring *rx_q;

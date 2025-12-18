@@ -237,7 +237,7 @@ out:
     return 0;
 }
 
-static void single_mbuf_input(struct rte_mbuf *pkt)
+void single_mbuf_input(struct rte_mbuf *pkt)
 {
     dump_mbuf_hex(pkt, "IN");
     void *data = rte_pktmbuf_mtod(pkt, void*);
