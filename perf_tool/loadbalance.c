@@ -164,6 +164,35 @@ static void signal_handler(int signum) {
     }
 }
 
+void dump_mbuf_hex(struct rte_mbuf *mbuf, char *msg)
+{
+    return;
+    if (!mbuf) {
+        printf("Invalid mbuf\n");
+        return;
+    }
+
+    // Get the pointer to the data and the data length
+    const uint8_t *data = rte_pktmbuf_mtod(mbuf, const uint8_t *);
+    uint16_t data_len = rte_pktmbuf_data_len(mbuf);
+
+    printf("Mbuf data dump: %s (length=%u):\n", msg, data_len);
+
+    for (uint16_t i = 0; i < data_len; i++) {
+        if (i % 16 == 0) { // Start a new line every 16 bytes
+            printf("%04x: ", i);
+        }
+
+        printf("%02x ", data[i]);
+
+        if (i % 16 == 15 || i == data_len - 1) { // End of line or end of data
+            printf("\n");
+        }
+    }
+}
+
+
+
 static int lcore_txrx(__attribute__((unused)) void *arg) {
     const unsigned lcore_id = rte_lcore_id();
     const uint16_t queue_id = 0;
@@ -200,6 +229,8 @@ static int lcore_txrx(__attribute__((unused)) void *arg) {
                 for (uint16_t j = nb_tx; j < nb_to_tx; j++) {
                     rte_pktmbuf_free(tx_burst_buffer[j]);
                 }
+            } else {
+                ;//printf("Send out %d pkts\n", nb_tx);
             }
         }
 
@@ -238,6 +269,8 @@ static int lcore_txrx(__attribute__((unused)) void *arg) {
                         if (rte_ring_enqueue(rx_rings[client_idx], clone_mbuf) != 0) {
                             RTE_LOG(ERR, LB, "Failed to enqueue ARP packet to client %u RX ring\n", client_idx);
                             rte_pktmbuf_free(clone_mbuf);
+                        } else {
+                            ;//printf("enqueue %d pkts to client_idx: %d\n", 1, client_idx);
                         }
                     }
                     rte_pktmbuf_free(bufs[i]); // Free the original mbuf as it's been cloned and distributed
@@ -252,8 +285,7 @@ static int lcore_txrx(__attribute__((unused)) void *arg) {
                 ret_hash = rte_hash_lookup_data(
                     ip_to_client_table, &dst_ip, (void **)&client_id_ptr);
                 if (ret_hash < 0) {
-                    RTE_LOG(DEBUG, LB,
-                            "No client found for destination IP. Dropping "
+                    printf("No client found for destination IP. Dropping "
                             "packet.\n");
                     rte_pktmbuf_free(bufs[i]);
                     continue;
@@ -274,6 +306,7 @@ static int lcore_txrx(__attribute__((unused)) void *arg) {
                             rte_pktmbuf_free(client_bufs[client_id][j]);
                         }
                     }
+                    ;//printf("Send %d pkts to client: %d\n", nb_enqueued, client_id);
                     client_buf_counts[client_id] = 0;
                 }
             }
@@ -291,6 +324,7 @@ static int lcore_txrx(__attribute__((unused)) void *arg) {
                         rte_pktmbuf_free(client_bufs[i][j]);
                     }
                 }
+                ;//printf("Send %d pkts to client: %d\n", nb_enqueued, i);
                 client_buf_counts[i] = 0;
             }
         }
@@ -485,9 +519,22 @@ static int parse_full_config(const char *path) {
     fclose(f);
     buffer[length] = '\0';
 
+    RTE_LOG(INFO, LB, "DEBUG: Config file length: %ld\n", length);
+    RTE_LOG(INFO, LB, "DEBUG: First 100 chars of buffer: %.*s\n", (length > 100 ? 100 : (int)length), buffer);
+
     cJSON *json = cJSON_Parse(buffer);
     if (!json) {
-        RTE_LOG(ERR, LB, "Error parsing JSON: %s\n", cJSON_GetErrorPtr());
+        const char *error_ptr = cJSON_GetErrorPtr();
+        if (error_ptr != NULL) {
+            RTE_LOG(ERR, LB, "Error parsing JSON: %s\n", error_ptr);
+            // Print a snippet of the buffer around the error_ptr for more context
+            int offset = error_ptr - buffer;
+            int start = offset - 20 < 0 ? 0 : offset - 20;
+            int end = offset + 50 > length ? (int)length : offset + 50;
+            RTE_LOG(ERR, LB, "Error occurred near: '%.*s'\n", end - start, buffer + start);
+        } else {
+            RTE_LOG(ERR, LB, "Error parsing JSON (unknown reason)\n");
+        }
         free(buffer);
         return -1;
     }

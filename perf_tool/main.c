@@ -9,8 +9,8 @@
 #include <init.h>
 
 #include "config.h"
+#include "dpdk_client.h" // Moved before gen_if.h
 #include "gen_if.h"
-#include "dpdk_client.h" // Added for DPDK client functionality
 #include "logger.h"
 #include "server.h"
 #include "client.h"
@@ -30,7 +30,13 @@ static void timer_1s_cb(EV_P_ ev_timer *w, int revents) {
 }
 
 static void idle_cb(EV_P_ ev_idle *w, int revents) {
+    perf_config_t *config = (perf_config_t *)w->data; // Retrieve config from watcher data
+
+    if (config->dpdk.is_dpdk_client) {
+        dpdk_client_read(); // Call without mbuf arguments
+    } else {
     dpdk_read();
+    }
     netbsd_loop();
 }
 
@@ -76,6 +82,7 @@ int main(int argc, char *argv[]) {
             free_config(&config);
             return 1;
         }
+        open_dpdk_client_interface(config.dpdk.iface, config.l2.mac_address);
     } else {
         char dpdk_args[512];
         snprintf(dpdk_args, sizeof(dpdk_args), "-l%d %s", config.dpdk.core_id, config.dpdk.args);

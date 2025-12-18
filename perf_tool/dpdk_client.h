@@ -11,8 +11,9 @@
 
 // Forward declarations for functions
 int dpdk_client_init(perf_config_t *config);
-uint16_t dpdk_client_read(perf_config_t *config, struct rte_mbuf **bufs);
+uint16_t dpdk_client_read(void);
 int dpdk_client_send_packet(struct rte_mbuf *m);
+void open_dpdk_client_interface(char *if_name, char *mac_addr_str);
 
 // External declarations for rings and mempool
 extern struct rte_ring *lb_rx_ring;
