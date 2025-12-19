@@ -1,4 +1,4 @@
-# User-Space TCP/IP Stack ported from NetBSD 10.0
+# User-Space TCP/IP Stack ported from NetBSD
 
 ## This project is inspired by the following projects:
 
