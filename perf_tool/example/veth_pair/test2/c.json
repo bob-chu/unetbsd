@@ -1,0 +1,70 @@
+{
+  "scheduler": {
+    "prepare_duration_sec": 3,
+    "ramp_up_duration_sec": 10,
+    "sustain_duration_sec": 50,
+    "ramp_down_duration_sec": 10,
+    "close_duration_sec": 1
+  },
+  "objective": {
+    "type": "HTTP_REQUESTS",
+    "value": 1000,
+    "requests_per_connection": 1
+  },
+  "http_config": {
+    "use_https": 0,
+    "cert_path": "./server.crt",
+    "key_path": "./server.key",
+    "paths": [
+      {
+        "path": "/hello",
+        "request_headers": [
+          "User-Agent: perf_tool/1.0",
+          "Accept: */*"
+        ],
+        "response_headers": [
+          "Server: unetbsd",
+          "Content-Type: text/plain"
+        ],
+        "response_body_size": 100
+      }
+    ]
+  },
+  "interface": {
+    "mtu": 2000
+  },
+  "network": {
+    "l2": {
+      "mac_address": "00:0a:0b:00:00:00"
+    },
+    "l3": {
+      "src_ip_start": "192.168.1.10",
+      "src_ip_end": "192.168.1.17",
+      "dst_ip_start": "192.168.1.100",
+      "dst_ip_end": "192.168.1.107"
+    },
+    "l4": {
+      "protocol": "TCP",
+      "src_port_start": 1000,
+      "src_port_end": 65000,
+      "dst_port_start": 8000,
+      "dst_port_end": 8010
+    }
+  },
+  "dpdk": {
+    "iface": "veth1",
+    "args": "--proc-type=secondary --file-prefix=veth1",
+    "is_dpdk_client": 1,
+    "client_ring_idx": 0,
+    "client_lcore_id": 0,
+    "core_id": 2
+  },
+  "client_payload": {
+    "data": "Hello from client!",
+    "size": 18
+  },
+  "server_response": {
+    "data": "Hello from server!",
+    "size": 18
+  }
+}
