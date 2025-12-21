@@ -361,6 +361,7 @@ ptcp_sources = files(
   'ptcp/printer.go',
   'ptcp/tree.go',
   'ptcp/generate.go',
+  'ptcp/run.go',
 )
 
 ptcp_exe = custom_target(
