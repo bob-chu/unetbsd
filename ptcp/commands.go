@@ -113,7 +113,7 @@ func initStaticCommands() {
 
                 // Special case: generate list
                 if template == "list" {
-                    generateFiles("list", 0, "")
+                    generateFiles("list", 0, "", 0)
                     return
                 }
 

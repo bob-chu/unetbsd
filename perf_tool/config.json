@@ -12,7 +12,7 @@
     "requests_per_connection": 1
   },
   "http_config": {
-    "use_https": 1,
+    "use_https": 0,
     "cert_path": "./server.crt",
     "key_path": "./server.key",
     "paths": [
@@ -75,13 +75,21 @@
       "dst_port_end": 8010
     }
   },
-  "dpdk": {
-    "iface": "ens1",
-    "args": "--vdev eth_af_packet0,iface=ens1,blocksz=4096,framesz=2048,framecnt=512,qpairs=1 --proc-type=primary --file-prefix=rte --no-huge",
+  "dpdk_client": {
+    "iface": "veth0",
+    "args": "--vdev eth_af_packet0,iface=veth0,blocksz=4096,framesz=2048,framecnt=512,qpairs=1 --proc-type=primary --file-prefix=veth0 --no-huge",
     "is_dpdk_client": 0,
     "client_ring_idx": 0,
     "client_lcore_id": 0,
     "core_id": 1
+  },
+  "dpdk_server": {
+    "iface": "veth1",
+    "args": "--vdev eth_af_packet0,iface=veth1,blocksz=4096,framesz=2048,framecnt=512,qpairs=1 --proc-type=primary --file-prefix=veth1 --no-huge",
+    "is_dpdk_client": 0,
+    "client_ring_idx": 0,
+    "client_lcore_id": 0,
+    "core_id": 2
   },
   "client_payload": {
     "data": "Hello from client!",

@@ -84,6 +84,14 @@ func generateCompleter(words []string) []prompt.Suggest {
     if len(words) == 3 {
         return directorySuggestions()
     }
+	// Case: "generate <template> <count> <numa_node>"
+    if len(words) == 4 {
+        return []prompt.Suggest{
+            {Text: "0", Description: "NUMA node 0"},
+            {Text: "1", Description: "NUMA node 1"},
+        }
+    }
+
 
     return []prompt.Suggest{}
 }

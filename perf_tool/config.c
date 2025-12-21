@@ -49,6 +49,19 @@ static char** parse_string_array(cJSON *json, const char *key, int *count) {
 }
 
 
+// Helper function to parse dpdk config from a cJSON object
+static void parse_dpdk_config(cJSON *json, dpdk_config_t *dpdk_config, const char *key) {
+    cJSON *dpdk_json = cJSON_GetObjectItemCaseSensitive(json, key);
+    if (dpdk_json) {
+        dpdk_config->iface = get_string_from_json(dpdk_json, "iface");
+        dpdk_config->args = get_string_from_json(dpdk_json, "args");
+        dpdk_config->client_ring_idx = get_int_from_json(dpdk_json, "client_ring_idx");
+        dpdk_config->client_lcore_id = get_int_from_json(dpdk_json, "client_lcore_id");
+        dpdk_config->core_id = get_int_from_json(dpdk_json, "core_id");
+        dpdk_config->is_dpdk_client = get_int_from_json(dpdk_json, "is_dpdk_client");
+    }
+}
+
 int parse_config(const char *file_path, perf_config_t *config) {
     char *buffer = NULL;
     long length;
@@ -135,15 +148,8 @@ int parse_config(const char *file_path, perf_config_t *config) {
     }
 
     // Parse dpdk config
-    cJSON *dpdk_json = cJSON_GetObjectItemCaseSensitive(json, "dpdk");
-    if (dpdk_json) {
-        config->dpdk.iface = get_string_from_json(dpdk_json, "iface");
-        config->dpdk.args = get_string_from_json(dpdk_json, "args");
-        config->dpdk.client_ring_idx = get_int_from_json(dpdk_json, "client_ring_idx");
-        config->dpdk.client_lcore_id = get_int_from_json(dpdk_json, "client_lcore_id");
-        config->dpdk.core_id = get_int_from_json(dpdk_json, "core_id");
-        config->dpdk.is_dpdk_client = get_int_from_json(dpdk_json, "is_dpdk_client"); // New field
-    }
+    parse_dpdk_config(json, &config->dpdk_client, "dpdk_client");
+    parse_dpdk_config(json, &config->dpdk_server, "dpdk_server");
 
     // Parse client payload
     cJSON *client_payload_json = cJSON_GetObjectItemCaseSensitive(json, "client_payload");
@@ -208,8 +214,10 @@ void free_config(perf_config_t *config) {
         free(config->l3.dst_ip_start);
         free(config->l3.dst_ip_end);
         free(config->l4.protocol);
-        free(config->dpdk.iface);
-        free(config->dpdk.args);
+        free(config->dpdk_client.iface);
+        free(config->dpdk_client.args);
+        free(config->dpdk_server.iface);
+        free(config->dpdk_server.args);
         free(config->client_payload.data);
         free(config->server_response.data);
         free(config->http_config.cert_path);

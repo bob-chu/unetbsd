@@ -74,7 +74,8 @@ typedef struct {
   l2_config_t l2;
   l3_config_t l3;
   l4_config_t l4;
-  dpdk_config_t dpdk;
+  dpdk_config_t dpdk_client;
+  dpdk_config_t dpdk_server;
   payload_config_t client_payload;
   payload_config_t server_response;
   http_config_t http_config;
