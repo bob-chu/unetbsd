@@ -139,6 +139,13 @@ func generateHttpClientWithCores(count int, outputDir string, lbCore int, client
     generateLbC(count, distributed, outputDir, lbCore)
 
     // Per-client configs
+	totalValue, ok := getValue([]string{"objective", "value"}).(float64)
+	if !ok {
+		fmt.Println("objective.value is not a number")
+		return
+	}
+	baseValue := int(totalValue) / count
+	remainder := int(totalValue) % count
     for i := 0; i < count; i++ {
         cfgCopy := deepCopyConfig()
         if cfgCopy == nil {
@@ -147,6 +154,11 @@ func generateHttpClientWithCores(count int, outputDir string, lbCore int, client
         }
         setClientIPRange(cfgCopy, distributed[i])
         setDPDKClientCore(cfgCopy, clientCores[i], i)
+		value := baseValue
+		if i < remainder {
+			value++
+		}
+		setObjectiveValue(cfgCopy, value)
 
         if netNode, ok := cfgCopy["network"].(map[string]interface{}); ok {
             if l2Node, ok := netNode["l2"].(map[string]interface{}); ok {
@@ -204,6 +216,13 @@ func generateHttpServerWithCores(count int, outputDir string, lbCore int, server
     // lb_s.json with core_id = lbCore
     generateLbS(count, distributed, outputDir, lbCore)
 
+	totalValue, ok := getValue([]string{"objective", "value"}).(float64)
+	if !ok {
+		fmt.Println("objective.value is not a number")
+		return
+	}
+	baseValue := int(totalValue) / count
+	remainder := int(totalValue) % count
     // Per-server configs
     for i := 0; i < count; i++ {
         cfgCopy := deepCopyConfig()
@@ -213,6 +232,11 @@ func generateHttpServerWithCores(count int, outputDir string, lbCore int, server
         }
         setServerIPRange(cfgCopy, distributed[i])
         setDPDKServerCore(cfgCopy, serverCores[i], i)
+		value := baseValue
+		if i < remainder {
+			value++
+		}
+		setObjectiveValue(cfgCopy, value)
 
         if netNode, ok := cfgCopy["network"].(map[string]interface{}); ok {
             if l2Node, ok := netNode["l2"].(map[string]interface{}); ok {
@@ -488,6 +512,14 @@ func setDPDKServerCore(cfg map[string]interface{}, core int, index int) {
     dpdkNode["client_ring_idx"] = index 
 }
 
+func setObjectiveValue(cfg map[string]interface{}, value int) {
+	objectiveNode, ok := cfg["objective"].(map[string]interface{})
+	if !ok {
+		fmt.Println("Config missing 'objective' object")
+		return
+	}
+	objectiveNode["value"] = value
+}
 //
 // ============================================================
 //  NUMA CPU DISCOVERY
