@@ -29,13 +29,20 @@ static void timer_1s_cb(EV_P_ ev_timer *w, int revents) {
     scheduler_check_phase_transition(mode);
 }
 
-static void idle_cb(EV_P_ ev_idle *w, int revents) {
-    perf_config_t *config = (perf_config_t *)w->data; // Retrieve config from watcher data
+struct idle_watcher_data {
+    dpdk_config_t *dpdk_config;
+    const char *mode;
+};
 
-    if (config->dpdk.is_dpdk_client) {
-        dpdk_client_read(); // Call without mbuf arguments
+static void idle_cb(EV_P_ ev_idle *w, int revents) {
+    struct idle_watcher_data *data = (struct idle_watcher_data *)w->data;
+    dpdk_config_t *config = data->dpdk_config;
+    const char *mode = data->mode;
+
+    if (config->is_dpdk_client) {
+        dpdk_client_read();
     } else {
-    dpdk_read();
+        dpdk_read();
     }
     netbsd_loop();
 }
@@ -76,48 +83,25 @@ int main(int argc, char *argv[]) {
     sysctl_tun("somaxconn", 262144);
     sysctl_tun("tcbhashsize", 8192*8);
 
-    if (config.dpdk.is_dpdk_client) {
-        if (dpdk_client_init(&config) != 0) {
-            fprintf(stderr, "Failed to initialize DPDK client.\n");
-            free_config(&config);
-            return 1;
-        }
-        open_dpdk_client_interface(config.dpdk.iface, config.l2.mac_address);
-    } else {
-        char dpdk_args[512];
-        snprintf(dpdk_args, sizeof(dpdk_args), "-l%d %s", config.dpdk.core_id, config.dpdk.args);
-        char *dpdk_args_copy = strdup(dpdk_args);
-        char *dpdk_argv[64];
-        int dpdk_argc = 0;
-        dpdk_argv[dpdk_argc++] = "tt"; // Dummy program name
-        char *token = strtok(dpdk_args_copy, " ");
-        while (token != NULL && dpdk_argc < 63) {
-            dpdk_argv[dpdk_argc++] = token;
-            token = strtok(NULL, " ");
-        }
-        dpdk_argv[dpdk_argc] = NULL;
-
-        dpdk_init(dpdk_argc, dpdk_argv);
-        open_interface(config.dpdk.iface);
-        free(dpdk_args_copy);
-    }
-    set_mtu(config.interface.mtu);
-
     char *ip_addr_start;
     char *ip_addr_end;
     char *gateway_addr;
+    dpdk_config_t *dpdk_config = NULL;
 
     if (strcmp(mode, "server") == 0) {
+        dpdk_config = &config.dpdk_server;
         ip_addr_start = config.l3.dst_ip_start;
         ip_addr_end = config.l3.dst_ip_end;
         gateway_addr = config.l3.src_ip_start;
         prctl(PR_SET_NAME, "perf_server");
     } else if (strcmp(mode, "client") == 0) {
+        dpdk_config = &config.dpdk_client;
         ip_addr_start = config.l3.src_ip_start;
         ip_addr_end = config.l3.src_ip_end;
         gateway_addr = config.l3.dst_ip_start;
         prctl(PR_SET_NAME, "perf_client");
     } else if (strcmp(mode, "standalone") == 0) {
+        dpdk_config = &config.dpdk_client; // Assuming client for standalone
         ip_addr_start = config.l3.src_ip_start;
         ip_addr_end = config.l3.src_ip_end;
         gateway_addr = config.l3.dst_ip_start;
@@ -128,25 +112,59 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
+    if (dpdk_config) {
+        if (dpdk_config->is_dpdk_client) {
+            if (dpdk_client_init(dpdk_config) != 0) {
+                fprintf(stderr, "Failed to initialize DPDK client.\n");
+                free_config(&config);
+                return 1;
+            }
+            open_dpdk_client_interface(dpdk_config->iface, config.l2.mac_address);
+        } else {
+            char dpdk_args[512];
+            snprintf(dpdk_args, sizeof(dpdk_args), "-l%d %s", dpdk_config->core_id, dpdk_config->args);
+            char *dpdk_args_copy = strdup(dpdk_args);
+            char *dpdk_argv[64];
+            int dpdk_argc = 0;
+            dpdk_argv[dpdk_argc++] = "tt"; // Dummy program name
+            char *token = strtok(dpdk_args_copy, " ");
+            while (token != NULL && dpdk_argc < 63) {
+                dpdk_argv[dpdk_argc++] = token;
+                token = strtok(NULL, " ");
+            }
+            dpdk_argv[dpdk_argc] = NULL;
+
+            dpdk_init(dpdk_argc, dpdk_argv);
+            open_interface(dpdk_config->iface);
+            free(dpdk_args_copy);
+        }
+    }
+
     struct in_addr start_ip, end_ip;
+
+    LOG_DEBUG("ip_addr_start: %s, ip_addr_end: %s", ip_addr_start, ip_addr_end);
     if (inet_pton(AF_INET, ip_addr_start, &start_ip) == 1 &&
         inet_pton(AF_INET, ip_addr_end, &end_ip) == 1) {
         uint32_t start = ntohl(start_ip.s_addr);
         uint32_t end = ntohl(end_ip.s_addr);
-
+        LOG_DEBUG("start: %lu, end: %lu", start, end);
+        
         if (start <= end) {
             for (uint32_t i = 0; i <= (end - start); i++) {
                 struct in_addr current_addr;
                 current_addr.s_addr = htonl(start + i);
                 char ip_str[INET_ADDRSTRLEN];
                 inet_ntop(AF_INET, &current_addr, ip_str, INET_ADDRSTRLEN);
+                LOG_DEBUG("current_addr.s_addr: %d, str: %s", current_addr.s_addr, ip_str);
 
                 if (i == 0) {
+                    LOG_DEBUG("ip_str: %s, gateway: %s.\n", ip_str, gateway_addr);
                     configure_interface(ip_str, gateway_addr);
                 } else {
                     char ip[256];
                     snprintf(ip, sizeof(ip), "add ip: %s:%u inet %s netmask 255.255.255.0",
-                             config.dpdk.iface, i - 1, ip_str);
+                             dpdk_config->iface, i - 1, ip_str);
+                    LOG_DEBUG("IP: %s:ip_str: %s.\n", ip, ip_str);
                     add_interface_ip(ip_str);
                 }
             }
@@ -157,6 +175,7 @@ int main(int argc, char *argv[]) {
         configure_interface(ip_addr_start, gateway_addr);
     }
 
+    set_mtu(config.interface.mtu);
 
     g_main_loop = EV_DEFAULT;
     ev_timer timer_10ms_watcher;
@@ -170,8 +189,9 @@ int main(int argc, char *argv[]) {
     timer_1s_watcher.data = (void *)mode; // Pass mode to the watcher
     ev_timer_start(g_main_loop, &timer_1s_watcher);
 
+    struct idle_watcher_data idle_data = {dpdk_config, (const char *)mode};
     ev_idle_init(&idle_watcher, idle_cb);
-    idle_watcher.data = (void *)&config; // Pass config to the watcher
+    idle_watcher.data = (void *)&idle_data; // Pass both config and mode
     ev_idle_start(g_main_loop, &idle_watcher);
 
     if (strcmp(mode, "client") == 0) {

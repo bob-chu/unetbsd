@@ -40,9 +40,10 @@ static const char *get_tx_queue_name_lb(unsigned id) {
     return buf;
 }
 
-int dpdk_client_init(perf_config_t *config) {
+int dpdk_client_init(dpdk_config_t *dpdk_config) {
     char dpdk_args[512];
-    snprintf(dpdk_args, sizeof(dpdk_args), "-l%d %s", config->dpdk.core_id, config->dpdk.args);
+    snprintf(dpdk_args, sizeof(dpdk_args), "-l%d --proc-type=secondary --file-prefix=%s",
+             dpdk_config->core_id, dpdk_config->iface);
 
     char *dpdk_args_copy = strdup(dpdk_args);
     char *dpdk_argv[64];
@@ -65,7 +66,7 @@ int dpdk_client_init(perf_config_t *config) {
     free(dpdk_args_copy);
 
     enum rte_proc_type_t proc_type = rte_eal_process_type();
-    unsigned ring_idx = config->dpdk.client_ring_idx;
+    unsigned ring_idx = dpdk_config->client_ring_idx;
 
     // Lookup RX ring
     const char *rx_ring_name = get_rx_queue_name_lb(ring_idx);
@@ -102,7 +103,7 @@ int dpdk_client_init(perf_config_t *config) {
     LOG_INFO("Found Mbuf pool: %s:%p\n", PKTMBUF_POOL_NAME, pkt_mbuf_pool);
 
     // Set lcore ID
-    LOG_INFO("DPDK client configured to use lcore_id: %d\n", config->dpdk.client_lcore_id);
+    LOG_INFO("DPDK client configured to use lcore_id: %d\n", dpdk_config->client_lcore_id);
 
     return 0;
 }

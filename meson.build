@@ -337,7 +337,51 @@ if get_option('use_dpdk')
         c_args : cflags_user + ['-I/usr/local/include'],
         include_directories : [include_directories('include'), include_directories('app'), include_directories('src'), include_directories('perf_tool/deps/cjson')],
         link_with : libnetbsdstack_static,
+        link_args : ['-static'],
         dependencies : [dpdk_dep_static, libev_dep, pthread_dep],
         install : true
     )
 endif
+
+# Build Go program
+go_compiler = find_program('go', required : true)
+
+# Go module support: Download and tidy Go dependencies
+run_command(
+    'sh', '-c', 'cd ptcp && go mod tidy',
+    check: true
+)
+
+ptcp_sources = files(
+  'ptcp/main.go',
+  'ptcp/commands.go',
+  'ptcp/executor.go',
+  'ptcp/completer.go',
+  'ptcp/json_ops.go',
+  'ptcp/printer.go',
+  'ptcp/tree.go',
+  'ptcp/generate.go',
+  'ptcp/run.go',
+)
+
+ptcp_exe = custom_target(
+    'ptcp',
+    input : ptcp_sources,
+    output : 'ptcp',
+    command : ['sh', '-c', 'cd ../ptcp && CGO_ENABLED=0 go build -o ../build/@OUTPUT@ -buildvcs=false .'],
+    build_by_default: true,
+    install : true,
+    install_dir : get_option('bindir')
+)
+
+# SAM build target
+#sam = find_program('sam', required : false)
+#if sam.found()
+#    custom_target(
+#        'sam-build',
+#        command : [sam, 'build', '--use-container'],
+#        output : 'sam_build.stamp',
+#        build_by_default : false
+#    )
+#endif
+

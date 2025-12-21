@@ -27,30 +27,6 @@
           "Content-Type: text/plain"
         ],
         "response_body_size": 100
-      },
-      {
-        "path": "/another",
-        "request_headers": [
-          "User-Agent: perf_tool/1.0",
-          "Accept: */*"
-        ],
-        "response_headers": [
-          "Server: unetbsd",
-          "Content-Type: text/plain"
-        ],
-        "response_body_size": 5242880
-      },
-      {
-        "path": "/",
-        "request_headers": [
-          "User-Agent: perf_tool/1.0",
-          "Accept: */*"
-        ],
-        "response_headers": [
-          "Server: unetbsd",
-          "Content-Type: text/plain"
-        ],
-        "response_body_size": 1024
       }
     ]
   },
@@ -76,17 +52,17 @@
     }
   },
   "dpdk_client": {
-    "iface": "veth0",
-    "args": "--vdev eth_af_packet0,iface=veth0,blocksz=4096,framesz=2048,framecnt=512,qpairs=1 --proc-type=primary --file-prefix=veth0 --no-huge",
-    "is_dpdk_client": 0,
+    "iface": "memif_c",
+    "args": "--vdev=net_memif,id=0,role=client --proc-type=primary --file-prefix=memif_c",
+    "is_dpdk_client": 1,
     "client_ring_idx": 0,
     "client_lcore_id": 0,
     "core_id": 1
   },
   "dpdk_server": {
-    "iface": "veth1",
-    "args": "--vdev eth_af_packet0,iface=veth1,blocksz=4096,framesz=2048,framecnt=512,qpairs=1 --proc-type=primary --file-prefix=veth1 --no-huge",
-    "is_dpdk_client": 0,
+    "iface": "memif_s",
+    "args": "--vdev=net_memif,id=0,role=server --proc-type=primary --file-prefix=memif_s",
+    "is_dpdk_client": 1,
     "client_ring_idx": 0,
     "client_lcore_id": 0,
     "core_id": 2
