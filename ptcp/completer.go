@@ -111,20 +111,28 @@ func runCompleter(words []string) []prompt.Suggest {
 	// Case: user typed only "run"
 	if len(words) == 1 {
 		return []prompt.Suggest{
-			{Text: "start", Description: "Start a test"},
+			{Text: "prepare", Description: "Prepare a test environment"},
+			{Text: "get_stats", Description: "Get statistics from all clients/servers"}, // New
+			{Text: "check", Description: "Check readiness of clients/servers"},
+			{Text: "start", Description: "Start a prepared test"},
 			{Text: "stop", Description: "Stop a test"},
 		}
 	}
 
-	// Case: "run start"
-	if words[1] == "start" {
-		if len(words) == 2 {
+	// Case: "run prepare" (takes build_dir and config_dir)
+	if words[1] == "prepare" {
+		if len(words) == 2 { // Suggest build_dir
 			return directorySuggestions()
 		}
-		if len(words) == 3 {
+		if len(words) == 3 { // Suggest config_dir
 			return directorySuggestions()
 		}
 	}
+
+	// For "run check" and "run start", no further arguments, so no suggestions
+	// if words[1] == "check" || words[1] == "start" {
+	// 	return []prompt.Suggest{}
+	// }
 
 	return []prompt.Suggest{}
 }

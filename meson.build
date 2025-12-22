@@ -274,7 +274,8 @@ perf_tool_srcs = [
     'perf_tool/metrics.c',
     'perf_tool/ssl_layer.c',
     'perf_tool/deps/picohttpparser/picohttpparser.c',
-    'perf_tool/dpdk_client.c'
+    'perf_tool/dpdk_client.c',
+    'perf_tool/pipe_client.c'
 ]
 
 executable(

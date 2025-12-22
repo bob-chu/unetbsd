@@ -10,7 +10,6 @@
 static perf_config_t *g_config;
 static struct ev_loop *g_loop;
 
-// Removed: static scheduler_stats_t g_stats = {0};
 static stats_t last_stats = {0};
 static metrics_t last_metrics = {0};
 static int time_index = 0;
@@ -19,6 +18,7 @@ static double g_start_time;
 static double g_current_phase_start_time;
 
 static test_phase_t g_current_phase = PHASE_PREPARE;
+static bool g_scheduler_paused = false; // New: Scheduler paused state
 
 static const char *phase_names[] = {
     "prepare",
@@ -28,6 +28,23 @@ static const char *phase_names[] = {
     "close",
     "finished"
 };
+
+void scheduler_set_paused(bool paused) {
+    g_scheduler_paused = paused;
+    if (paused) {
+        LOG_INFO("Scheduler paused.");
+    } else {
+        LOG_INFO("Scheduler unpaused.");
+    }
+}
+
+bool scheduler_is_paused(void) {
+    return g_scheduler_paused;
+}
+
+const char **scheduler_get_phase_names(void) {
+    return (const char **)phase_names;
+}
 
 void scheduler_init(struct ev_loop *loop, perf_config_t *config) {
     g_loop = loop;
@@ -53,26 +70,6 @@ void scheduler_inc_stat(int stat, int value) {
         case STAT_CONCURRENT_CONNECTIONS:
             g_stats.tcp_concurrent += value;
             break;
-#if 0
-        case STAT_CONNECTIONS_OPENED:
-            g_stats.connections_opened += value;
-            break;
-        case STAT_CONNECTIONS_CLOSED:
-            g_stats.connections_closed += value;
-            break;
-        case STAT_REQUESTS_SENT:
-            g_stats.requests_sent += value;
-            break;
-        case STAT_RESPONSES_RECEIVED:
-            g_stats.responses_received += value;
-            break;
-        case STAT_BYTES_SENT:
-            g_stats.bytes_sent += value;
-            break;
-        case STAT_BYTES_RECEIVED:
-            g_stats.bytes_received += value;
-            break;
-#endif
         default:
             LOG_WARN("Unknown scheduler stat: %d", stat);
             break;
@@ -100,6 +97,10 @@ double scheduler_get_current_phase_start_time(void) {
 }
 
 void scheduler_check_phase_transition(const char *role) {
+    if (g_scheduler_paused) { // New: Check if scheduler is paused
+        LOG_DEBUG("Scheduler is paused, skipping phase transition check.");
+        return;
+    }
     double now = ev_now(g_loop);
     double total_elapsed_time = now - g_start_time;
 
