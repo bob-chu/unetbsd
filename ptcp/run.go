@@ -20,6 +20,10 @@ var activeConns = make(map[net.Conn]bool)
 var activeConnsMutex sync.Mutex
 var clientReadyStatus = make(map[net.Conn]bool) // New: To track readiness
 
+// Stats tracking
+var statsMutex sync.Mutex
+var lastStats = make(map[string]uint64) // Holds the previous snapshot of numeric stats
+
 // handleClientConnection manages a single client connection, reading messages and updating status
 func handleClientConnection(c net.Conn) {
 	defer func() {
@@ -42,18 +46,57 @@ func handleClientConnection(c net.Conn) {
 			message := string(buffer[:n])
 			fmt.Printf("Received from client %s: %s\n", c.RemoteAddr().String(), message)
 			// Process incoming messages from the C client
-			switch { // Changed to switch on conditions
+			switch {
 			case strings.HasPrefix(message, "{") && strings.HasSuffix(message, "}"): // Check for JSON
 				fmt.Printf("Received JSON stats from %s:\n%s\n", c.RemoteAddr().String(), message)
-				// Here we can parse the JSON and display it nicely
+				// Parse the JSON and display only the most important fields
 				var stats map[string]interface{}
 				if err := json.Unmarshal([]byte(message), &stats); err != nil {
 					fmt.Printf("Error parsing JSON from %s: %v\n", c.RemoteAddr().String(), err)
 				} else {
-					fmt.Printf("Parsed stats from %s:\n", c.RemoteAddr().String())
-					for key, value := range stats {
-						fmt.Printf("  %s: %v\n", key, value)
+					// Define the keys we consider important (mirroring scheduler_check_phase_transition)
+					importantKeys := []string{
+						"role",                     // optional, e.g., "client" or "server"
+						"time_index",               // test time index
+						"phase",                    // current phase name
+						"target_connections",       // target connections for client
+						"tcp_concurrent",           // current concurrent connections
+						"connections_opened",       // total connections opened
+						"connections_closed",       // total connections closed
+						"requests_sent",            // total requests sent
+						"tcp_bytes_sent",           // total bytes sent
+						"tcp_bytes_received",       // total bytes received
+						"success_count",            // total successful ops
+						"failure_count",            // total failed ops
 					}
+
+					statsMutex.Lock()
+					fmt.Printf("Parsed important stats from %s:\n", c.RemoteAddr().String())
+					for _, key := range importantKeys {
+						val, ok := stats[key]
+						if !ok {
+							continue // Skip missing keys
+						}
+						// Only handle numeric values (JSON numbers are unmarshaled as float64)
+						if f, okNum := val.(float64); okNum {
+							current := uint64(f)
+							previous := lastStats[key]
+							delta := current - previous
+							if previous == 0 {
+								// First snapshot – just show the value
+								fmt.Printf("  %s: %d\n", key, current)
+							} else {
+								// Show value and per‑second delta (CPS‑like)
+								fmt.Printf("  %s: %d (Δ %d per sec)\n", key, current, delta)
+							}
+							// Store current as the new previous value for next round
+							lastStats[key] = current
+						} else {
+							// Non‑numeric values are printed as‑is
+							fmt.Printf("  %s: %v\n", key, val)
+						}
+					}
+					statsMutex.Unlock()
 				}
 			case message == "ready":
 				activeConnsMutex.Lock()
@@ -304,15 +347,15 @@ func runCheck() {
 			fmt.Printf("Error writing 'check' to %s: %v\n", conn.RemoteAddr().Network(), err)
 			conn.Close() // Close connection if writing fails
 			allReady = false
-		        		} else {
-		        			fmt.Printf("Sent '%s' command to %s (Network: %s, Addr: %s)\n", message, conn.RemoteAddr(), conn.RemoteAddr().Network(), conn.RemoteAddr().String())
-		        		}
-		        	}		
-		    // This is a synchronous check for now. In a real-world scenario, you might
-		    // want to wait for responses with a timeout. For simplicity, we're relying
-		    // on the handleClientConnection goroutines to update clientReadyStatus.
-		    // We'll give a small delay for responses to come back.
-		    time.Sleep(2 * time.Second) // Increased sleep for debugging
+		} else {
+			fmt.Printf("Sent '%s' command to %s (Network: %s, Addr: %s)\n", message, conn.RemoteAddr(), conn.RemoteAddr().Network(), conn.RemoteAddr().String())
+		}
+	}
+	// This is a synchronous check for now. In a real-world scenario, you might
+	// want to wait for responses with a timeout. For simplicity, we're relying
+	// on the handleClientConnection goroutines to update clientReadyStatus.
+	// We'll give a small delay for responses to come back.
+	time.Sleep(2 * time.Second) // Increased sleep for debugging
 	fmt.Println("\n--- Readiness Report ---")
 	if len(activeConns) == 0 {
 		fmt.Println("No perf_tool instances are connected.")
@@ -328,49 +371,50 @@ func runCheck() {
 		}
 	}
 
-		if allReady {
-			fmt.Println("All connected perf_tool instances are READY.")
+	if allReady {
+		fmt.Println("All connected perf_tool instances are READY.")
+	} else {
+		fmt.Println("WARNING: Not all connected perf_tool instances are READY.")
+	}
+}
+
+func runGetStats() {
+	activeConnsMutex.Lock()
+	defer activeConnsMutex.Unlock()
+
+	if len(activeConns) == 0 {
+		fmt.Println("No perf_tool instances connected to get stats from.")
+		return
+	}
+
+	fmt.Println("Requesting statistics from perf_tool instances...")
+	message := "get_stats"
+
+	// Reset any previous stats storage (if we had one)
+	// For now, we'll just print them as they come in handleClientConnection
+
+	for conn := range activeConns {
+		_, err := conn.Write([]byte(message))
+		if err != nil {
+			fmt.Printf("Error writing 'get_stats' to %s: %v\n", conn.RemoteAddr().String(), err)
+			conn.Close() // Close connection if writing fails
 		} else {
-			fmt.Println("WARNING: Not all connected perf_tool instances are READY.")
+			fmt.Printf("Sent '%s' command to %s\n", message, conn.RemoteAddr().String())
 		}
 	}
-	
-	func runGetStats() {
-		activeConnsMutex.Lock()
-		defer activeConnsMutex.Unlock()
-	
-		if len(activeConns) == 0 {
-			fmt.Println("No perf_tool instances connected to get stats from.")
-			return
-		}
-	
-		fmt.Println("Requesting statistics from perf_tool instances...")
-		message := "get_stats"
-	
-		// Reset any previous stats storage (if we had one)
-		// For now, we'll just print them as they come in handleClientConnection
-	
-		for conn := range activeConns {
-			_, err := conn.Write([]byte(message))
-			if err != nil {
-				fmt.Printf("Error writing 'get_stats' to %s: %v\n", conn.RemoteAddr().String(), err)
-				conn.Close() // Close connection if writing fails
-			} else {
-				fmt.Printf("Sent '%s' command to %s\n", message, conn.RemoteAddr().String())
-			}
-		}
-	
-		// Wait for a duration to allow clients to respond.
-		// In a real-world scenario, we'd use channels to collect responses with a timeout.
-		fmt.Println("Waiting for statistics responses (2 seconds)...")
-		time.Sleep(2 * time.Second)
-	
-		fmt.Println("\n--- Statistics Report (Raw JSON) ---")
-		// The actual printing of JSON will happen asynchronously in handleClientConnection
-		// This function just triggers the request and waits.
-	}
-	
-	func runStop() {	stopSocketServer() // Call stopSocketServer here
+
+	// Wait for a duration to allow clients to respond.
+	// In a real-world scenario, we'd use channels to collect responses with a timeout.
+	fmt.Println("Waiting for statistics responses (2 seconds)...")
+	time.Sleep(2 * time.Second)
+
+	fmt.Println("\n--- Statistics Report (Raw JSON) ---")
+	// The actual printing of JSON will happen asynchronously in handleClientConnection
+	// This function just triggers the request and waits.
+}
+
+func runStop() {
+	stopSocketServer() // Call stopSocketServer here
 
 	pidData, err := os.ReadFile(pidFile)
 	if err != nil {
@@ -399,8 +443,8 @@ func runCheck() {
 			// We can check if the process is still alive.
 			if err.Error() != "os: process already finished" {
 				// To check if process is still running, we send signal 0
-				err_sig := process.Signal(syscall.Signal(0))
-				if err_sig == nil {
+				errSig := process.Signal(syscall.Signal(0))
+				if errSig == nil {
 					fmt.Println("Error killing process:", pid, err)
 				} else {
 					fmt.Println("Process", pid, "killed.")
