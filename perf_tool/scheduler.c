@@ -1,7 +1,6 @@
 #include "scheduler.h"
 #include "logger.h"
 #include "metrics.h"
-#include "client.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -85,7 +84,7 @@ void scheduler_set_current_phase(test_phase_t new_phase) {
 }
 
 const stats_t *scheduler_get_stats(void) {
-    return &g_stats;
+    return g_current_stats;
 }
 
 double scheduler_get_current_time(void) {

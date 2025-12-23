@@ -15,6 +15,8 @@ import (
 
 var pidFile = filepath.Join(os.TempDir(), "ptcp_pids.json")
 var socketPath = filepath.Join(os.TempDir(), "ptcp_socket.sock") // Define socket path
+var ptcpToPtmSocketPath = filepath.Join(os.TempDir(), "ptcp_to_ptm.sock") // Socket for ptm to connect to ptcp
+var ptmSocketPath = filepath.Join(os.TempDir(), "ptm_to_perf.sock") // Socket for perf_tool to connect to ptm
 var socketListener net.Listener
 var activeConns = make(map[net.Conn]bool)
 var activeConnsMutex sync.Mutex
@@ -117,16 +119,16 @@ func handleClientConnection(c net.Conn) {
 
 func startSocketServer() error {
 	// Clean up any old socket file
-	if err := os.Remove(socketPath); err != nil && !os.IsNotExist(err) {
+	if err := os.Remove(ptcpToPtmSocketPath); err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("error removing old socket file: %w", err)
 	}
 
 	var err error
-	socketListener, err = net.Listen("unix", socketPath)
+	socketListener, err = net.Listen("unix", ptcpToPtmSocketPath)
 	if err != nil {
 		return fmt.Errorf("error listening on unix socket: %w", err)
 	}
-	fmt.Printf("Listening on Unix socket: %s\n", socketPath)
+	fmt.Printf("Listening on Unix socket: %s\n", ptcpToPtmSocketPath)
 
 	go func() {
 		for {
@@ -199,7 +201,7 @@ func stopSocketServer() {
 		fmt.Println("Closing Unix socket listener...")
 		socketListener.Close()
 	}
-	if err := os.Remove(socketPath); err != nil && !os.IsNotExist(err) {
+	if err := os.Remove(ptcpToPtmSocketPath); err != nil && !os.IsNotExist(err) {
 		fmt.Println("Error removing socket file:", err)
 	}
 }
@@ -209,6 +211,68 @@ func runPrepare(buildDir, configDir string) {
 		fmt.Println("Failed to start socket server:", err)
 		return
 	}
+
+	// Calculate max_clients_clients and max_clients_servers from config
+	var maxClientsClients int
+	var maxClientsServers int
+
+	// Run server-side components if lb_s.json exists
+	lbServerConfig := filepath.Join(configDir, "lb_s.json")
+	if _, err := os.Stat(lbServerConfig); err == nil {
+		// Read num_clients from lb_s.json
+		data, err := os.ReadFile(lbServerConfig)
+		if err != nil {
+			fmt.Println("Error reading lb_s.json:", err)
+		} else {
+			var lbConfig map[string]interface{}
+			if err := json.Unmarshal(data, &lbConfig); err != nil {
+				fmt.Println("Error unmarshalling lb_s.json:", err)
+			} else {
+				if numServers, ok := lbConfig["num_clients"].(float64); ok {
+					maxClientsServers = int(numServers)
+				}
+			}
+		}
+	}
+
+	// Run client-side components if lb_c.json exists
+	lbClientConfig := filepath.Join(configDir, "lb_c.json")
+	if _, err := os.Stat(lbClientConfig); err == nil {
+		// Read num_clients from lb_c.json
+		data, err := os.ReadFile(lbClientConfig)
+		if err != nil {
+			fmt.Println("Error reading lb_c.json:", err)
+		} else {
+			var lbConfig map[string]interface{}
+			if err := json.Unmarshal(data, &lbConfig); err != nil {
+				fmt.Println("Error unmarshalling lb_c.json:", err)
+			} else {
+				if numClients, ok := lbConfig["num_clients"].(float64); ok {
+					maxClientsClients = int(numClients)
+				}
+			}
+		}
+	}
+
+	if maxClientsClients <= 0 {
+		maxClientsClients = 10 // Default
+	}
+	if maxClientsServers <= 0 {
+		maxClientsServers = 10 // Default
+	}
+
+	// Start ptm
+	ptmPath := filepath.Join(buildDir, "ptm")
+	cmdPtm := exec.Command(ptmPath, "--ptcp-socket", ptcpToPtmSocketPath, "--ptm-socket", ptmSocketPath, "--max-clients-clients", fmt.Sprintf("%d", maxClientsClients), "--max-clients-servers", fmt.Sprintf("%d", maxClientsServers))
+	cmdPtm.Stdout = os.Stdout
+	cmdPtm.Stderr = os.Stderr
+	cmdPtm.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	if err := cmdPtm.Start(); err != nil {
+		fmt.Println("Error starting ptm:", err)
+		stopSocketServer()
+		return
+	}
+	fmt.Printf("Started ptm with PID: %d, max_clients_clients: %d, max_clients_servers: %d\n", cmdPtm.Process.Pid, maxClientsClients, maxClientsServers)
 
 	var pids []int
 	lbPath := filepath.Join(buildDir, "lb")
@@ -220,7 +284,6 @@ func runPrepare(buildDir, configDir string) {
 	}
 
 	// Run server-side components if lb_s.json exists
-	lbServerConfig := filepath.Join(configDir, "lb_s.json")
 	if _, err := os.Stat(lbServerConfig); err == nil {
 		fmt.Println("Starting server-side components...")
 
@@ -248,7 +311,7 @@ func runPrepare(buildDir, configDir string) {
 				if numServers, ok := lbConfig["num_clients"].(float64); ok {
 					for i := 0; i < int(numServers); i++ {
 						serverConfig := filepath.Join(configDir, fmt.Sprintf("http_server_%d.json", i))
-						cmdServer := exec.Command(perfToolPath, "server", serverConfig, "--socket-path", socketPath)
+						cmdServer := exec.Command(perfToolPath, "server", serverConfig, "--socket-path", ptmSocketPath)
 						cmdServer.Stdout = os.Stdout
 						cmdServer.Stderr = os.Stderr
 						cmdServer.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
@@ -268,7 +331,6 @@ func runPrepare(buildDir, configDir string) {
 	}
 
 	// Run client-side components if lb_c.json exists
-	lbClientConfig := filepath.Join(configDir, "lb_c.json")
 	if _, err := os.Stat(lbClientConfig); err == nil {
 		fmt.Println("Starting client-side components...")
 
@@ -296,7 +358,7 @@ func runPrepare(buildDir, configDir string) {
 				if numClients, ok := lbConfig["num_clients"].(float64); ok {
 					for i := 0; i < int(numClients); i++ {
 						clientConfig := filepath.Join(configDir, fmt.Sprintf("http_client_%d.json", i))
-						cmdClient := exec.Command(perfToolPath, "client", clientConfig, "--socket-path", socketPath)
+						cmdClient := exec.Command(perfToolPath, "client", clientConfig, "--socket-path", ptmSocketPath)
 						cmdClient.Stdout = os.Stdout
 						cmdClient.Stderr = os.Stderr
 						cmdClient.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
@@ -460,5 +522,10 @@ func runStop() {
 	// Clear the pid file
 	if err := os.Remove(pidFile); err != nil && !os.IsNotExist(err) {
 		fmt.Println("Error clearing pid file:", err)
+	}
+
+	// Also remove ptm socket
+	if err := os.Remove(ptmSocketPath); err != nil && !os.IsNotExist(err) {
+		fmt.Println("Error removing ptm socket file:", err)
 	}
 }

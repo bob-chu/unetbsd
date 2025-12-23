@@ -344,6 +344,17 @@ if get_option('use_dpdk')
     )
 endif
 
+executable(
+    'ptm',
+    'perf_tool/perf_tool_master.c',
+    c_args : cflags_user + ['-I/usr/local/include'],
+    include_directories : [include_directories('perf_tool'), include_directories('perf_tool/deps/cjson'), include_directories('perf_tool/deps/picohttpparser'), include_directories('include'), include_directories('app'), include_directories('src')],
+    link_with : libnetbsdstack_static,
+    link_args : ['-static'],
+    dependencies : [dpdk_dep_static, libev_dep, pthread_dep, openssl_dep],
+    install : true
+)
+
 # Build Go program
 go_compiler = find_program('go', required : true)
 

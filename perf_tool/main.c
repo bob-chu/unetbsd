@@ -91,11 +91,6 @@ int main(int argc, char *argv[]) {
     logger_enable_colors(1);
 
     printf("Starting in %s mode with config file: %s\n", mode, config_path);
-    if (socket_path) {
-        printf("Using socket path: %s\n", socket_path);
-        pipe_client_init(g_main_loop, socket_path);
-        scheduler_set_paused(true); // Pause scheduler if pipe socket is enabled
-    }
 
     perf_config_t config;
     if (parse_config(config_path, &config) != 0) {
@@ -165,7 +160,7 @@ int main(int argc, char *argv[]) {
             char *token = strtok(dpdk_args_copy, " ");
             while (token != NULL && dpdk_argc < 63) {
                 dpdk_argv[dpdk_argc++] = token;
-                token = strtok(NULL, " ");
+               	token = strtok(NULL, " ");
             }
             dpdk_argv[dpdk_argc] = NULL;
 
@@ -211,6 +206,14 @@ int main(int argc, char *argv[]) {
     }
 
     set_mtu(config.interface.mtu);
+
+    if (socket_path) {
+        printf("Using socket path: %s\n", socket_path);
+        int is_client = (strcmp(mode, "client") == 0) ? 1 : 0;
+        int offset_index = is_client ? config.dpdk_client.client_ring_idx : config.dpdk_server.client_ring_idx;
+        pipe_client_init(g_main_loop, socket_path, is_client, offset_index);
+        scheduler_set_paused(true); // Pause scheduler if pipe socket is enabled
+    }
 
     //g_main_loop = EV_DEFAULT;
     ev_timer timer_10ms_watcher;

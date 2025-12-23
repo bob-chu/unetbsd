@@ -10,6 +10,7 @@ metrics_t g_metrics;
 stats_t g_stats; // Defined here
 static uint64_t g_latency_sum;
 static uint64_t g_latency_count;
+stats_t *g_current_stats = &g_stats;
 
 void metrics_init(void) {
     memset(&g_metrics, 0, sizeof(metrics_t));
@@ -39,7 +40,7 @@ static void print_stats(const stats_t *m) {
 static void print_ms()
 {
     print_metrics(&g_metrics);
-    print_stats(&g_stats);
+    print_stats(g_current_stats);
 }
 
 void metrics_report(void) {
@@ -118,4 +119,8 @@ void metrics_update_bytes_received(uint64_t bytes) {
 void metrics_reset_bytes_per_second(void) {
     g_metrics.bytes_sent_per_second = 0;
     g_metrics.bytes_received_per_second = 0;
+}
+
+void metrics_set_stats(stats_t *stats) {
+    g_current_stats = stats;
 }

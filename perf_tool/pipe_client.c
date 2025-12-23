@@ -5,6 +5,10 @@
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <unistd.h>
+#include <ev.h>
+#include <sys/mman.h>
+#include <fcntl.h>
+#include <sys/stat.h>
 
 #include "pipe_client.h"
 #include "logger.h"
@@ -20,7 +24,7 @@ static pipe_client_t g_pipe_client;
 // Forward declaration (no longer static)
 void pipe_client_send_stats(pipe_client_t *client);
 
-void pipe_client_init(struct ev_loop *loop, const char *socket_path) {
+void pipe_client_init(struct ev_loop *loop, const char *socket_path, int is_client, int offset_index) {
     if (!socket_path) {
         LOG_INFO("No socket path provided for pipe client.");
         fflush(stdout);
@@ -29,6 +33,8 @@ void pipe_client_init(struct ev_loop *loop, const char *socket_path) {
 
     g_pipe_client.loop = loop;
     g_pipe_client.socket_path = strdup(socket_path); // Duplicate string as it might be argv
+    g_pipe_client.is_client = is_client;
+    g_pipe_client.offset_index = offset_index;
 
     g_pipe_client.fd = socket(AF_UNIX, SOCK_STREAM, 0);
     if (g_pipe_client.fd == -1) {
@@ -61,6 +67,55 @@ void pipe_client_init(struct ev_loop *loop, const char *socket_path) {
     ev_io_init(&g_pipe_client.io_watcher, pipe_io_cb, g_pipe_client.fd, EV_READ);
     g_pipe_client.io_watcher.data = &g_pipe_client; // Set watcher data
     ev_io_start(g_pipe_client.loop, &g_pipe_client.io_watcher);
+
+    // Connect to shared memory
+    char shm_path[256];
+    if (is_client) {
+        snprintf(shm_path, sizeof(shm_path), "/tmp/ptm_client_stats");
+    } else {
+        snprintf(shm_path, sizeof(shm_path), "/tmp/ptm_server_stats");
+    }
+
+    int fd_shm = open(shm_path, O_RDONLY);
+    if (fd_shm == -1) {
+        LOG_ERROR("Failed to open shared memory file %s: %s", shm_path, strerror(errno));
+        fflush(stderr);
+        return;
+    }
+
+    struct stat st;
+    if (fstat(fd_shm, &st) == -1) {
+        LOG_ERROR("Failed to stat shared memory file %s: %s", shm_path, strerror(errno));
+        close(fd_shm);
+        return;
+    }
+    size_t shm_size = st.st_size;
+
+    void *shm_stats = mmap(NULL, shm_size, PROT_READ | PROT_WRITE, MAP_SHARED, fd_shm, 0);
+    if (shm_stats == MAP_FAILED) {
+        LOG_ERROR("Failed to mmap shared memory %s: %s", shm_path, strerror(errno));
+        close(fd_shm);
+        return;
+    }
+    close(fd_shm); // Can close fd after mmap
+
+    // Offset into the shared memory array
+    g_pipe_client.shm_stats = (stats_t *)shm_stats + offset_index;
+    g_pipe_client.shm_size = sizeof(stats_t);
+    LOG_INFO("Connected to shared memory: %s, offset_index: %d, size: %zu", shm_path, offset_index, g_pipe_client.shm_size);
+    fflush(stdout);
+
+    // Set the stats pointer to use the client's shared memory
+    metrics_set_stats(g_pipe_client.shm_stats);
+}
+
+void pipe_client_cleanup(void) {
+    if (g_pipe_client.shm_stats && g_pipe_client.shm_stats != MAP_FAILED) {
+        // Unmap the entire shared memory region
+        void *base = (void *)((stats_t *)g_pipe_client.shm_stats - g_pipe_client.offset_index);
+        munmap(base, g_pipe_client.shm_size * (g_pipe_client.offset_index + 1)); // Approximate size, adjust if needed
+        g_pipe_client.shm_stats = NULL;
+    }
 }
 
 void pipe_client_send_stats(pipe_client_t *client) {
@@ -157,6 +212,7 @@ static void pipe_io_cb(struct ev_loop *loop, ev_io *w, int revents) {
             client->fd = -1;
             free(client->socket_path);
             client->socket_path = NULL;
+            pipe_client_cleanup();
         } else {
             LOG_ERROR("Error reading from pipe: %s", strerror(errno));
             ev_io_stop(loop, &client->io_watcher);
@@ -164,6 +220,7 @@ static void pipe_io_cb(struct ev_loop *loop, ev_io *w, int revents) {
             client->fd = -1;
             free(client->socket_path);
             client->socket_path = NULL;
+            pipe_client_cleanup();
         }
     }
 }

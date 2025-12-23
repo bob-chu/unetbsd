@@ -92,11 +92,12 @@ typedef struct {
 } stats_t;
 
 extern stats_t g_stats;
-// Stats macros using generic operations
-#define STATS_INC(field)        INC(g_stats, field)
-#define STATS_DEC(field)        DEC(g_stats, field)
-#define STATS_ADD(field, val)   ADD(g_stats, field, val)
-#define STATS_SUB(field, val)   SUB(g_stats, field, val)
+extern stats_t *g_current_stats;
+// Stats macros using global pointer
+#define STATS_INC(field)        INC(*g_current_stats, field)
+#define STATS_DEC(field)        DEC(*g_current_stats, field)
+#define STATS_ADD(field, val)   ADD(*g_current_stats, field, val)
+#define STATS_SUB(field, val)   SUB(*g_current_stats, field, val)
 
 
 void metrics_init(void);
@@ -112,5 +113,6 @@ void metrics_update_cps_https(uint64_t cps);
 void metrics_update_bytes_sent(uint64_t bytes);
 void metrics_update_bytes_received(uint64_t bytes);
 void metrics_reset_bytes_per_second(void);
+void metrics_set_stats(stats_t *stats);
 
 #endif // METRICS_H
