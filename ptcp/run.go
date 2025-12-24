@@ -11,6 +11,7 @@ import (
 	"time"
 	"sync" // Added for mutex
 	"strings" // Added for string manipulation
+	"bufio"
 )
 
 var pidFile = filepath.Join(os.TempDir(), "ptcp_pids.json")
@@ -20,99 +21,153 @@ var ptmSocketPath = filepath.Join(os.TempDir(), "ptm_to_perf.sock") // Socket fo
 var socketListener net.Listener
 var activeConns = make(map[net.Conn]bool)
 var activeConnsMutex sync.Mutex
-var clientReadyStatus = make(map[net.Conn]bool) // New: To track readiness
 
 // Stats tracking
 var statsMutex sync.Mutex
-var lastStats = make(map[string]uint64) // Holds the previous snapshot of numeric stats
+
+type roleStats struct {
+	LastStats     map[string]uint64
+	LastTimeIndex uint64
+}
+
+type clientConnectionContext struct {
+	Ready         bool
+	Client        roleStats
+	Server        roleStats
+}
+var clientConnectionContexts = make(map[net.Conn]*clientConnectionContext)
 
 // handleClientConnection manages a single client connection, reading messages and updating status
 func handleClientConnection(c net.Conn) {
+	connContext := clientConnectionContexts[c]
 	defer func() {
 		activeConnsMutex.Lock()
 		delete(activeConns, c)
-		delete(clientReadyStatus, c) // Remove readiness status on disconnect
+		delete(clientConnectionContexts, c)
 		activeConnsMutex.Unlock()
 		c.Close()
 		fmt.Printf("Closed connection from: %s\n", c.RemoteAddr().String())
 	}()
 
-	buffer := make([]byte, 4096) // Increased buffer size for JSON
+	reader := bufio.NewReader(c)
 	for {
-		n, err := c.Read(buffer)
+		message, err := reader.ReadString('\n')
 		if err != nil {
 			// Error reading or connection closed by client
 			return
 		}
-		if n > 0 {
-			message := string(buffer[:n])
-			fmt.Printf("Received from client %s: %s\n", c.RemoteAddr().String(), message)
-			// Process incoming messages from the C client
-			switch {
-			case strings.HasPrefix(message, "{") && strings.HasSuffix(message, "}"): // Check for JSON
-				fmt.Printf("Received JSON stats from %s:\n%s\n", c.RemoteAddr().String(), message)
-				// Parse the JSON and display only the most important fields
-				var stats map[string]interface{}
-				if err := json.Unmarshal([]byte(message), &stats); err != nil {
-					fmt.Printf("Error parsing JSON from %s: %v\n", c.RemoteAddr().String(), err)
-				} else {
-					// Define the keys we consider important (mirroring scheduler_check_phase_transition)
-					importantKeys := []string{
-						"role",                     // optional, e.g., "client" or "server"
-						"time_index",               // test time index
-						"phase",                    // current phase name
-						"target_connections",       // target connections for client
-						"tcp_concurrent",           // current concurrent connections
-						"connections_opened",       // total connections opened
-						"connections_closed",       // total connections closed
-						"requests_sent",            // total requests sent
-						"tcp_bytes_sent",           // total bytes sent
-						"tcp_bytes_received",       // total bytes received
-						"success_count",            // total successful ops
-						"failure_count",            // total failed ops
-					}
 
-					statsMutex.Lock()
-					fmt.Printf("Parsed important stats from %s:\n", c.RemoteAddr().String())
-					for _, key := range importantKeys {
-						val, ok := stats[key]
-						if !ok {
-							continue // Skip missing keys
-						}
-						// Only handle numeric values (JSON numbers are unmarshaled as float64)
-						if f, okNum := val.(float64); okNum {
-							current := uint64(f)
-							previous := lastStats[key]
-							delta := current - previous
-							if previous == 0 {
-								// First snapshot – just show the value
-								fmt.Printf("  %s: %d\n", key, current)
-							} else {
-								// Show value and per‑second delta (CPS‑like)
-								fmt.Printf("  %s: %d (Δ %d per sec)\n", key, current, delta)
-							}
-							// Store current as the new previous value for next round
-							lastStats[key] = current
-						} else {
-							// Non‑numeric values are printed as‑is
-							fmt.Printf("  %s: %v\n", key, val)
-						}
-					}
-					statsMutex.Unlock()
-				}
-			case message == "ready":
-				activeConnsMutex.Lock()
-				clientReadyStatus[c] = true
-				activeConnsMutex.Unlock()
-				fmt.Printf("Client %s reported ready.\n", c.RemoteAddr().String())
-			case message == "not ready":
-				activeConnsMutex.Lock()
-				clientReadyStatus[c] = false
-				activeConnsMutex.Unlock()
-				fmt.Printf("Client %s reported NOT ready.\n", c.RemoteAddr().String())
-			default:
-				fmt.Printf("Unknown message from client %s: %s\n", c.RemoteAddr().String(), message)
+		//fmt.Printf("Received from client %s: %s\n", c.RemoteAddr().String(), message)
+		message = strings.TrimSpace(message)
+		if len(message) == 0 {
+			continue
+		}
+
+		// Process incoming messages from the C client
+		switch {
+		case strings.HasPrefix(message, "{") && strings.HasSuffix(message, "}"): // Check for JSON
+			var rawStats map[string]interface{}
+			if err := json.Unmarshal([]byte(message), &rawStats); err != nil {
+				fmt.Printf("Error parsing JSON from %s: %v\n", c.RemoteAddr().String(), err)
+				continue
 			}
+
+			var stats map[string]interface{}
+			var responseType string
+			if rt, ok := rawStats["response_type"].(string); ok {
+				responseType = rt
+			}
+
+			var currentRoleStats *roleStats
+			roleName := "Unknown"
+
+			if responseType == "AGGREGATED_CLIENT_STATS" {
+				stats = rawStats["aggregated_stats"].(map[string]interface{})
+				currentRoleStats = &connContext.Client
+				roleName = "Client"
+			} else if responseType == "AGGREGATED_SERVER_STATS" {
+				stats = rawStats["aggregated_stats"].(map[string]interface{})
+				currentRoleStats = &connContext.Server
+				roleName = "Server"
+			} else {
+				fmt.Printf("Warning: Unknown response_type '%s' from %s\n", responseType, c.RemoteAddr().String())
+				stats = rawStats // Fallback
+				currentRoleStats = &roleStats{LastStats: make(map[string]uint64), LastTimeIndex: 0} // Temporary for processing
+			}
+
+			// Extract current time_index
+			var currentTimeIndex uint64
+			if ti, ok := stats["time_index"].(float64); ok {
+				currentTimeIndex = uint64(ti)
+			}
+
+						statsMutex.Lock() // Protect shared stdout and connContext access
+
+			var statsOutput strings.Builder
+			statsOutput.WriteString(fmt.Sprintf("Stats from %s (%s): ", c.RemoteAddr().String(), roleName))
+
+			// Define the keys we consider important
+			importantKeys := []string{
+				"time_index",               // test time index
+				"current_phase",            // current phase name
+				"target_connections",       // target connections for client
+				"tcp_concurrent",           // current concurrent connections
+				"connections_opened",       // total connections opened
+				"requests_sent",            // total requests sent
+				"success_count",            // total successful ops
+				"failure_count",            // total failed ops
+				"tcp_bytes_sent",           // total bytes sent
+				"tcp_bytes_received",       // total bytes received
+			}
+
+			timeDelta := int64(0)
+			if currentRoleStats.LastTimeIndex != 0 && currentTimeIndex > currentRoleStats.LastTimeIndex {
+				timeDelta = int64(currentTimeIndex - currentRoleStats.LastTimeIndex)
+			}
+
+			for _, key := range importantKeys {
+				val, ok := stats[key]
+				if !ok {
+					continue // Skip missing keys
+				}
+				// Only handle numeric values (JSON numbers are unmarshaled as float64)
+				if f, okNum := val.(float64); okNum {
+					currentVal := uint64(f)
+					previousVal := currentRoleStats.LastStats[key] // Will be 0 if not set
+
+					if currentRoleStats.LastTimeIndex == 0 || timeDelta <= 0 || previousVal == 0 {
+						statsOutput.WriteString(fmt.Sprintf("%s:%d ", key, currentVal))
+					} else {
+						//var valueDelta uint64
+						//if currentVal >= previousVal {
+						//	valueDelta = currentVal - previousVal
+						//} else {
+						//	valueDelta = 0
+						//}
+						//rate := float64(valueDelta) / float64(timeDelta)
+						//statsOutput.WriteString(fmt.Sprintf("%s:%d(%.2f/s) ", key, currentVal, rate))
+						statsOutput.WriteString(fmt.Sprintf("%s:%d ", key, currentVal))
+					}
+					currentRoleStats.LastStats[key] = currentVal
+				} else {
+					statsOutput.WriteString(fmt.Sprintf("%s:%v ", key, val))
+				}
+			}
+			currentRoleStats.LastTimeIndex = currentTimeIndex
+			fmt.Println(statsOutput.String())
+			statsMutex.Unlock()
+		case message == "ready":
+			activeConnsMutex.Lock()
+			connContext.Ready = true
+			activeConnsMutex.Unlock()
+			fmt.Printf("Client %s reported ready.\n", c.RemoteAddr().String())
+		case message == "not ready":
+			activeConnsMutex.Lock()
+			connContext.Ready = false
+			activeConnsMutex.Unlock()
+			fmt.Printf("Client %s reported NOT ready.\n", c.RemoteAddr().String())
+		default:
+			fmt.Printf("Unknown message from client %s: %s\n", c.RemoteAddr().String(), message)
 		}
 	}
 }
@@ -149,7 +204,11 @@ func startSocketServer() error {
 
 			activeConnsMutex.Lock()
 			activeConns[conn] = true
-			clientReadyStatus[conn] = false // Assume not ready until reported
+			clientConnectionContexts[conn] = &clientConnectionContext{
+				Ready: false,
+				Client: roleStats{LastStats: make(map[string]uint64), LastTimeIndex: 0},
+				Server: roleStats{LastStats: make(map[string]uint64), LastTimeIndex: 0},
+			}
 			activeConnsMutex.Unlock()
 
 			fmt.Printf("Accepted connection from: %s\n", conn.RemoteAddr().Network())
@@ -171,7 +230,7 @@ func runStartTest() {
 
 	allReady := true
 	for conn := range activeConns {
-		if ready, ok := clientReadyStatus[conn]; !ok || !ready {
+		if ctx, ok := clientConnectionContexts[conn]; !ok || !ctx.Ready {
 			fmt.Printf("ERROR: Client %s is not ready. Please run 'check' first and ensure all instances are ready.\n", conn.RemoteAddr().Network())
 			allReady = false
 		}
@@ -316,6 +375,7 @@ func runPrepare(buildDir, configDir string) {
 					for i := 0; i < int(numServers); i++ {
 						serverConfig := filepath.Join(configDir, fmt.Sprintf("http_server_%d.json", i))
 						cmdServer := exec.Command(perfToolPath, "server", serverConfig, "--socket-path", ptmSocketPath)
+						//cmdServer.Stdout = nil 
 						cmdServer.Stdout = os.Stdout
 						cmdServer.Stderr = os.Stderr
 						cmdServer.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
@@ -365,6 +425,7 @@ func runPrepare(buildDir, configDir string) {
 					for i := 0; i < int(numClients); i++ {
 						clientConfig := filepath.Join(configDir, fmt.Sprintf("http_client_%d.json", i))
 						cmdClient := exec.Command(perfToolPath, "client", clientConfig, "--socket-path", ptmSocketPath)
+						//cmdClient.Stdout = nil 
 						cmdClient.Stdout = os.Stdout
 						cmdClient.Stderr = os.Stderr
 						cmdClient.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
@@ -407,7 +468,9 @@ func runCheck() {
 
 	// Reset all client ready statuses before sending check
 	for conn := range activeConns {
-		clientReadyStatus[conn] = false
+		if ctx, ok := clientConnectionContexts[conn]; ok {
+			ctx.Ready = false
+		}
 	}
 
 	for conn := range activeConns {
@@ -432,7 +495,7 @@ func runCheck() {
 	}
 
 	for conn := range activeConns {
-		if ready, ok := clientReadyStatus[conn]; ok && ready {
+		if ctx, ok := clientConnectionContexts[conn]; ok && ctx.Ready {
 			fmt.Printf("Client %s: READY\n", conn.RemoteAddr().Network())
 		} else {
 			fmt.Printf("Client %s: NOT READY (or status not yet reported)\n", conn.RemoteAddr().Network())

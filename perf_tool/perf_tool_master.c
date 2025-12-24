@@ -47,6 +47,8 @@ typedef struct {
     int max_clients;
     ev_io ptcp_watcher;
     ev_io listen_watcher;
+    ev_timer stats_timer;
+    int test_running;
 } ptm_t;
 
 static ptm_t g_ptm;
@@ -67,6 +69,12 @@ static void remove_client(int idx);
 static void send_aggregated_stats_response(int fd); // New forward declaration
 static void forward_to_clients(const char *message, size_t len); // New forward declaration
 
+static void stats_timer_cb(struct ev_loop *loop, ev_timer *w, int revents) {
+    if (g_ptm.test_running && g_ptm.ptcp_fd != -1) {
+        send_aggregated_stats_response(g_ptm.ptcp_fd);
+    }
+}
+
 // Helper to convert stats_t to cJSON
 static cJSON* stats_to_cjson(const stats_t *stats) {
     cJSON *json = cJSON_CreateObject();
@@ -77,10 +85,11 @@ static cJSON* stats_to_cjson(const stats_t *stats) {
     STATS_HTTP_FIELDS
     STATS_TCP_FIELDS
     STATS_UDP_FIELDS
+    STATS_PHASE_FIELD
 #undef X
     return json;
 }
-
+#if 0
 static CLIENT_TYPE get_client_type_from_string(const char *type_str) {
     if (strcmp(type_str, "HTTP_CLIENT") == 0) {
         return CLIENT_TYPE_HTTP_CLIENT;
@@ -91,30 +100,40 @@ static CLIENT_TYPE get_client_type_from_string(const char *type_str) {
     }
     return CLIENT_TYPE_UNKNOWN;
 }
-
-static void aggregate_stats(stats_t *out_stats) {
+#endif
+static void aggregate_stats(stats_t *out_stats, int client_role_filter) {
     memset(out_stats, 0, sizeof(stats_t));
 
-    // Aggregate client stats
-    for (int i = 0; i < g_max_clients_clients; i++) {
-        stats_t *client_stat = (stats_t *)((char *)g_shm_client_stats + (i * sizeof(stats_t)));
+    if (client_role_filter == 0) { // Aggregate client stats
+        for (int i = 0; i < g_max_clients_clients; i++) {
+            stats_t *client_stat = (stats_t *)((char *)g_shm_client_stats + (i * sizeof(stats_t)));
 #define X(name) out_stats->name += client_stat->name;
-        STATS_FIELDS
-        STATS_HTTP_FIELDS
-        STATS_TCP_FIELDS
-        STATS_UDP_FIELDS
+            STATS_FIELDS
+            STATS_HTTP_FIELDS
+            STATS_TCP_FIELDS
+            STATS_UDP_FIELDS
 #undef X
-    }
-
-    // Aggregate server stats
-    for (int i = 0; i < g_max_clients_servers; i++) {
-        stats_t *server_stat = (stats_t *)((char *)g_shm_server_stats + (i * sizeof(stats_t)));
+            if (i == 0) { // Only set these once from the first client
+                out_stats->client_role = 1;
+                out_stats->time_index = client_stat->time_index;
+                out_stats->current_phase = client_stat->current_phase;
+            }
+        }
+    } else if (client_role_filter == 1) { // Aggregate server stats
+        for (int i = 0; i < g_max_clients_servers; i++) {
+            stats_t *server_stat = (stats_t *)((char *)g_shm_server_stats + (i * sizeof(stats_t)));
 #define X(name) out_stats->name += server_stat->name;
-        STATS_FIELDS
-        STATS_HTTP_FIELDS
-        STATS_TCP_FIELDS
-        STATS_UDP_FIELDS
+            STATS_FIELDS
+            STATS_HTTP_FIELDS
+            STATS_TCP_FIELDS
+            STATS_UDP_FIELDS
 #undef X
+            if (i == 0) { // Only set these once from the first server
+                out_stats->server_role = 1;
+                out_stats->time_index = server_stat->time_index;
+                out_stats->current_phase = server_stat->current_phase;
+            }
+        }
     }
 }
 
@@ -194,6 +213,7 @@ int main(int argc, char *argv[]) {
     g_ptm.listen_fd = listen_fd_local;
     g_ptm.num_clients = 0;
     g_ptm.max_clients = max_clients_clients + max_clients_servers;
+    g_ptm.test_running = 0;
 
     // Allocate client arrays
     client_fds_local = (int*)malloc(g_ptm.max_clients * sizeof(int));
@@ -343,6 +363,8 @@ int main(int argc, char *argv[]) {
     ev_io_init(&g_ptm.listen_watcher, listen_io_cb, g_ptm.listen_fd, EV_READ);
     ev_io_start(g_ptm.loop, &g_ptm.listen_watcher);
 
+    ev_timer_init(&g_ptm.stats_timer, stats_timer_cb, 1.0, 1.0);
+
     // Run event loop
     ev_run(g_ptm.loop, 0);
 
@@ -418,33 +440,62 @@ static void forward_to_clients(const char *message, size_t len) {
 }
 
 static void send_aggregated_stats_response(int fd) {
-    stats_t aggregated_stats;
-    aggregate_stats(&aggregated_stats);
+    stats_t aggregated_client_stats;
+    aggregate_stats(&aggregated_client_stats, 0); // 0 for client role
 
-    cJSON *response_json = cJSON_CreateObject();
-    if (!response_json) {
-        fprintf(stderr, "Failed to create response JSON object for aggregated stats\n");
+    stats_t aggregated_server_stats;
+    aggregate_stats(&aggregated_server_stats, 1); // 1 for server role
+
+    // Send client stats
+    cJSON *client_response_json = cJSON_CreateObject();
+    if (!client_response_json) {
+        fprintf(stderr, "Failed to create client response JSON object for aggregated stats\n");
         return;
     }
-    cJSON_AddStringToObject(response_json, "response_type", "AGGREGATED_STATS");
-    cJSON_AddItemToObject(response_json, "aggregated_stats", stats_to_cjson(&aggregated_stats));
+    cJSON_AddStringToObject(client_response_json, "response_type", "AGGREGATED_CLIENT_STATS"); // New type
+    cJSON_AddItemToObject(client_response_json, "aggregated_stats", stats_to_cjson(&aggregated_client_stats));
 
-    char *response_str = cJSON_PrintUnformatted(response_json);
-    if (!response_str) {
-        fprintf(stderr, "Failed to print aggregated stats JSON\n");
-        cJSON_Delete(response_json);
+    char *client_response_str = cJSON_PrintUnformatted(client_response_json);
+    if (!client_response_str) {
+        fprintf(stderr, "Failed to print aggregated client stats JSON\n");
+        cJSON_Delete(client_response_json);
         return;
     }
-
-    if (send(fd, response_str, strlen(response_str), 0) == -1) {
-        perror("Failed to send aggregated stats to ptcp");
+    if (send(fd, client_response_str, strlen(client_response_str), 0) == -1) {
+        perror("Failed to send aggregated client stats to ptcp");
     } else {
         if (send(fd, "\n", 1, 0) == -1) {
-            perror("Failed to send newline after aggregated stats to ptcp");
+            perror("Failed to send newline delimiter after client stats");
         }
     }
-    free(response_str);
-    cJSON_Delete(response_json);
+    free(client_response_str);
+    cJSON_Delete(client_response_json);
+
+    // Send server stats
+    cJSON *server_response_json = cJSON_CreateObject();
+    if (!server_response_json) {
+        fprintf(stderr, "Failed to create server response JSON object for aggregated stats\n");
+        return;
+    }
+    cJSON_AddStringToObject(server_response_json, "response_type", "AGGREGATED_SERVER_STATS"); // New type
+    cJSON_AddItemToObject(server_response_json, "aggregated_stats", stats_to_cjson(&aggregated_server_stats));
+
+    char *server_response_str = cJSON_PrintUnformatted(server_response_json);
+    if (!server_response_str) {
+        fprintf(stderr, "Failed to print aggregated server stats JSON\n");
+        cJSON_Delete(server_response_json);
+        return;
+    }
+
+    if (send(fd, server_response_str, strlen(server_response_str), 0) == -1) {
+        perror("Failed to send aggregated server stats to ptcp");
+    } else {
+        if (send(fd, "\n", 1, 0) == -1) {
+            perror("Failed to send newline delimiter after server stats");
+        }
+    }
+    free(server_response_str);
+    cJSON_Delete(server_response_json);
 }
 
 static void ptcp_io_cb(struct ev_loop *loop, ev_io *w, int revents) {
@@ -470,17 +521,38 @@ static void ptcp_io_cb(struct ev_loop *loop, ev_io *w, int revents) {
                 printf("Reset client check_status_flags and forwarded 'check' command.\n");
                 return; // Command handled
             } else if (strcmp(buffer, "run") == 0) { // Specific handling for "run"
+                if (!g_ptm.test_running) {
+                    g_ptm.test_running = 1;
+                    ev_timer_start(g_ptm.loop, &g_ptm.stats_timer);
+                    printf("Test started, starting stats timer.\n");
+                }
                 forward_to_clients(buffer, n);
                 return; // Command handled
+            } else if (strcmp(buffer, "stop") == 0) {
+                if (g_ptm.test_running) {
+                    g_ptm.test_running = 0;
+                    ev_timer_stop(g_ptm.loop, &g_ptm.stats_timer);
+                    printf("Test stopped, stopping stats timer.\n");
+                }
+                forward_to_clients(buffer, n);
+                return;
             }
 
         } else if (n == 0) {
             printf("Ptcp connection closed\n");
+            if (g_ptm.test_running) {
+                g_ptm.test_running = 0;
+                ev_timer_stop(g_ptm.loop, &g_ptm.stats_timer);
+            }
             ev_io_stop(loop, w);
             close(g_ptm.ptcp_fd);
             g_ptm.ptcp_fd = -1;
         } else {
             perror("Error reading from ptcp");
+            if (g_ptm.test_running) {
+                g_ptm.test_running = 0;
+                ev_timer_stop(g_ptm.loop, &g_ptm.stats_timer);
+            }
             ev_io_stop(loop, w);
             close(g_ptm.ptcp_fd);
             g_ptm.ptcp_fd = -1;
@@ -547,11 +619,9 @@ static void client_io_cb(struct ev_loop *loop, ev_io *w, int revents) {
                         if (send(g_ptm.ptcp_fd, response, strlen(response), 0) == -1) {
                             perror("Failed to send 'ready' to ptcp after all clients ready");
                         } else {
-#if 0
                             if (send(g_ptm.ptcp_fd, "\n", 1, 0) == -1) {
                                 perror("Failed to send newline after 'ready' to ptcp");
                             }
-#endif
                         }
                     }
                     printf("All clients ready. Sent 'ready' to ptcp.\n");
@@ -580,14 +650,33 @@ static void client_io_cb(struct ev_loop *loop, ev_io *w, int revents) {
 }
 
 static void remove_client(int idx) {
+    // Get client info before stopping and closing
+    client_info_t *removed_client_info = g_ptm.client_info_array[idx];
+
     ev_io_stop(g_ptm.loop, &g_ptm.client_watchers[idx]);
     close(g_ptm.client_fds[idx]);
+
+    if (g_ptm.test_running) {
+        g_ptm.test_running = 0;
+        ev_timer_stop(g_ptm.loop, &g_ptm.stats_timer);
+        printf("Client %d disconnected, stopping stats timer.\n", idx);
+    }
+
+    // Free the removed client's info
+    if (removed_client_info) {
+        free(removed_client_info);
+    }
 
     // Shift remaining clients
     for (int i = idx; i < g_ptm.num_clients - 1; i++) {
         g_ptm.client_fds[i] = g_ptm.client_fds[i + 1];
         g_ptm.client_watchers[i] = g_ptm.client_watchers[i + 1];
-        g_ptm.client_watchers[i].data = (void*)(uintptr_t)i;
+        g_ptm.client_watchers[i].data = (void*)(uintptr_t)i; // Update data pointer
+        g_ptm.client_info_array[i] = g_ptm.client_info_array[i+1]; // Shift client_info_array
     }
+    // Clear the last element (which is a duplicate after shifting)
+    g_ptm.client_info_array[g_ptm.num_clients - 1] = NULL;
+
+
     g_ptm.num_clients--;
 }

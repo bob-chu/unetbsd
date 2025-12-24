@@ -118,9 +118,23 @@ void scheduler_check_phase_transition(const char *role) {
     metrics_update_cps(connections_opened_per_second);
     metrics_update_bytes_sent(bytes_sent_per_second);
     metrics_update_bytes_received(bytes_received_per_second);
+    
+    metrics_t display_metrics = metrics_get_snapshot();
+
+    STATS_SET(time_index, time_index);
+    STATS_SET(current_phase, g_current_phase);
+
+    STATS_SET(target_connections, client_get_current_target_connections());
+    STATS_SET(tcp_concurrent, g_current_stats->tcp_concurrent);
+    STATS_SET(connections_opened, connections_opened_per_second);
+    STATS_SET(connections_closed, connections_closed_per_second);
+    STATS_SET(requests_sent, requests_per_second);
+    STATS_SET(tcp_bytes_sent, (display_metrics.bytes_sent_per_second * 8.0) / 1000000.0);
+    STATS_SET(tcp_bytes_received, (display_metrics.bytes_received_per_second * 8.0) / 1000000.0);
+    STATS_SET(success_count, success_per_second);
+    STATS_SET(failure_count, failure_per_second);
 
     // Get the current accumulated byte counts from metrics for display
-    metrics_t display_metrics = metrics_get_snapshot();
 
     if (strcmp(role, "client") == 0) {
         printf("[%s] [ %ds], %s (Target: %d), ConConns: %lu, CPS: %lu, Closes/s: %lu, RPS: %lu, BpsS: %.2f Mbps, BpsR: %.2f Mbps, Succ: %lu, Fail: %lu\n",
