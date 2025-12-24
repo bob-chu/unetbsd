@@ -8,10 +8,31 @@
 #include <ev.h>
 #include <getopt.h>
 #include <sys/mman.h>
+#include "../perf_tool/metrics.h"
 #include <fcntl.h>
+#include <stdint.h>
+#include <sys/stat.h> // For fstat
+#include "../perf_tool/deps/cjson/cJSON.h" // For JSON processing
 #include <sys/stat.h>
+#include "common.h"
 
 #define DEFAULT_MAX_CLIENTS 10
+
+typedef enum {
+    CLIENT_TYPE_UNKNOWN = 0,
+    CLIENT_TYPE_HTTP_CLIENT,
+    CLIENT_TYPE_HTTP_SERVER,
+    CLIENT_TYPE_PIPE_CLIENT // Add pipe client type
+} CLIENT_TYPE;
+
+typedef struct {
+    int idx;
+    CLIENT_TYPE type;
+    // Add shared memory related info
+    void *shm_base;
+    size_t shm_size;
+    int check_status_flag; // Added to track readiness for 'check' command
+} client_info_t;
 
 typedef struct {
     struct ev_loop *loop;
@@ -21,6 +42,7 @@ typedef struct {
     int listen_fd;
     int *client_fds;
     ev_io *client_watchers;
+    client_info_t **client_info_array; // Array of pointers to client_info_t
     int num_clients;
     int max_clients;
     ev_io ptcp_watcher;
@@ -28,12 +50,73 @@ typedef struct {
 } ptm_t;
 
 static ptm_t g_ptm;
+static void *g_shm_client_stats = NULL;
+static void *g_shm_server_stats = NULL;
+static int g_max_clients_clients = 0;
+static int g_max_clients_servers = 0;
+static size_t g_client_stats_size = 0;
+static size_t g_server_stats_size = 0;
+static char g_client_shm_path[256];
+static char g_server_shm_path[256];
 
 // Forward declarations
 static void ptcp_io_cb(struct ev_loop *loop, ev_io *w, int revents);
 static void listen_io_cb(struct ev_loop *loop, ev_io *w, int revents);
 static void client_io_cb(struct ev_loop *loop, ev_io *w, int revents);
 static void remove_client(int idx);
+static void send_aggregated_stats_response(int fd); // New forward declaration
+static void forward_to_clients(const char *message, size_t len); // New forward declaration
+
+// Helper to convert stats_t to cJSON
+static cJSON* stats_to_cjson(const stats_t *stats) {
+    cJSON *json = cJSON_CreateObject();
+    if (!json) return NULL;
+
+#define X(name) cJSON_AddNumberToObject(json, #name, stats->name);
+    STATS_FIELDS
+    STATS_HTTP_FIELDS
+    STATS_TCP_FIELDS
+    STATS_UDP_FIELDS
+#undef X
+    return json;
+}
+
+static CLIENT_TYPE get_client_type_from_string(const char *type_str) {
+    if (strcmp(type_str, "HTTP_CLIENT") == 0) {
+        return CLIENT_TYPE_HTTP_CLIENT;
+    } else if (strcmp(type_str, "HTTP_SERVER") == 0) {
+        return CLIENT_TYPE_HTTP_SERVER;
+    } else if (strcmp(type_str, "PIPE_CLIENT") == 0) {
+        return CLIENT_TYPE_PIPE_CLIENT;
+    }
+    return CLIENT_TYPE_UNKNOWN;
+}
+
+static void aggregate_stats(stats_t *out_stats) {
+    memset(out_stats, 0, sizeof(stats_t));
+
+    // Aggregate client stats
+    for (int i = 0; i < g_max_clients_clients; i++) {
+        stats_t *client_stat = (stats_t *)((char *)g_shm_client_stats + (i * sizeof(stats_t)));
+#define X(name) out_stats->name += client_stat->name;
+        STATS_FIELDS
+        STATS_HTTP_FIELDS
+        STATS_TCP_FIELDS
+        STATS_UDP_FIELDS
+#undef X
+    }
+
+    // Aggregate server stats
+    for (int i = 0; i < g_max_clients_servers; i++) {
+        stats_t *server_stat = (stats_t *)((char *)g_shm_server_stats + (i * sizeof(stats_t)));
+#define X(name) out_stats->name += server_stat->name;
+        STATS_FIELDS
+        STATS_HTTP_FIELDS
+        STATS_TCP_FIELDS
+        STATS_UDP_FIELDS
+#undef X
+    }
+}
 
 static void usage(const char *prog) {
     fprintf(stderr, "Usage: %s --ptcp-socket <path> --ptm-socket <path> [--max-clients-clients <num>] [--max-clients-servers <num>]\n", prog);
@@ -45,6 +128,17 @@ int main(int argc, char *argv[]) {
     char *ptm_socket_path = NULL;
     int max_clients_clients = DEFAULT_MAX_CLIENTS;
     int max_clients_servers = DEFAULT_MAX_CLIENTS;
+    int fd_client = -1;
+    void *shm_client_stats_local = MAP_FAILED;
+    int fd_server = -1;
+    void *shm_server_stats_local = MAP_FAILED;
+    int *client_fds_local = NULL;
+    ev_io *client_watchers_local = NULL;
+    client_info_t **client_info_array_local = NULL;
+    int ptcp_fd_local = -1;
+    int listen_fd_local = -1;
+    int ret = 1; // Assume failure by default
+    int ptm_socket_bound = 0; // Flag to indicate if ptm_socket_path has been bound
 
     static struct option long_options[] = {
         {"ptcp-socket", required_argument, 0, 'p'},
@@ -59,9 +153,17 @@ int main(int argc, char *argv[]) {
         switch (opt) {
             case 'p':
                 ptcp_socket_path = strdup(optarg);
+                if (!ptcp_socket_path) {
+                    perror("Failed to duplicate ptcp_socket_path");
+                    goto cleanup;
+                }
                 break;
             case 't':
                 ptm_socket_path = strdup(optarg);
+                if (!ptm_socket_path) {
+                    perror("Failed to duplicate ptm_socket_path");
+                    goto cleanup;
+                }
                 break;
             case 'c':
                 max_clients_clients = atoi(optarg);
@@ -71,124 +173,129 @@ int main(int argc, char *argv[]) {
                 break;
             default:
                 usage(argv[0]);
+                goto cleanup; // usage prints and exits, but this is for consistency
         }
     }
 
     if (!ptcp_socket_path || !ptm_socket_path || max_clients_clients <= 0 || max_clients_servers <= 0) {
         usage(argv[0]);
+        goto cleanup;
     }
+
+    g_max_clients_clients = max_clients_clients;
+    g_max_clients_servers = max_clients_servers;
+    g_client_stats_size = sizeof(stats_t) * max_clients_clients;
+    g_server_stats_size = sizeof(stats_t) * max_clients_servers;
 
     g_ptm.loop = EV_DEFAULT;
     g_ptm.ptcp_socket_path = ptcp_socket_path;
     g_ptm.ptm_socket_path = ptm_socket_path;
-    g_ptm.ptcp_fd = -1;
-    g_ptm.listen_fd = -1;
+    g_ptm.ptcp_fd = ptcp_fd_local;
+    g_ptm.listen_fd = listen_fd_local;
     g_ptm.num_clients = 0;
     g_ptm.max_clients = max_clients_clients + max_clients_servers;
 
     // Allocate client arrays
-    g_ptm.client_fds = (int*)malloc(g_ptm.max_clients * sizeof(int));
-    g_ptm.client_watchers = (ev_io*)malloc(g_ptm.max_clients * sizeof(ev_io));
-    if (!g_ptm.client_fds || !g_ptm.client_watchers) {
-        perror("Failed to allocate client arrays");
-        free(g_ptm.ptcp_socket_path);
-        free(g_ptm.ptm_socket_path);
-        return 1;
+    client_fds_local = (int*)malloc(g_ptm.max_clients * sizeof(int));
+    if (!client_fds_local) {
+        perror("Failed to allocate client_fds_local");
+        goto cleanup;
     }
+    client_watchers_local = (ev_io*)malloc(g_ptm.max_clients * sizeof(ev_io));
+    if (!client_watchers_local) {
+        perror("Failed to allocate client_watchers_local");
+        goto cleanup;
+    }
+    client_info_array_local = (client_info_t**)malloc(g_ptm.max_clients * sizeof(client_info_t*));
+    if (!client_info_array_local) {
+        perror("Failed to allocate client_info_array_local");
+        goto cleanup;
+    }
+    for (int i = 0; i < g_ptm.max_clients; i++) {
+        client_info_array_local[i] = NULL;
+    }
+    g_ptm.client_fds = client_fds_local;
+    g_ptm.client_watchers = client_watchers_local;
+    g_ptm.client_info_array = client_info_array_local;
 
     // Create shared memory for http_client stats using mmap on temp file
-    char client_shm_path[256];
-    snprintf(client_shm_path, sizeof(client_shm_path), "/tmp/ptm_client_stats_%d", getpid());
-    int fd_client = open(client_shm_path, O_CREAT | O_RDWR, 0666);
+    snprintf(g_client_shm_path, sizeof(g_client_shm_path), CLIENT_SHM_PATH);
+    fd_client = open(g_client_shm_path, O_CREAT | O_RDWR, 0666);
     if (fd_client == -1) {
         perror("Failed to create temp file for client stats");
-        free(g_ptm.client_fds);
-        free(g_ptm.client_watchers);
-        free(g_ptm.ptcp_socket_path);
-        free(g_ptm.ptm_socket_path);
-        return 1;
+        goto cleanup;
     }
-    size_t client_stats_size = sizeof(stats_t) * max_clients_clients;
+    size_t client_stats_size = g_client_stats_size;
     if (ftruncate(fd_client, client_stats_size) == -1) {
         perror("Failed to set size for client stats temp file");
-        close(fd_client);
-        unlink(client_shm_path);
-        free(g_ptm.client_fds);
-        free(g_ptm.client_watchers);
-        free(g_ptm.ptcp_socket_path);
-        free(g_ptm.ptm_socket_path);
-        return 1;
+        goto cleanup;
     }
-    void *shm_client_stats = mmap(NULL, client_stats_size, PROT_READ | PROT_WRITE, MAP_SHARED, fd_client, 0);
-    if (shm_client_stats == MAP_FAILED) {
+    shm_client_stats_local = mmap(NULL, client_stats_size, PROT_READ | PROT_WRITE, MAP_SHARED, fd_client, 0);
+    if (shm_client_stats_local == MAP_FAILED) {
         perror("Failed to mmap client stats");
-        close(fd_client);
-        unlink(client_shm_path);
-        free(g_ptm.client_fds);
-        free(g_ptm.client_watchers);
-        free(g_ptm.ptcp_socket_path);
-        free(g_ptm.ptm_socket_path);
-        return 1;
+        goto cleanup;
     }
-    memset(shm_client_stats, 0, client_stats_size);
+    g_shm_client_stats = shm_client_stats_local;
+    memset(g_shm_client_stats, 0, client_stats_size);
     close(fd_client); // Can close fd after mmap
+    fd_client = -1; // Mark as closed
 
     // Create shared memory for http_server stats using mmap on temp file
-    char server_shm_path[256];
-    snprintf(server_shm_path, sizeof(server_shm_path), "/tmp/ptm_server_stats_%d", getpid());
-    int fd_server = open(server_shm_path, O_CREAT | O_RDWR, 0666);
+    snprintf(g_server_shm_path, sizeof(g_server_shm_path), SERVER_SHM_PATH);
+    fd_server = open(g_server_shm_path, O_CREAT | O_RDWR, 0666);
     if (fd_server == -1) {
         perror("Failed to create temp file for server stats");
-        munmap(shm_client_stats, client_stats_size);
-        unlink(client_shm_path);
-        free(g_ptm.client_fds);
-        free(g_ptm.client_watchers);
-        free(g_ptm.ptcp_socket_path);
-        free(g_ptm.ptm_socket_path);
-        return 1;
+        goto cleanup;
     }
-    size_t server_stats_size = sizeof(stats_t) * max_clients_servers;
+    size_t server_stats_size = g_server_stats_size;
     if (ftruncate(fd_server, server_stats_size) == -1) {
         perror("Failed to set size for server stats temp file");
-        close(fd_server);
-        unlink(server_shm_path);
-        munmap(shm_client_stats, client_stats_size);
-        unlink(client_shm_path);
-        free(g_ptm.client_fds);
-        free(g_ptm.client_watchers);
-        free(g_ptm.ptcp_socket_path);
-        free(g_ptm.ptm_socket_path);
-        return 1;
+        goto cleanup;
     }
-    void *shm_server_stats = mmap(NULL, server_stats_size, PROT_READ | PROT_WRITE, MAP_SHARED, fd_server, 0);
-    if (shm_server_stats == MAP_FAILED) {
+    shm_server_stats_local = mmap(NULL, server_stats_size, PROT_READ | PROT_WRITE, MAP_SHARED, fd_server, 0);
+    if (shm_server_stats_local == MAP_FAILED) {
         perror("Failed to mmap server stats");
-        close(fd_server);
-        unlink(server_shm_path);
-        munmap(shm_client_stats, client_stats_size);
-        unlink(client_shm_path);
-        free(g_ptm.client_fds);
-        free(g_ptm.client_watchers);
-        free(g_ptm.ptcp_socket_path);
-        free(g_ptm.ptm_socket_path);
-        return 1;
+        goto cleanup;
     }
-    memset(shm_server_stats, 0, server_stats_size);
+    g_shm_server_stats = shm_server_stats_local;
+    memset(g_shm_server_stats, 0, server_stats_size);
     close(fd_server); // Can close fd after mmap
+    fd_server = -1; // Mark as closed
 
-    // Connect to ptcp socket
-    g_ptm.ptcp_fd = socket(AF_UNIX, SOCK_STREAM, 0);
-    if (g_ptm.ptcp_fd == -1) {
-        perror("Failed to create socket for ptcp");
-        munmap(shm_server_stats, server_stats_size);
-        unlink(server_shm_path);
-        munmap(shm_client_stats, client_stats_size);
-        unlink(client_shm_path);
-        free(g_ptm.client_fds);
-        free(g_ptm.client_watchers);
-        free(g_ptm.ptcp_socket_path);
-        free(g_ptm.ptm_socket_path);
-        return 1;
+    // For HTTP CLIENTS
+    for (int i = 0; i < max_clients_clients; i++) {
+        client_info_t *client_info = (client_info_t*)malloc(sizeof(client_info_t));
+        if (!client_info) {
+            perror("Failed to allocate client_info_t for HTTP client");
+            goto cleanup;
+        }
+        client_info->idx = i;
+        client_info->type = CLIENT_TYPE_HTTP_CLIENT;
+        client_info->shm_base = (char*)g_shm_client_stats + (i * sizeof(stats_t));
+        client_info->shm_size = sizeof(stats_t);
+        client_info->check_status_flag = 0; // Initialize check status
+        g_ptm.client_info_array[i] = client_info;
+    }
+
+    // For HTTP SERVERS
+    for (int i = 0; i < max_clients_servers; i++) {
+        client_info_t *client_info = (client_info_t*)malloc(sizeof(client_info_t));
+        if (!client_info) {
+            perror("Failed to allocate client_info_t for HTTP server");
+            goto cleanup;
+        }
+        client_info->idx = i + max_clients_clients; // Adjust index
+        client_info->type = CLIENT_TYPE_HTTP_SERVER;
+        client_info->shm_base = (char*)g_shm_server_stats + (i * sizeof(stats_t));
+        client_info->shm_size = sizeof(stats_t);
+        client_info->check_status_flag = 0; // Initialize check status
+        g_ptm.client_info_array[i + max_clients_clients] = client_info;
+    }
+
+    ptcp_fd_local = socket(AF_UNIX, SOCK_STREAM, 0);
+    if (ptcp_fd_local == -1) {
+        perror("Failed to create ptcp socket");
+        goto cleanup;
     }
 
     struct sockaddr_un ptcp_addr;
@@ -196,36 +303,18 @@ int main(int argc, char *argv[]) {
     ptcp_addr.sun_family = AF_UNIX;
     strncpy(ptcp_addr.sun_path, g_ptm.ptcp_socket_path, sizeof(ptcp_addr.sun_path) - 1);
 
-    if (connect(g_ptm.ptcp_fd, (struct sockaddr*)&ptcp_addr, sizeof(ptcp_addr)) == -1) {
+    if (connect(ptcp_fd_local, (struct sockaddr*)&ptcp_addr, sizeof(ptcp_addr)) == -1) {
         perror("Failed to connect to ptcp socket");
-        close(g_ptm.ptcp_fd);
-        munmap(shm_server_stats, server_stats_size);
-        unlink(server_shm_path);
-        munmap(shm_client_stats, client_stats_size);
-        unlink(client_shm_path);
-        free(g_ptm.client_fds);
-        free(g_ptm.client_watchers);
-        free(g_ptm.ptcp_socket_path);
-        free(g_ptm.ptm_socket_path);
-        return 1;
+        goto cleanup;
     }
-
+    g_ptm.ptcp_fd = ptcp_fd_local;
     printf("Connected to ptcp socket: %s\n", g_ptm.ptcp_socket_path);
 
     // Start listening on ptm socket
-    g_ptm.listen_fd = socket(AF_UNIX, SOCK_STREAM, 0);
-    if (g_ptm.listen_fd == -1) {
+    listen_fd_local = socket(AF_UNIX, SOCK_STREAM, 0);
+    if (listen_fd_local == -1) {
         perror("Failed to create listen socket");
-        close(g_ptm.ptcp_fd);
-        munmap(shm_server_stats, server_stats_size);
-        unlink(server_shm_path);
-        munmap(shm_client_stats, client_stats_size);
-        unlink(client_shm_path);
-        free(g_ptm.client_fds);
-        free(g_ptm.client_watchers);
-        free(g_ptm.ptcp_socket_path);
-        free(g_ptm.ptm_socket_path);
-        return 1;
+        goto cleanup;
     }
 
     struct sockaddr_un listen_addr;
@@ -234,36 +323,17 @@ int main(int argc, char *argv[]) {
     strncpy(listen_addr.sun_path, g_ptm.ptm_socket_path, sizeof(listen_addr.sun_path) - 1);
 
     unlink(g_ptm.ptm_socket_path); // Remove if exists
-    if (bind(g_ptm.listen_fd, (struct sockaddr*)&listen_addr, sizeof(listen_addr)) == -1) {
+    if (bind(listen_fd_local, (struct sockaddr*)&listen_addr, sizeof(listen_addr)) == -1) {
         perror("Failed to bind listen socket");
-        close(g_ptm.ptcp_fd);
-        close(g_ptm.listen_fd);
-        munmap(shm_server_stats, server_stats_size);
-        unlink(server_shm_path);
-        munmap(shm_client_stats, client_stats_size);
-        unlink(client_shm_path);
-        free(g_ptm.client_fds);
-        free(g_ptm.client_watchers);
-        free(g_ptm.ptcp_socket_path);
-        free(g_ptm.ptm_socket_path);
-        return 1;
+        goto cleanup;
     }
+    ptm_socket_bound = 1; // Mark that socket path is bound and needs unlinking
 
-    if (listen(g_ptm.listen_fd, 5) == -1) {
+    if (listen(listen_fd_local, 5) == -1) {
         perror("Failed to listen on socket");
-        close(g_ptm.ptcp_fd);
-        close(g_ptm.listen_fd);
-        munmap(shm_server_stats, server_stats_size);
-        unlink(server_shm_path);
-        munmap(shm_client_stats, client_stats_size);
-        unlink(client_shm_path);
-        free(g_ptm.client_fds);
-        free(g_ptm.client_watchers);
-        free(g_ptm.ptcp_socket_path);
-        free(g_ptm.ptm_socket_path);
-        return 1;
+        goto cleanup;
     }
-
+    g_ptm.listen_fd = listen_fd_local;
     printf("Listening on ptm socket: %s\n", g_ptm.ptm_socket_path);
 
     // Set up watchers
@@ -276,20 +346,105 @@ int main(int argc, char *argv[]) {
     // Run event loop
     ev_run(g_ptm.loop, 0);
 
-    // Cleanup
-    close(g_ptm.ptcp_fd);
-    close(g_ptm.listen_fd);
-    unlink(g_ptm.ptm_socket_path);
-    munmap(shm_server_stats, server_stats_size);
-    unlink(server_shm_path);
-    munmap(shm_client_stats, client_stats_size);
-    unlink(client_shm_path);
-    free(g_ptm.client_fds);
-    free(g_ptm.client_watchers);
-    free(g_ptm.ptcp_socket_path);
-    free(g_ptm.ptm_socket_path);
+    ret = 0; // If we reach here, the program executed successfully
 
-    return 0;
+// Cleanup labels (in reverse order of allocation)
+cleanup:
+    if (g_ptm.listen_fd != -1) {
+        ev_io_stop(g_ptm.loop, &g_ptm.listen_watcher);
+        close(g_ptm.listen_fd);
+    }
+    if (ptm_socket_bound) {
+        unlink(g_ptm.ptm_socket_path);
+    }
+
+    if (g_ptm.ptcp_fd != -1) {
+        ev_io_stop(g_ptm.loop, &g_ptm.ptcp_watcher);
+        close(g_ptm.ptcp_fd);
+    }
+
+    if (g_ptm.client_info_array) {
+        for (int i = 0; i < g_ptm.max_clients; i++) {
+            free(g_ptm.client_info_array[i]);
+        }
+    }
+
+    if (g_shm_server_stats != MAP_FAILED) {
+        munmap(g_shm_server_stats, g_server_stats_size);
+    }
+    unlink(g_server_shm_path); // Always unlink if path was set
+
+    if (fd_server != -1) {
+        close(fd_server);
+    }
+
+    if (g_shm_client_stats != MAP_FAILED) {
+        munmap(g_shm_client_stats, g_client_stats_size);
+    }
+    unlink(g_client_shm_path); // Always unlink if path was set
+
+    if (fd_client != -1) {
+        close(fd_client);
+    }
+    if (client_info_array_local)
+        free(client_info_array_local);
+    if (client_watchers_local)
+        free(client_watchers_local);
+    if (client_fds_local)
+        free(client_fds_local);
+    if (ptm_socket_path)
+        free(ptm_socket_path);
+    if (ptcp_socket_path)
+        free(ptcp_socket_path);
+
+    return ret;
+}
+
+static void forward_to_clients(const char *message, size_t len) {
+    for (int i = 0; i < g_ptm.num_clients; i++) {
+        printf("Send cmd: %s to client[%d]\n", message, i);
+        if (send(g_ptm.client_fds[i], message, len, 0) == -1) {
+            perror("Failed to send message to client");
+            remove_client(i);
+            i--; // Adjust index after removal
+        } else {
+#if 0
+            if (send(g_ptm.client_fds[i], "\n", 1, 0) == -1) {
+                perror("Failed to send newline to client");
+            }
+#endif
+        }
+    }
+}
+
+static void send_aggregated_stats_response(int fd) {
+    stats_t aggregated_stats;
+    aggregate_stats(&aggregated_stats);
+
+    cJSON *response_json = cJSON_CreateObject();
+    if (!response_json) {
+        fprintf(stderr, "Failed to create response JSON object for aggregated stats\n");
+        return;
+    }
+    cJSON_AddStringToObject(response_json, "response_type", "AGGREGATED_STATS");
+    cJSON_AddItemToObject(response_json, "aggregated_stats", stats_to_cjson(&aggregated_stats));
+
+    char *response_str = cJSON_PrintUnformatted(response_json);
+    if (!response_str) {
+        fprintf(stderr, "Failed to print aggregated stats JSON\n");
+        cJSON_Delete(response_json);
+        return;
+    }
+
+    if (send(fd, response_str, strlen(response_str), 0) == -1) {
+        perror("Failed to send aggregated stats to ptcp");
+    } else {
+        if (send(fd, "\n", 1, 0) == -1) {
+            perror("Failed to send newline after aggregated stats to ptcp");
+        }
+    }
+    free(response_str);
+    cJSON_Delete(response_json);
 }
 
 static void ptcp_io_cb(struct ev_loop *loop, ev_io *w, int revents) {
@@ -300,14 +455,25 @@ static void ptcp_io_cb(struct ev_loop *loop, ev_io *w, int revents) {
             buffer[n] = '\0';
             printf("Received from ptcp: %s\n", buffer);
 
-            // Forward to all connected clients
-            for (int i = 0; i < g_ptm.num_clients; i++) {
-                if (send(g_ptm.client_fds[i], buffer, n, 0) == -1) {
-                    perror("Failed to send to client");
-                    remove_client(i);
-                    i--; // Adjust index after removal
+            // Handle plain string commands
+            if (strcmp(buffer, "get_stats") == 0) {
+                send_aggregated_stats_response(g_ptm.ptcp_fd);
+                return;
+            } else if (strcmp(buffer, "check") == 0) { // Specific handling for "check"
+                // Reset check_status_flag for all clients
+                for (int i = 0; i < g_ptm.num_clients; i++) {
+                    if (g_ptm.client_info_array[i]) {
+                        g_ptm.client_info_array[i]->check_status_flag = 0;
+                    }
                 }
+                forward_to_clients(buffer, n); // Forward "check" to all clients
+                printf("Reset client check_status_flags and forwarded 'check' command.\n");
+                return; // Command handled
+            } else if (strcmp(buffer, "run") == 0) { // Specific handling for "run"
+                forward_to_clients(buffer, n);
+                return; // Command handled
             }
+
         } else if (n == 0) {
             printf("Ptcp connection closed\n");
             ev_io_stop(loop, w);
@@ -336,7 +502,7 @@ static void listen_io_cb(struct ev_loop *loop, ev_io *w, int revents) {
             return;
         }
 
-        printf("Accepted client connection\n");
+        printf("11111 Accepted client connection, num_clients: %d\n", g_ptm.num_clients);
         g_ptm.client_fds[g_ptm.num_clients] = client_fd;
         ev_io_init(&g_ptm.client_watchers[g_ptm.num_clients], client_io_cb, client_fd, EV_READ);
         g_ptm.client_watchers[g_ptm.num_clients].data = (void*)(uintptr_t)g_ptm.num_clients;
@@ -347,6 +513,7 @@ static void listen_io_cb(struct ev_loop *loop, ev_io *w, int revents) {
 
 static void client_io_cb(struct ev_loop *loop, ev_io *w, int revents) {
     int idx = (int)(uintptr_t)w->data;
+    client_info_t *current_client_info = g_ptm.client_info_array[idx];
 
     if (revents & EV_READ) {
         char buffer[4096];
@@ -355,10 +522,51 @@ static void client_io_cb(struct ev_loop *loop, ev_io *w, int revents) {
             buffer[n] = '\0';
             printf("Received from client %d: %s\n", idx, buffer);
 
-            // Forward to ptcp
-            if (g_ptm.ptcp_fd != -1) {
-                if (send(g_ptm.ptcp_fd, buffer, n, 0) == -1) {
-                    perror("Failed to send to ptcp");
+            if (strcmp(buffer, "ready") == 0) {
+                if (current_client_info) {
+                    current_client_info->check_status_flag = 1;
+                }
+
+                // Check if all clients are ready
+                int all_ready = 1;
+                if (g_ptm.num_clients == 0) {
+                    all_ready = 0; // If no clients, then not all are ready
+                } else {
+                    for (int i = 0; i < g_ptm.num_clients; i++) {
+                        if (g_ptm.client_info_array[i]->check_status_flag == 0) {
+                            all_ready = 0;
+                            break;
+                        }
+                    }
+                }
+                
+                if (all_ready && g_ptm.num_clients > 0) { // Ensure there's at least one client and all are ready
+                    // All clients are ready, send a single "ready" message to ptcp
+                    const char *response = "ready";
+                    if (g_ptm.ptcp_fd != -1) {
+                        if (send(g_ptm.ptcp_fd, response, strlen(response), 0) == -1) {
+                            perror("Failed to send 'ready' to ptcp after all clients ready");
+                        } else {
+#if 0
+                            if (send(g_ptm.ptcp_fd, "\n", 1, 0) == -1) {
+                                perror("Failed to send newline after 'ready' to ptcp");
+                            }
+#endif
+                        }
+                    }
+                    printf("All clients ready. Sent 'ready' to ptcp.\n");
+                }
+                // Do NOT forward individual "ready" messages to ptcp
+            } else {
+                // For messages other than "ready", forward to ptcp
+                if (g_ptm.ptcp_fd != -1) {
+                    if (send(g_ptm.ptcp_fd, buffer, n, 0) == -1) {
+                        perror("Failed to send message to ptcp");
+                    } else {
+                        if (send(g_ptm.ptcp_fd, "\n", 1, 0) == -1) {
+                            perror("Failed to send newline to ptcp");
+                        }
+                    }
                 }
             }
         } else if (n == 0) {

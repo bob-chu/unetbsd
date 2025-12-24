@@ -261,6 +261,8 @@ func runPrepare(buildDir, configDir string) {
 		maxClientsServers = 10 // Default
 	}
 
+	var pids []int
+
 	// Start ptm
 	ptmPath := filepath.Join(buildDir, "ptm")
 	cmdPtm := exec.Command(ptmPath, "--ptcp-socket", ptcpToPtmSocketPath, "--ptm-socket", ptmSocketPath, "--max-clients-clients", fmt.Sprintf("%d", maxClientsClients), "--max-clients-servers", fmt.Sprintf("%d", maxClientsServers))
@@ -272,9 +274,10 @@ func runPrepare(buildDir, configDir string) {
 		stopSocketServer()
 		return
 	}
+	go cmdPtm.Wait()
+	pids = append(pids, cmdPtm.Process.Pid)
 	fmt.Printf("Started ptm with PID: %d, max_clients_clients: %d, max_clients_servers: %d\n", cmdPtm.Process.Pid, maxClientsClients, maxClientsServers)
 
-	var pids []int
 	lbPath := filepath.Join(buildDir, "lb")
 	perfToolPath := filepath.Join(buildDir, "perf_tool")
 
@@ -297,6 +300,7 @@ func runPrepare(buildDir, configDir string) {
 		} else {
 			pids = append(pids, cmdLbS.Process.Pid)
 			fmt.Printf("Started lb_s with PID: %d\n", cmdLbS.Process.Pid)
+			go cmdLbS.Wait()
 		}
 
 		// Read num_clients from lb_s.json
@@ -320,6 +324,7 @@ func runPrepare(buildDir, configDir string) {
 						} else {
 							pids = append(pids, cmdServer.Process.Pid)
 							fmt.Printf("Started http_server_%d with PID: %d\n", i, cmdServer.Process.Pid)
+							go cmdServer.Wait()
 						}
 					}
 				}
@@ -344,6 +349,7 @@ func runPrepare(buildDir, configDir string) {
 		} else {
 			pids = append(pids, cmdLbC.Process.Pid)
 			fmt.Printf("Started lb_c with PID: %d\n", cmdLbC.Process.Pid)
+			go cmdLbC.Wait()
 		}
 
 		// Read num_clients from lb_c.json
@@ -367,6 +373,7 @@ func runPrepare(buildDir, configDir string) {
 						} else {
 							pids = append(pids, cmdClient.Process.Pid)
 							fmt.Printf("Started http_client_%d with PID: %d\n", i, cmdClient.Process.Pid)
+							go cmdClient.Wait()
 						}
 					}
 				}

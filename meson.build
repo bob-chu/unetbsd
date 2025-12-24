@@ -346,7 +346,7 @@ endif
 
 executable(
     'ptm',
-    'perf_tool/perf_tool_master.c',
+    ['perf_tool/perf_tool_master.c', 'perf_tool/deps/cjson/cJSON.c'],
     c_args : cflags_user + ['-I/usr/local/include'],
     include_directories : [include_directories('perf_tool'), include_directories('perf_tool/deps/cjson'), include_directories('perf_tool/deps/picohttpparser'), include_directories('include'), include_directories('app'), include_directories('src')],
     link_with : libnetbsdstack_static,

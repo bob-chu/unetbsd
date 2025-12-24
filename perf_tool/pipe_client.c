@@ -10,11 +10,14 @@
 #include <fcntl.h>
 #include <sys/stat.h>
 
+#include <ctype.h> // Added for isspace
+
 #include "pipe_client.h"
 #include "logger.h"
 #include "scheduler.h"
 #include "metrics.h" // New
 #include "deps/cjson/cJSON.h" // New
+#include "common.h"
 
 // Forward declaration for the watcher callback
 static void pipe_io_cb(struct ev_loop *loop, ev_io *w, int revents);
@@ -71,12 +74,12 @@ void pipe_client_init(struct ev_loop *loop, const char *socket_path, int is_clie
     // Connect to shared memory
     char shm_path[256];
     if (is_client) {
-        snprintf(shm_path, sizeof(shm_path), "/tmp/ptm_client_stats");
+        snprintf(shm_path, sizeof(shm_path), CLIENT_SHM_PATH);
     } else {
-        snprintf(shm_path, sizeof(shm_path), "/tmp/ptm_server_stats");
+        snprintf(shm_path, sizeof(shm_path), SERVER_SHM_PATH);
     }
 
-    int fd_shm = open(shm_path, O_RDONLY);
+    int fd_shm = open(shm_path, O_RDWR);
     if (fd_shm == -1) {
         LOG_ERROR("Failed to open shared memory file %s: %s", shm_path, strerror(errno));
         fflush(stderr);
@@ -188,6 +191,14 @@ static void pipe_io_cb(struct ev_loop *loop, ev_io *w, int revents) {
         ssize_t n = recv(client->fd, buffer, sizeof(buffer) - 1, 0);
         if (n > 0) {
             buffer[n] = '\0';
+            // Trim trailing whitespace (including newline)
+            for (int i = n - 1; i >= 0; i--) {
+                if (isspace((unsigned char)buffer[i])) {
+                    buffer[i] = '\0';
+                } else {
+                    break;
+                }
+            }
             LOG_INFO("Received from pipe: %s", buffer);
             fflush(stdout);
 

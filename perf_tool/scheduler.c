@@ -67,7 +67,7 @@ void scheduler_update_stats(void) {
 void scheduler_inc_stat(int stat, int value) {
     switch (stat) {
         case STAT_CONCURRENT_CONNECTIONS:
-            g_stats.tcp_concurrent += value;
+            g_current_stats->tcp_concurrent += value;
             break;
         default:
             LOG_WARN("Unknown scheduler stat: %d", stat);
@@ -128,7 +128,7 @@ void scheduler_check_phase_transition(const char *role) {
                time_index,
                phase_names[g_current_phase],
                client_get_current_target_connections(),
-               g_stats.tcp_concurrent,
+               g_current_stats->tcp_concurrent,
                connections_opened_per_second,
                connections_closed_per_second,
                requests_per_second,
@@ -142,7 +142,7 @@ void scheduler_check_phase_transition(const char *role) {
                time_index,
                phase_names[g_current_phase],
                client_get_current_target_connections(),
-               g_stats.tcp_concurrent,
+               g_current_stats->tcp_concurrent,
                connections_opened_per_second,
                connections_closed_per_second,
                requests_per_second,
@@ -160,14 +160,14 @@ void scheduler_check_phase_transition(const char *role) {
     metrics_reset_bytes_per_second();
 
     if (strcmp(g_config->objective.type, "TOTAL_CONNECTIONS") == 0) {
-        if (g_stats.connections_opened >= g_config->objective.value) {
+        if (g_current_stats->connections_opened >= g_config->objective.value) {
             //LOG_INFO("TOTAL_CONNECTIONS objective reached. Test finished. Stopping event loop.");
             //g_current_phase = PHASE_FINISHED;
             //ev_break(g_loop, EVBREAK_ALL);
             //return; // Exit early
         }
     } else if (strcmp(g_config->objective.type, "HTTP_REQUESTS") == 0) {
-        if (g_stats.responses_received >= g_config->objective.value) {
+        if (g_current_stats->responses_received >= g_config->objective.value) {
             //LOG_INFO("HTTP_REQUESTS objective reached. Test finished. Stopping event loop.");
             //g_current_phase = PHASE_FINISHED;
             //ev_break(g_loop, EVBREAK_ALL);
