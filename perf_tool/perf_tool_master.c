@@ -585,6 +585,9 @@ static void listen_io_cb(struct ev_loop *loop, ev_io *w, int revents) {
 
 static void client_io_cb(struct ev_loop *loop, ev_io *w, int revents) {
     int idx = (int)(uintptr_t)w->data;
+    if (idx >= g_ptm.num_clients) {
+        return;
+    }
     client_info_t *current_client_info = g_ptm.client_info_array[idx];
 
     if (revents & EV_READ) {
@@ -655,6 +658,7 @@ static void remove_client(int idx) {
 
     ev_io_stop(g_ptm.loop, &g_ptm.client_watchers[idx]);
     close(g_ptm.client_fds[idx]);
+    g_ptm.client_fds[idx] = -1;
 
     if (g_ptm.test_running) {
         g_ptm.test_running = 0;

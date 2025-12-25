@@ -135,17 +135,24 @@ func handleClientConnection(c net.Conn) {
 					currentVal := uint64(f)
 					previousVal := currentRoleStats.LastStats[key] // Will be 0 if not set
 
-					if currentRoleStats.LastTimeIndex == 0 || timeDelta <= 0 || previousVal == 0 {
-						statsOutput.WriteString(fmt.Sprintf("%s:%d ", key, currentVal))
+					isRateKey := key == "connections_opened" || key == "requests_sent" || key == "tcp_bytes_sent" || key == "tcp_bytes_received"
+
+					if isRateKey && currentRoleStats.LastTimeIndex != 0 && timeDelta > 0 {
+						var valueDelta uint64
+						if currentVal >= previousVal {
+							valueDelta = currentVal - previousVal
+						} else {
+							valueDelta = 0
+						}
+						rate := float64(valueDelta) / float64(timeDelta)
+
+						if key == "tcp_bytes_sent" || key == "tcp_bytes_received" {
+							mbps := (rate * 8) / 1000000.0 // Convert bytes/s to Mbps
+							statsOutput.WriteString(fmt.Sprintf("%s:%.2fMbps ", key, mbps))
+						} else {
+							statsOutput.WriteString(fmt.Sprintf("%s:%.2f/s ", key, rate))
+						}
 					} else {
-						//var valueDelta uint64
-						//if currentVal >= previousVal {
-						//	valueDelta = currentVal - previousVal
-						//} else {
-						//	valueDelta = 0
-						//}
-						//rate := float64(valueDelta) / float64(timeDelta)
-						//statsOutput.WriteString(fmt.Sprintf("%s:%d(%.2f/s) ", key, currentVal, rate))
 						statsOutput.WriteString(fmt.Sprintf("%s:%d ", key, currentVal))
 					}
 					currentRoleStats.LastStats[key] = currentVal
@@ -375,8 +382,8 @@ func runPrepare(buildDir, configDir string) {
 					for i := 0; i < int(numServers); i++ {
 						serverConfig := filepath.Join(configDir, fmt.Sprintf("http_server_%d.json", i))
 						cmdServer := exec.Command(perfToolPath, "server", serverConfig, "--socket-path", ptmSocketPath)
-						//cmdServer.Stdout = nil 
-						cmdServer.Stdout = os.Stdout
+						cmdServer.Stdout = nil 
+						//cmdServer.Stdout = os.Stdout
 						cmdServer.Stderr = os.Stderr
 						cmdServer.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 						if err := cmdServer.Start(); err != nil {
@@ -425,8 +432,8 @@ func runPrepare(buildDir, configDir string) {
 					for i := 0; i < int(numClients); i++ {
 						clientConfig := filepath.Join(configDir, fmt.Sprintf("http_client_%d.json", i))
 						cmdClient := exec.Command(perfToolPath, "client", clientConfig, "--socket-path", ptmSocketPath)
-						//cmdClient.Stdout = nil 
-						cmdClient.Stdout = os.Stdout
+						cmdClient.Stdout = nil 
+						//cmdClient.Stdout = os.Stdout
 						cmdClient.Stderr = os.Stderr
 						cmdClient.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 						if err := cmdClient.Start(); err != nil {
