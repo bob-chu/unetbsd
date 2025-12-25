@@ -20,6 +20,7 @@
 #include <rte_ether.h>
 #include <rte_hash.h>
 #include <rte_ip.h>
+#include <rte_arp.h>
 #include <rte_jhash.h>
 #include <rte_launch.h>
 #include <rte_lcore.h>
@@ -57,7 +58,7 @@ ip_addr_hash_func(const void *key, uint32_t key_len, uint32_t init_val)
 #define MAX_CLIENTS 128
 #define RX_RING_NAME_TEMPLATE "LB_RX_RING_%u"
 #define TX_RING_NAME_TEMPLATE "LB_TX_RING_%u"
-#define RING_SIZE 1024
+#define RING_SIZE (1024 * 4)
 #define IP_HASH_ENTRIES 1024
 #define MAX_EAL_ARGS 64 // Max number of DPDK EAL arguments
 
@@ -229,22 +230,22 @@ static int lcore_rx(__attribute__((unused)) void *arg) {
                     dst_ip.family = AF_INET6;
                     memcpy(dst_ip.addr.ipv6, ipv6_hdr->dst_addr.a, sizeof(ipv6_hdr->dst_addr.a));
                 } else if (eth_type == RTE_ETHER_TYPE_ARP) {
-                    // If it's an ARP packet, clone and send to all clients
-                    for (unsigned client_idx = 0; client_idx < num_clients; client_idx++) {
-                        struct rte_mbuf *clone_mbuf = rte_pktmbuf_clone(bufs[i], mbuf_pool);
-                        if (clone_mbuf == NULL) {
-                            RTE_LOG(ERR, LB, "Failed to clone mbuf for ARP packet to client %u\n", client_idx);
-                            continue;
-                        }
-                        if (rte_ring_enqueue(rx_rings[client_idx], clone_mbuf) != 0) {
-                            RTE_LOG(ERR, LB, "Failed to enqueue ARP packet to client %u RX ring\n", client_idx);
-                            rte_pktmbuf_free(clone_mbuf);
-                        } else {
-                            ;//printf("enqueue %d pkts to client_idx: %d\n", 1, client_idx);
-                        }
+                    struct rte_arp_hdr *arp_hdr = rte_pktmbuf_mtod_offset(
+                        bufs[i], struct rte_arp_hdr *,
+                        sizeof(struct rte_ether_hdr));
+
+                    if (rte_be_to_cpu_16(arp_hdr->arp_hardware) ==
+                            RTE_ARP_HRD_ETHER &&
+                        rte_be_to_cpu_16(arp_hdr->arp_protocol) ==
+                            RTE_ETHER_TYPE_IPV4) {
+                        dst_ip.family = AF_INET;
+                        dst_ip.addr.ipv4 = arp_hdr->arp_data.arp_tip;
+                    } else {
+                        RTE_LOG(DEBUG, LB,
+                                "Unsupported ARP packet type, dropping.\n");
+                        rte_pktmbuf_free(bufs[i]);
+                        continue;
                     }
-                    rte_pktmbuf_free(bufs[i]); // Free the original mbuf as it's been cloned and distributed
-                    continue; // Continue to the next received mbuf
                 } else {
                     RTE_LOG(DEBUG, LB,
                             "Received non-IP/ARP packet. Dropping packet.\n");
