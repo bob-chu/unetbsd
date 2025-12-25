@@ -65,9 +65,9 @@ ip_addr_hash_func(const void *key, uint32_t key_len, uint32_t init_val)
 
 #define RX_RING_SIZE 1024
 #define TX_RING_SIZE 1024
-#define NUM_MBUFS 8191
+#define NUM_MBUFS (8191 * 8)
 #define MBUF_CACHE_SIZE 250
-#define BURST_SIZE 32
+#define BURST_SIZE 64 
 #define JUMBO_FRAME_MAX_SIZE 9600
 
 #define NB_RX_QUEUES 1
