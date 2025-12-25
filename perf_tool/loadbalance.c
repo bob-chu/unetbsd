@@ -193,47 +193,17 @@ void dump_mbuf_hex(struct rte_mbuf *mbuf, char *msg)
 
 
 
-static int lcore_txrx(__attribute__((unused)) void *arg) {
+static int lcore_rx(__attribute__((unused)) void *arg) {
     const unsigned lcore_id = rte_lcore_id();
     const uint16_t queue_id = 0;
     struct rte_mbuf *bufs[BURST_SIZE];
-    struct rte_mbuf *tx_burst_buffer[BURST_SIZE];
     struct rte_mbuf *client_bufs[MAX_CLIENTS][BURST_SIZE];
     uint16_t client_buf_counts[MAX_CLIENTS] = {0};
 
-    RTE_LOG(INFO, LB,
-            "Starting TX/RX loop on lcore %u, queue %u for %u clients\n",
+    RTE_LOG(INFO, LB, "Starting RX loop on lcore %u, queue %u for %u clients\n",
             lcore_id, queue_id, num_clients);
 
     while (!quit_signal) {
-        /* TX path: Aggregate packets from all clients into a single burst */
-        uint16_t nb_to_tx = 0;
-        for (unsigned i = 0; i < num_clients; i++) {
-            uint16_t space_left = BURST_SIZE - nb_to_tx;
-            if (space_left == 0)
-                break;
-            uint16_t nb_dequeued = rte_ring_dequeue_burst(
-                tx_rings[i], (void **)&tx_burst_buffer[nb_to_tx], space_left,
-                NULL);
-            nb_to_tx += nb_dequeued;
-        }
-
-        if (nb_to_tx > 0) {
-            uint16_t nb_tx =
-                rte_eth_tx_burst(0, queue_id, tx_burst_buffer, nb_to_tx);
-            if (nb_tx < nb_to_tx) {
-                RTE_LOG(
-                    WARNING, LB,
-                    "Failed to send all packets to NIC. Dropping %u packets.\n",
-                    nb_to_tx - nb_tx);
-                for (uint16_t j = nb_tx; j < nb_to_tx; j++) {
-                    rte_pktmbuf_free(tx_burst_buffer[j]);
-                }
-            } else {
-                ;//printf("Send out %d pkts\n", nb_tx);
-            }
-        }
-
         /* RX path: Receive from NIC and distribute to clients */
         uint16_t nb_rx = rte_eth_rx_burst(0, queue_id, bufs, BURST_SIZE);
         if (nb_rx > 0) {
@@ -329,7 +299,48 @@ static int lcore_txrx(__attribute__((unused)) void *arg) {
             }
         }
     }
-    RTE_LOG(INFO, LB, "Lcore %u (TX/RX) exiting.\n", lcore_id);
+    RTE_LOG(INFO, LB, "Lcore %u (RX) exiting.\n", lcore_id);
+    return 0;
+}
+
+static int lcore_tx(__attribute__((unused)) void *arg) {
+    const unsigned lcore_id = rte_lcore_id();
+    const uint16_t queue_id = 0;
+    struct rte_mbuf *tx_burst_buffer[BURST_SIZE];
+
+    RTE_LOG(INFO, LB, "Starting TX loop on lcore %u, queue %u for %u clients\n",
+            lcore_id, queue_id, num_clients);
+
+    while (!quit_signal) {
+        /* TX path: Aggregate packets from all clients into a single burst */
+        uint16_t nb_to_tx = 0;
+        for (unsigned i = 0; i < num_clients; i++) {
+            uint16_t space_left = BURST_SIZE - nb_to_tx;
+            if (space_left == 0)
+                break;
+            uint16_t nb_dequeued = rte_ring_dequeue_burst(
+                tx_rings[i], (void **)&tx_burst_buffer[nb_to_tx], space_left,
+                NULL);
+            nb_to_tx += nb_dequeued;
+        }
+
+        if (nb_to_tx > 0) {
+            uint16_t nb_tx =
+                rte_eth_tx_burst(0, queue_id, tx_burst_buffer, nb_to_tx);
+            if (nb_tx < nb_to_tx) {
+                RTE_LOG(
+                    WARNING, LB,
+                    "Failed to send all packets to NIC. Dropping %u packets.\n",
+                    nb_to_tx - nb_tx);
+                for (uint16_t j = nb_tx; j < nb_to_tx; j++) {
+                    rte_pktmbuf_free(tx_burst_buffer[j]);
+                }
+            } else {
+                ;//printf("Send out %d pkts\n", nb_tx);
+            }
+        }
+    }
+    RTE_LOG(INFO, LB, "Lcore %u (TX) exiting.\n", lcore_id);
     return 0;
 }
 
@@ -489,8 +500,31 @@ int main(int argc, char *argv[]) {
         rte_panic("Cannot init port %u\n", portid);
     RTE_LOG(INFO, LB, "Finished EAL and port initialization\n");
 
-    // Call lcore_txrx directly on the main lcore
-    lcore_txrx(NULL);
+    unsigned rx_core_id = lb_core_id;
+    unsigned tx_core_id = lb_core_id + 1;
+
+    // The main lcore from EAL should be our RX core.
+    if (rte_lcore_id() != rx_core_id) {
+        rte_panic("Main lcore (%u) is not the configured core_id (%u).\n", rte_lcore_id(), rx_core_id);
+    }
+    
+    // Check if TX core is enabled and is a worker core.
+    if (!rte_lcore_is_enabled(tx_core_id) || tx_core_id == rte_get_main_lcore()) {
+        rte_panic("TX core %u is not an enabled worker lcore.\n", tx_core_id);
+    }
+
+    RTE_LOG(INFO, LB, "Launching TX on worker lcore %u...\n", tx_core_id);
+    if (rte_eal_remote_launch(lcore_tx, NULL, tx_core_id) != 0) {
+        rte_panic("Failed to launch TX on lcore %u.", tx_core_id);
+    }
+
+    RTE_LOG(INFO, LB, "Starting RX on main lcore %u...\n", rx_core_id);
+    lcore_rx(NULL); // This will block until quit_signal
+
+    rte_eal_wait_lcore(tx_core_id);
+
+    RTE_LOG(INFO, LB, "All lcores have finished. Exiting.\n");
+
 
     return 0;
 }
@@ -557,8 +591,9 @@ static int parse_full_config(const char *path) {
     }
 
     // Construct the full DPDK args string
-    // Allocate enough memory for "-l<core_id> " + raw_dpdk_args + null terminator
-    int needed_len = snprintf(NULL, 0, "-l%d %s", lb_core_id, raw_dpdk_args) + 1;
+    // Allocate enough memory for "-l<core_id>-<core_id+1> " + raw_dpdk_args + null terminator
+    int tx_core_id = lb_core_id + 1;
+    int needed_len = snprintf(NULL, 0, "-l%d-%d %s", lb_core_id, tx_core_id, raw_dpdk_args) + 1;
     dpdk_config_args = malloc(needed_len);
     if (dpdk_config_args == NULL) {
         RTE_LOG(ERR, LB, "Failed to allocate memory for dpdk_config_args\n");
@@ -566,7 +601,7 @@ static int parse_full_config(const char *path) {
         free(buffer);
         return -1;
     }
-    snprintf(dpdk_config_args, needed_len, "-l%d %s", lb_core_id, raw_dpdk_args);
+    snprintf(dpdk_config_args, needed_len, "-l%d-%d %s", lb_core_id, tx_core_id, raw_dpdk_args);
 
     // Now tokenize dpdk_config_args
     char *s = strdup(dpdk_config_args); // strdup because strtok_r modifies the string
