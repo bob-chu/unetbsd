@@ -355,6 +355,40 @@ static int lcore_tx(void *arg) {
     return 0;
 }
 
+static char* generate_lcores_arg(int base_core_id, int num_cores) {
+    if (num_cores <= 0) {
+        return strdup("");
+    }
+
+    // Estimate buffer size: each entry "L@P," is about 5-8 chars, plus "--lcores ", and null terminator
+    // Max cores is probably 64, so 64 * 8 + 10 = ~522 chars
+    size_t buffer_size = 10; // For "--lcores "
+    // Add space for each core mapping: "L@P,"
+    // Assuming L and P are up to 2 digits, "00@00," is 6 chars. num_cores * 6 + num_cores -1 for commas
+    buffer_size += num_cores * 8; // A bit generous to account for larger core IDs and safety
+
+    char *lcores_str = malloc(buffer_size);
+    if (lcores_str == NULL) {
+        return NULL; // Allocation failed
+    }
+    
+    int offset = snprintf(lcores_str, buffer_size, "--lcores ");
+    if (offset < 0 || (size_t)offset >= buffer_size) {
+        free(lcores_str);
+        return NULL;
+    }
+
+    for (int i = 0; i < num_cores; ++i) {
+        offset += snprintf(lcores_str + offset, buffer_size - offset, "%d@%d%s",
+                           i, base_core_id + i, (i == num_cores - 1) ? "" : ",");
+        if (offset < 0 || (size_t)offset >= buffer_size) {
+            free(lcores_str);
+            return NULL; // Error or buffer too small
+        }
+    }
+    return lcores_str;
+}
+
 static void cleanup_dpdk_config(void) {
     if (dpdk_config_args != NULL) {
         free(dpdk_config_args);
@@ -679,18 +713,45 @@ static int parse_full_config(const char *path) {
         raw_dpdk_args = ""; // Use empty string if no args specified
     }
 
-    // Construct the full DPDK args string
-    // Allocate enough memory for "-l<core_id>-<core_id+n> " + raw_dpdk_args + null terminator
-    int last_core_id = lb_core_id + nb_rx_queues + nb_tx_queues - 1;
-    int needed_len = snprintf(NULL, 0, "-l%d-%d %s", lb_core_id, last_core_id, raw_dpdk_args) + 1;
-    dpdk_config_args = malloc(needed_len);
-    if (dpdk_config_args == NULL) {
-        RTE_LOG(ERR, LB, "Failed to allocate memory for dpdk_config_args\n");
+    // Parse num_clients
+    cJSON *num_clients_item =
+        cJSON_GetObjectItemCaseSensitive(json, "num_clients");
+    if (!cJSON_IsNumber(num_clients_item) || num_clients_item->valueint <= 0 ||
+        num_clients_item->valueint > MAX_CLIENTS) {
+        RTE_LOG(ERR, LB, "Invalid 'num_clients' in config\n");
         cJSON_Delete(json);
         free(buffer);
         return -1;
     }
-    snprintf(dpdk_config_args, needed_len, "-l%d-%d %s", lb_core_id, last_core_id, raw_dpdk_args);
+    num_clients = num_clients_item->valueint;
+
+    if (num_clients > 32) {
+        nb_rx_queues = 2;
+        nb_tx_queues = 2;
+    }
+
+    // Construct the full DPDK args string
+    // Allocate enough memory for the generated --lcores string + raw_dpdk_args + null terminator
+    int num_needed_cores = nb_rx_queues + nb_tx_queues;
+    char *lcores_generated_arg = generate_lcores_arg(lb_core_id, num_needed_cores);
+    if (lcores_generated_arg == NULL) {
+        RTE_LOG(ERR, LB, "Failed to generate --lcores argument string\n");
+        cJSON_Delete(json);
+        free(buffer);
+        return -1;
+    }
+
+    int needed_len = snprintf(NULL, 0, "%s %s", lcores_generated_arg, raw_dpdk_args) + 1;
+    dpdk_config_args = malloc(needed_len);
+    if (dpdk_config_args == NULL) {
+        RTE_LOG(ERR, LB, "Failed to allocate memory for dpdk_config_args\n");
+        free(lcores_generated_arg); // Free the generated arg string
+        cJSON_Delete(json);
+        free(buffer);
+        return -1;
+    }
+    snprintf(dpdk_config_args, needed_len, "%s %s", lcores_generated_arg, raw_dpdk_args);
+    free(lcores_generated_arg); // Free the generated arg string after copying
 
     // Now tokenize dpdk_config_args
     char *s = strdup(dpdk_config_args); // strdup because strtok_r modifies the string
@@ -721,23 +782,6 @@ static int parse_full_config(const char *path) {
 
     if (eal_args_count == MAX_EAL_ARGS) {
         RTE_LOG(WARNING, LB, "Truncated DPDK EAL arguments due to MAX_EAL_ARGS limit.\n");
-    }
-
-    // Parse num_clients
-    cJSON *num_clients_item =
-        cJSON_GetObjectItemCaseSensitive(json, "num_clients");
-    if (!cJSON_IsNumber(num_clients_item) || num_clients_item->valueint <= 0 ||
-        num_clients_item->valueint > MAX_CLIENTS) {
-        RTE_LOG(ERR, LB, "Invalid 'num_clients' in config\n");
-        cJSON_Delete(json);
-        free(buffer);
-        return -1;
-    }
-    num_clients = num_clients_item->valueint;
-
-    if (num_clients > 32) {
-        nb_rx_queues = 2;
-        nb_tx_queues = 2;
     }
 
     // Store clients array for later processing

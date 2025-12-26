@@ -47,7 +47,7 @@ static const char *get_tx_queue_name_lb(unsigned id) {
 
 int dpdk_client_init(dpdk_config_t *dpdk_config) {
     char dpdk_args[512];
-    snprintf(dpdk_args, sizeof(dpdk_args), "-l%d --proc-type=secondary --file-prefix=%s",
+    snprintf(dpdk_args, sizeof(dpdk_args), "--lcores 0@%d --proc-type=secondary --file-prefix=%s",
              dpdk_config->core_id, dpdk_config->iface);
 
     char *dpdk_args_copy = strdup(dpdk_args);
