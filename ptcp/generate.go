@@ -57,45 +57,57 @@ func generateFiles(template string, count int, outputDir string, numaNode int) {
     }
 
     switch template {
-    	case "http_client":
-    		// Need 2 cores for lb_c + count cores for http_client_[id]
-    		need := 2 + count
-    		if len(usable) < need {
-    			fmt.Printf("Not enough CPUs for http_client: need %d, have %d\n", need, len(usable))
-    			return
-    		}
-    		lbCore := usable[0]
-    		clientCores := usable[2 : 2+count]
-    		generateHttpClientWithCores(count, outputDir, lbCore, clientCores)
-    	case "http_server":
-    		// Need 2 cores for lb_s + count cores for http_server_[id]
-    		need := 2 + count
-    		if len(usable) < need {
-    			fmt.Printf("Not enough CPUs for http_server: need %d, have %d\n", need, len(usable))
-    			return
-    		}
-    		lbCore := usable[0]
-    		serverCores := usable[2 : 2+count]
-    		generateHttpServerWithCores(count, outputDir, lbCore, serverCores)
-    	case "both":
-    		// Order:
-    		//   lb_c.core_id (2 cores)
-    		//   http_client_[id].dpdk.core_id (count cores)
-    		//   lb_s.core_id (2 cores)
-    		//   http_server_[id].dpdk.core_id (count cores)
-    		need := 2 + count + 2 + count
-    		if len(usable) < need {
-    			fmt.Printf("Not enough CPUs for both: need %d, have %d\n", need, len(usable))
-    			return
-    		}
+        case "http_client":
+            lbCores := 2
+            if count > 32 {
+                lbCores = 4
+            }
+            // Need lbCores for lb_c + count cores for http_client_[id]
+            need := lbCores + count
+            if len(usable) < need {
+                fmt.Printf("Not enough CPUs for http_client: need %d, have %d\n", need, len(usable))
+                return
+            }
+            lbCore := usable[0]
+            clientCores := usable[lbCores : lbCores+count]
+            generateHttpClientWithCores(count, outputDir, lbCore, clientCores)
+        case "http_server":
+            lbCores := 2
+            if count > 32 {
+                lbCores = 4
+            }
+            // Need lbCores for lb_s + count cores for http_server_[id]
+            need := lbCores + count
+            if len(usable) < need {
+                fmt.Printf("Not enough CPUs for http_server: need %d, have %d\n", need, len(usable))
+                return
+            }
+            lbCore := usable[0]
+            serverCores := usable[lbCores : lbCores+count]
+            generateHttpServerWithCores(count, outputDir, lbCore, serverCores)
+        case "both":
+            lbCores := 2
+            if count > 32 {
+                lbCores = 4
+            }
+            // Order:
+            //   lb_c.core_id (lbCores)
+            //   http_client_[id].dpdk.core_id (count cores)
+            //   lb_s.core_id (lbCores)
+            //   http_server_[id].dpdk.core_id (count cores)
+            need := lbCores + count + lbCores + count
+            if len(usable) < need {
+                fmt.Printf("Not enough CPUs for both: need %d, have %d\n", need, len(usable))
+                return
+            }
     
-    		lbCCore := usable[0]
-    		clientCores := usable[2 : 2+count]
-    		lbSCore := usable[2+count]
-    		serverCores := usable[4+count : 4+2*count]
+            lbCCore := usable[0]
+            clientCores := usable[lbCores : lbCores+count]
+            lbSCore := usable[lbCores+count]
+            serverCores := usable[lbCores+count+lbCores : lbCores+count+lbCores+count]
     
-    		generateHttpClientWithCores(count, outputDir, lbCCore, clientCores)
-    		generateHttpServerWithCores(count, outputDir, lbSCore, serverCores)
+            generateHttpClientWithCores(count, outputDir, lbCCore, clientCores)
+            generateHttpServerWithCores(count, outputDir, lbSCore, serverCores)
     default:
         fmt.Println("Unknown template:", template)
         fmt.Println("Use: generate list")

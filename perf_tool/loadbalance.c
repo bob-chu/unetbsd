@@ -36,6 +36,10 @@
 #include "cJSON.h"
 #include "common.h"
 
+struct lcore_args {
+    uint16_t queue_id;
+};
+
 // Custom structure to hold both IPv4 and IPv6 addresses
 typedef struct {
     uint8_t family; // AF_INET or AF_INET6
@@ -71,8 +75,8 @@ ip_addr_hash_func(const void *key, uint32_t key_len, uint32_t init_val)
 #define BURST_SIZE 64 
 #define JUMBO_FRAME_MAX_SIZE 9600
 
-#define NB_RX_QUEUES 1
-#define NB_TX_QUEUES 1
+static uint16_t nb_rx_queues = 1;
+static uint16_t nb_tx_queues = 1;
 
 static volatile sig_atomic_t quit_signal = 0;
 
@@ -118,7 +122,7 @@ static inline int port_init(uint16_t port, struct rte_mempool *mbuf_pool, struct
         port_conf.txmode.offloads |= RTE_ETH_TX_OFFLOAD_MBUF_FAST_FREE;
 
     retval =
-        rte_eth_dev_configure(port, NB_RX_QUEUES, NB_TX_QUEUES, &port_conf);
+        rte_eth_dev_configure(port, nb_rx_queues, nb_tx_queues, &port_conf);
     if (retval != 0)
         return retval;
 
@@ -126,7 +130,7 @@ static inline int port_init(uint16_t port, struct rte_mempool *mbuf_pool, struct
     if (retval != 0)
         return retval;
 
-    for (q = 0; q < NB_RX_QUEUES; q++) {
+    for (q = 0; q < nb_rx_queues; q++) {
         retval = rte_eth_rx_queue_setup(
             port, q, nb_rxd, rte_eth_dev_socket_id(port), NULL, mbuf_pool);
         if (retval < 0)
@@ -134,7 +138,7 @@ static inline int port_init(uint16_t port, struct rte_mempool *mbuf_pool, struct
     }
     txconf = dev_info.default_txconf;
     txconf.offloads = port_conf.txmode.offloads;
-    for (q = 0; q < NB_TX_QUEUES; q++) {
+    for (q = 0; q < nb_tx_queues; q++) {
         retval = rte_eth_tx_queue_setup(port, q, nb_txd,
                                         rte_eth_dev_socket_id(port), &txconf);
         if (retval < 0)
@@ -198,9 +202,10 @@ void dump_mbuf_hex(struct rte_mbuf *mbuf, char *msg)
 
 
 
-static int lcore_rx(__attribute__((unused)) void *arg) {
+static int lcore_rx(void *arg) {
+    struct lcore_args *my_args = (struct lcore_args *)arg;
+    const uint16_t queue_id = my_args->queue_id;
     const unsigned lcore_id = rte_lcore_id();
-    const uint16_t queue_id = 0;
     struct rte_mbuf *bufs[BURST_SIZE];
     struct rte_mbuf *client_bufs[MAX_CLIENTS][BURST_SIZE];
     uint16_t client_buf_counts[MAX_CLIENTS] = {0};
@@ -308,9 +313,10 @@ static int lcore_rx(__attribute__((unused)) void *arg) {
     return 0;
 }
 
-static int lcore_tx(__attribute__((unused)) void *arg) {
+static int lcore_tx(void *arg) {
+    struct lcore_args *my_args = (struct lcore_args *)arg;
+    const uint16_t queue_id = my_args->queue_id;
     const unsigned lcore_id = rte_lcore_id();
-    const uint16_t queue_id = 0;
     struct rte_mbuf *tx_burst_buffer[BURST_SIZE];
 
     RTE_LOG(INFO, LB, "Starting TX loop on lcore %u, queue %u for %u clients\n",
@@ -503,12 +509,12 @@ int main(int argc, char *argv[]) {
         char ring_name[32];
         snprintf(ring_name, sizeof(ring_name), RX_RING_NAME_TEMPLATE, i);
         rx_rings[i] = rte_ring_create(ring_name, RING_SIZE, rte_socket_id(),
-                                      RING_F_SP_ENQ | RING_F_SC_DEQ);
+                                      0);
         if (rx_rings[i] == NULL)
             rte_panic("Cannot create RX ring %u\n", i);
         snprintf(ring_name, sizeof(ring_name), TX_RING_NAME_TEMPLATE, i);
         tx_rings[i] = rte_ring_create(ring_name, RING_SIZE, rte_socket_id(),
-                                      RING_F_SP_ENQ | RING_F_SC_DEQ);
+                                      0);
         if (tx_rings[i] == NULL)
             rte_panic("Cannot create TX ring %u\n", i);
     }
@@ -517,30 +523,96 @@ int main(int argc, char *argv[]) {
         rte_panic("Cannot init port %u\n", portid);
     RTE_LOG(INFO, LB, "Finished EAL and port initialization\n");
 
-    unsigned rx_core_id = lb_core_id;
-    unsigned tx_core_id = lb_core_id + 1;
-
-    // The main lcore from EAL should be our RX core.
-    if (rte_lcore_id() != rx_core_id) {
-        rte_panic("Main lcore (%u) is not the configured core_id (%u).\n", rte_lcore_id(), rx_core_id);
-    }
-    
-    // Check if TX core is enabled and is a worker core.
-    if (!rte_lcore_is_enabled(tx_core_id) || tx_core_id == rte_get_main_lcore()) {
-        rte_panic("TX core %u is not an enabled worker lcore.\n", tx_core_id);
+    // Ensure the main lcore is the configured lb_core_id
+    if (rte_lcore_id() != lb_core_id) {
+        rte_panic("Main lcore (%u) is not the configured lb_core_id (%u). "
+                  "Please ensure the EAL arguments configure the main lcore "
+                  "correctly (e.g., -l%u).",
+                  rte_lcore_id(), lb_core_id, lb_core_id);
     }
 
-    RTE_LOG(INFO, LB, "Launching TX on worker lcore %u...\n", tx_core_id);
-    if (rte_eal_remote_launch(lcore_tx, NULL, tx_core_id) != 0) {
-        rte_panic("Failed to launch TX on lcore %u.", tx_core_id);
+    unsigned lcores_to_launch = (nb_rx_queues - 1) + nb_tx_queues;
+    if (lcores_to_launch > 0) { // Only if worker cores are needed
+        unsigned int lcore_id_iter;
+        unsigned int worker_lcore_count = 0;
+        RTE_LCORE_FOREACH_WORKER(lcore_id_iter) {
+            worker_lcore_count++;
+        }
+
+        if (worker_lcore_count < lcores_to_launch) {
+            rte_panic("Not enough enabled worker lcores. "
+                      "Needed %u, but found only %u enabled worker lcores. "
+                      "Please adjust EAL core mask (-l option).",
+                      lcores_to_launch, worker_lcore_count);
+        }
     }
 
-    RTE_LOG(INFO, LB, "Starting RX on main lcore %u...\n", rx_core_id);
-    lcore_rx(NULL); // This will block until quit_signal
+    struct lcore_args *args[nb_rx_queues + nb_tx_queues];
+    int arg_idx = 0;
+    unsigned int current_worker_lcore_id;
 
-    rte_eal_wait_lcore(tx_core_id);
+    // Launch additional RX threads (if any) on worker lcores
+    current_worker_lcore_id = rte_get_next_lcore(rte_get_main_lcore(), 1, 0); // Start from first worker lcore
+    for (uint16_t i = 1; i < nb_rx_queues; i++) {
+        if (current_worker_lcore_id == RTE_MAX_LCORE) {
+            rte_panic("Not enough enabled worker lcores to launch RX queue %u. "
+                      "This should have been caught by an earlier check.", i);
+        }
+        
+        args[arg_idx] = malloc(sizeof(struct lcore_args));
+        if (args[arg_idx] == NULL) {
+            rte_panic("Failed to allocate memory for lcore_args.\n");
+        }
+        args[arg_idx]->queue_id = i;
+        RTE_LOG(INFO, LB, "Launching RX on worker lcore %u, queue %u...\n", current_worker_lcore_id, i);
+        if (rte_eal_remote_launch(lcore_rx, args[arg_idx], current_worker_lcore_id) != 0) {
+            rte_panic("Failed to launch RX on lcore %u.", current_worker_lcore_id);
+        }
+        arg_idx++;
+        current_worker_lcore_id = rte_get_next_lcore(current_worker_lcore_id, 1, 0); // Get next worker lcore
+    }
+
+    // Launch TX threads on worker lcores
+    for (uint16_t i = 0; i < nb_tx_queues; i++) {
+        if (current_worker_lcore_id == RTE_MAX_LCORE) {
+            rte_panic("Not enough enabled worker lcores to launch TX queue %u. "
+                      "This should have been caught by an earlier check.", i);
+        }
+
+        args[arg_idx] = malloc(sizeof(struct lcore_args));
+        if (args[arg_idx] == NULL) {
+            rte_panic("Failed to allocate memory for lcore_args.\n");
+        }
+        args[arg_idx]->queue_id = i;
+        RTE_LOG(INFO, LB, "Launching TX on worker lcore %u, queue %u...\n", current_worker_lcore_id, i);
+        if (rte_eal_remote_launch(lcore_tx, args[arg_idx], current_worker_lcore_id) != 0) {
+            rte_panic("Failed to launch TX on lcore %u.", current_worker_lcore_id);
+        }
+        arg_idx++;
+        current_worker_lcore_id = rte_get_next_lcore(current_worker_lcore_id, 1, 0); // Get next worker lcore
+    }
+
+    // Start RX on the main lcore (queue 0)
+    args[arg_idx] = malloc(sizeof(struct lcore_args));
+    if (args[arg_idx] == NULL) {
+        rte_panic("Failed to allocate memory for lcore_args.\n");
+    }
+    args[arg_idx]->queue_id = 0;
+    RTE_LOG(INFO, LB, "Starting RX on main lcore %u, queue 0...\n", rte_lcore_id());
+    lcore_rx(args[arg_idx]); // This will block until quit_signal
+    arg_idx++;
+
+    // Wait for all worker lcores to finish
+    unsigned lcore_id_wait;
+    RTE_LCORE_FOREACH_WORKER(lcore_id_wait) {
+        rte_eal_wait_lcore(lcore_id_wait);
+    }
 
     RTE_LOG(INFO, LB, "All lcores have finished. Exiting.\n");
+
+    for (int i = 0; i < arg_idx; i++) {
+        free(args[i]);
+    }
 
 
     return 0;
@@ -608,9 +680,9 @@ static int parse_full_config(const char *path) {
     }
 
     // Construct the full DPDK args string
-    // Allocate enough memory for "-l<core_id>-<core_id+1> " + raw_dpdk_args + null terminator
-    int tx_core_id = lb_core_id + 1;
-    int needed_len = snprintf(NULL, 0, "-l%d-%d %s", lb_core_id, tx_core_id, raw_dpdk_args) + 1;
+    // Allocate enough memory for "-l<core_id>-<core_id+n> " + raw_dpdk_args + null terminator
+    int last_core_id = lb_core_id + nb_rx_queues + nb_tx_queues - 1;
+    int needed_len = snprintf(NULL, 0, "-l%d-%d %s", lb_core_id, last_core_id, raw_dpdk_args) + 1;
     dpdk_config_args = malloc(needed_len);
     if (dpdk_config_args == NULL) {
         RTE_LOG(ERR, LB, "Failed to allocate memory for dpdk_config_args\n");
@@ -618,7 +690,7 @@ static int parse_full_config(const char *path) {
         free(buffer);
         return -1;
     }
-    snprintf(dpdk_config_args, needed_len, "-l%d-%d %s", lb_core_id, tx_core_id, raw_dpdk_args);
+    snprintf(dpdk_config_args, needed_len, "-l%d-%d %s", lb_core_id, last_core_id, raw_dpdk_args);
 
     // Now tokenize dpdk_config_args
     char *s = strdup(dpdk_config_args); // strdup because strtok_r modifies the string
@@ -662,6 +734,11 @@ static int parse_full_config(const char *path) {
         return -1;
     }
     num_clients = num_clients_item->valueint;
+
+    if (num_clients > 32) {
+        nb_rx_queues = 2;
+        nb_tx_queues = 2;
+    }
 
     // Store clients array for later processing
     cJSON *clients_array_item = cJSON_GetObjectItemCaseSensitive(json, "clients");
