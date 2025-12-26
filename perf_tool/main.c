@@ -149,7 +149,7 @@ int main(int argc, char *argv[]) {
                 free_config(&config);
                 return 1;
             }
-            open_dpdk_client_interface(dpdk_config->iface, config.l2.mac_address);
+            open_dpdk_client_interface(dpdk_config->iface);
         } else {
             char dpdk_args[512];
             snprintf(dpdk_args, sizeof(dpdk_args), "-l%d %s", dpdk_config->core_id, dpdk_config->args);

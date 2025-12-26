@@ -13,7 +13,7 @@
 int dpdk_client_init(dpdk_config_t *dpdk_config);
 uint16_t dpdk_client_read(void);
 int dpdk_client_send_packet(struct rte_mbuf *m);
-void open_dpdk_client_interface(char *if_name, char *mac_addr_str);
+void open_dpdk_client_interface(char *if_name);
 
 // External declarations for rings and mempool
 extern struct rte_ring *lb_rx_ring;

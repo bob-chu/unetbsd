@@ -34,6 +34,7 @@
 #include <rte_byteorder.h> // Added to resolve RTE_BE16_TO_CPU
 
 #include "cJSON.h"
+#include "common.h"
 
 // Custom structure to hold both IPv4 and IPv6 addresses
 typedef struct {
@@ -92,7 +93,7 @@ static int parse_full_config(const char *path); // Forward declaration
 
 static int init_client_hash_table(void); // Forward declaration for client hash table initialization
 
-static inline int port_init(uint16_t port, struct rte_mempool *mbuf_pool) {
+static inline int port_init(uint16_t port, struct rte_mempool *mbuf_pool, struct lb_shared_info *shared_info) {
     struct rte_eth_conf port_conf;
     uint16_t nb_rxd = RX_RING_SIZE;
     uint16_t nb_txd = TX_RING_SIZE;
@@ -152,6 +153,9 @@ static inline int port_init(uint16_t port, struct rte_mempool *mbuf_pool) {
             "Port %u MAC: %02" PRIx8 " %02" PRIx8 " %02" PRIx8 " %02" PRIx8
             " %02" PRIx8 " %02" PRIx8 "\n",
             port, RTE_ETHER_ADDR_BYTES(&addr));
+
+	shared_info->port_mac = addr;
+
     retval = rte_eth_promiscuous_enable(port);
     if (retval != 0)
         return retval;
@@ -467,9 +471,21 @@ int main(int argc, char *argv[]) {
         ret = rte_eal_init(argc, argv);
     }
     
-    if (ret < 0)
+    if (ret < 0) {
         rte_panic("Cannot init EAL\n");
+    }
     
+	const struct rte_memzone *mz;
+    struct lb_shared_info *shared_info;
+
+    mz = rte_memzone_reserve(LB_SHARED_MEMZONE, sizeof(struct lb_shared_info),
+                             rte_socket_id(), 0);
+    if (mz == NULL) {
+        rte_panic("Cannot reserve memzone for shared info\n");
+    }
+    shared_info = (struct lb_shared_info *)mz->addr;
+
+
     if (init_client_hash_table() < 0)
         rte_panic("Failed to initialize client hash table");
 
@@ -497,7 +513,7 @@ int main(int argc, char *argv[]) {
             rte_panic("Cannot create TX ring %u\n", i);
     }
 
-    if (port_init(portid, mbuf_pool) != 0)
+    if (port_init(portid, mbuf_pool, shared_info) != 0)
         rte_panic("Cannot init port %u\n", portid);
     RTE_LOG(INFO, LB, "Finished EAL and port initialization\n");
 
