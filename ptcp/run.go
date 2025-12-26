@@ -369,6 +369,34 @@ func runPrepare(buildDir, configDir string) {
 			go cmdLbS.Wait()
 		}
 
+
+		fmt.Println("Waiting 1 second before starting clients...")
+		time.Sleep(2 * time.Second)
+	}
+
+	// Run client-side components if lb_c.json exists
+	if _, err := os.Stat(lbClientConfig); err == nil {
+		fmt.Println("Starting client-side components...")
+
+		// Run lb_c
+		cmdLbC := exec.Command(lbPath, lbClientConfig)
+		cmdLbC.Stdout = os.Stdout
+		cmdLbC.Stderr = os.Stderr
+		cmdLbC.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+		if err := cmdLbC.Start(); err != nil {
+			fmt.Println("Error starting lb_c:", err)
+		} else {
+			pids = append(pids, cmdLbC.Process.Pid)
+			fmt.Printf("Started lb_c with PID: %d\n", cmdLbC.Process.Pid)
+			go cmdLbC.Wait()
+		}
+
+	}
+
+	// Run server-side components if lb_s.json exists
+	if _, err := os.Stat(lbServerConfig); err == nil {
+		fmt.Println("Starting server-side components...")
+
 		// Read num_clients from lb_s.json
 		data, err := os.ReadFile(lbServerConfig)
 		if err != nil {
@@ -399,25 +427,12 @@ func runPrepare(buildDir, configDir string) {
 		}
 
 		fmt.Println("Waiting 1 second before starting clients...")
-		time.Sleep(1 * time.Second)
+		time.Sleep(2 * time.Second)
 	}
 
 	// Run client-side components if lb_c.json exists
 	if _, err := os.Stat(lbClientConfig); err == nil {
 		fmt.Println("Starting client-side components...")
-
-		// Run lb_c
-		cmdLbC := exec.Command(lbPath, lbClientConfig)
-		cmdLbC.Stdout = os.Stdout
-		cmdLbC.Stderr = os.Stderr
-		cmdLbC.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-		if err := cmdLbC.Start(); err != nil {
-			fmt.Println("Error starting lb_c:", err)
-		} else {
-			pids = append(pids, cmdLbC.Process.Pid)
-			fmt.Printf("Started lb_c with PID: %d\n", cmdLbC.Process.Pid)
-			go cmdLbC.Wait()
-		}
 
 		// Read num_clients from lb_c.json
 		data, err := os.ReadFile(lbClientConfig)
@@ -447,6 +462,7 @@ func runPrepare(buildDir, configDir string) {
 				}
 			}
 		}
+		time.Sleep(2 * time.Second)
 	}
 
 	// Save pids to file

@@ -59,13 +59,14 @@ ip_addr_hash_func(const void *key, uint32_t key_len, uint32_t init_val)
 #define MAX_CLIENTS 128
 #define RX_RING_NAME_TEMPLATE "LB_RX_RING_%u"
 #define TX_RING_NAME_TEMPLATE "LB_TX_RING_%u"
-#define RING_SIZE (1024 * 4)
-#define IP_HASH_ENTRIES 1024
+#define RING_SIZE (1024)
+#define IP_HASH_ENTRIES (1024*2)
 #define MAX_EAL_ARGS 64 // Max number of DPDK EAL arguments
 
 
-#define RX_RING_SIZE 1024
-#define TX_RING_SIZE 1024
+#define RX_RING_SIZE 1024/2
+#define TX_RING_SIZE 1024/2
+#define MBUFS_PER_WORKER (RX_RING_SIZE+TX_RING_SIZE)
 #define NUM_MBUFS (8191 * 8)
 #define MBUF_CACHE_SIZE 250
 #define BURST_SIZE 64 
@@ -105,8 +106,9 @@ static inline int port_init(uint16_t port, struct rte_mempool *mbuf_pool, struct
         return -1;
 
     memset(&port_conf, 0, sizeof(struct rte_eth_conf));
-    port_conf.rxmode.mq_mode =
-        RTE_ETH_MQ_RX_NONE; // No RSS when handling traffic to specific clients
+    port_conf.rxmode.mq_mode = RTE_ETH_MQ_RX_RSS; // Enable RSS
+    port_conf.rx_adv_conf.rss_conf.rss_hf =
+        RTE_ETH_RSS_IP | RTE_ETH_RSS_UDP | RTE_ETH_RSS_TCP; // Enable RSS for IP, UDP, TCP
 
     retval = rte_eth_dev_info_get(port, &dev_info);
     if (retval != 0) {
@@ -196,8 +198,6 @@ void dump_mbuf_hex(struct rte_mbuf *mbuf, char *msg)
     }
 }
 
-
-
 static int lcore_rx(__attribute__((unused)) void *arg) {
     const unsigned lcore_id = rte_lcore_id();
     const uint16_t queue_id = 0;
@@ -213,6 +213,8 @@ static int lcore_rx(__attribute__((unused)) void *arg) {
         uint16_t nb_rx = rte_eth_rx_burst(0, queue_id, bufs, BURST_SIZE);
         if (nb_rx > 0) {
             for (uint16_t i = 0; i < nb_rx; i++) {
+                rte_prefetch0(rte_pktmbuf_mtod(bufs[i], void *));
+
                 struct rte_ether_hdr *eth_hdr = rte_pktmbuf_mtod(bufs[i], struct rte_ether_hdr *);
                 ip_addr_t dst_ip;
                 int32_t *client_id_ptr;
@@ -260,8 +262,6 @@ static int lcore_rx(__attribute__((unused)) void *arg) {
                 ret_hash = rte_hash_lookup_data(
                     ip_to_client_table, &dst_ip, (void **)&client_id_ptr);
                 if (ret_hash < 0) {
-                    printf("No client found for destination IP. Dropping "
-                            "packet.\n");
                     rte_pktmbuf_free(bufs[i]);
                     continue;
                 }
@@ -493,8 +493,18 @@ int main(int argc, char *argv[]) {
     if (nb_ports < 1)
         rte_panic("No Ethernet ports found\n");
 
+
+    unsigned num_mbufs = (4 * (RING_SIZE + RING_SIZE)) + (num_clients * MBUFS_PER_WORKER);
+    int i = 0;
+    while (num_mbufs) {
+        i++;
+        num_mbufs >>= 1;
+    }
+
+    num_mbufs = (1 << i) - 1;
+
     mbuf_pool = rte_pktmbuf_pool_create(
-        "MBUF_POOL", NUM_MBUFS * nb_ports, MBUF_CACHE_SIZE, 0,
+        "MBUF_POOL", num_mbufs, MBUF_CACHE_SIZE, 0,
         JUMBO_FRAME_MAX_SIZE + RTE_PKTMBUF_HEADROOM, rte_socket_id());
     if (mbuf_pool == NULL)
         rte_panic("Cannot create mbuf pool\n");
