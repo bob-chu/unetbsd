@@ -5,11 +5,14 @@
 #include <rte_common.h> // For RTE_SET_USED
 #include <rte_lcore.h> // For rte_lcore_id
 #include <rte_ethdev.h>
+#include <rte_memzone.h>
 
 #include "config.h"
 #include "logger.h" // Assuming LOG_ERROR, LOG_INFO are here
 #include "dpdk_client.h"
 #include "u_if.h"
+#include "common.h"
+
 
 #include <stdlib.h>
 #include <string.h>
@@ -22,6 +25,8 @@
 struct rte_ring *lb_rx_ring; // Client's RX ring from Load Balancer
 struct rte_ring *lb_tx_ring; // Client's TX ring to Load Balancer
 struct rte_mempool *pkt_mbuf_pool; // New global mempool
+
+struct lb_shared_info *shared_info;
 
 static struct virt_interface *v_if;
 // Helper to get RX ring name from Load Balancer's perspective
@@ -86,6 +91,14 @@ int dpdk_client_init(dpdk_config_t *dpdk_config) {
     }
     LOG_INFO("Found TX ring: %s:%p\n", tx_ring_name, lb_tx_ring);
 
+    const struct rte_memzone *mz = rte_memzone_lookup(LB_SHARED_MEMZONE);
+    if (mz == NULL) {
+        LOG_ERROR("Cannot find memzone: %s\n", LB_SHARED_MEMZONE);
+        return -1;
+    }
+    shared_info = (struct lb_shared_info *)mz->addr;
+
+
     // Lookup or create Mbuf Pool based on process type
     if (proc_type == RTE_PROC_PRIMARY) {
         // Assuming single port and single process for client if it's primary
@@ -141,20 +154,6 @@ int dpdk_client_send_packet(struct rte_mbuf *m) {
     return 0;
 }
 
-int str_to_rte_ether_addr(const char *mac_str, struct rte_ether_addr *mac) {
-    unsigned int bytes[6];
-    if (sscanf(mac_str, "%x:%x:%x:%x:%x:%x",
-               &bytes[0], &bytes[1], &bytes[2],
-               &bytes[3], &bytes[4], &bytes[5]) != 6) {
-        return -1; // parse error
-    }
-
-    for (int i = 0; i < 6; i++) {
-        mac->addr_bytes[i] = (uint8_t)bytes[i];
-    }
-    return 0;
-}
-
 int dpdk_client_if_output(void *m, long unsigned int total, void *arg)
 {
 #define MAX_OUT_MBUFS 8
@@ -193,12 +192,10 @@ out:
 /*
  * virt_interface
  */
-void open_dpdk_client_interface(char *if_name, char *mac_addr_str)
+void open_dpdk_client_interface(char *if_name)
 {
     v_if = virt_if_create(if_name);
-    struct rte_ether_addr addr;
-    str_to_rte_ether_addr(mac_addr_str, &addr);
-    virt_if_attach(v_if, (const uint8_t *)&addr);
+    virt_if_attach(v_if, (const uint8_t *)&shared_info->port_mac);
 
     virt_if_register_callbacks(v_if, dpdk_client_if_output, NULL);
 }

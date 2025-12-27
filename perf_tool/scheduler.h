@@ -4,6 +4,7 @@
 #include "config.h"
 #include <ev.h>
 #include <stdint.h>
+#include <stdbool.h> // Added for bool type
 #include "metrics.h"
 
 typedef enum {
@@ -36,5 +37,8 @@ const stats_t *scheduler_get_stats(void);
 double scheduler_get_current_time(void);
 double scheduler_get_current_phase_start_time(void);
 void scheduler_check_phase_transition(const char *role);
+void scheduler_set_paused(bool paused); // New declaration
+bool scheduler_is_paused(void); // New declaration
+const char **scheduler_get_phase_names(void); // New declaration
 
 #endif // SCHEDULER_H

@@ -143,16 +143,38 @@ func initStaticCommands() {
 			Description: "Run a test",
 			Sub: []*Command{
 				{
-					Name:        "start",
-					Description: "Start a test. Usage: run start <build_dir> <config_dir>",
+					Name:        "prepare", // Renamed
+					Description: "Prepare a test environment. Usage: run prepare <build_dir> <config_dir>", // Updated description
 					Run: func(args []string) {
 						if len(args) < 2 {
-							fmt.Println("Usage: run start <build_dir> <config_dir>")
+							fmt.Println("Usage: run prepare <build_dir> <config_dir>") // Updated usage
 							return
 						}
 						buildDir := args[0]
 						configDir := args[1]
-						runStart(buildDir, configDir)
+						runPrepare(buildDir, configDir) // Calls new function
+					},
+				},
+				{
+					Name:        "start", // New command
+					Description: "Start a prepared test.", // New description
+					Run: func(args []string) {
+						// No args needed for this one, as it signals already running processes
+						runStartTest() // Calls new function
+					},
+				},
+				{
+					Name:        "get_stats", // New command
+					Description: "Get statistics from all clients/servers.",
+					Run: func(args []string) {
+						runGetStats() // Calls new function
+					},
+				},
+				{
+					Name:        "check", // New command
+					Description: "Check if all clients/servers are ready.",
+					Run: func(args []string) {
+						runCheck() // Calls new function
 					},
 				},
 				{

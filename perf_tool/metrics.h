@@ -24,6 +24,7 @@
 #define DEC(STRUCT_VAR, field)   ((STRUCT_VAR).field--)
 #define ADD(STRUCT_VAR, field, val)   ((STRUCT_VAR).field += (val))
 #define SUB(STRUCT_VAR, field, val)   ((STRUCT_VAR).field -= (val))
+#define SET(STRUCT_VAR, field, val)   ((STRUCT_VAR).field = (val))
 
 typedef struct {
 #define X(name) uint64_t name;
@@ -37,13 +38,17 @@ extern metrics_t g_metrics;
 #define METRIC_DEC(field)   DEC(g_metrics, field)
 #define METRIC_ADD(field, val)   ADD(g_metrics, field, val)
 #define METRIC_SUB(field, val)   SUB(g_metrics, field, val)
+#define METRIC_SET(field, val)   SET(g_metrics, field, val)
 
 #define STATS_FIELDS \
+    X(target_connections) \
     X(connections_opened) \
     X(connections_closed) \
     X(requests_sent) \
     X(responses_received) \
-    X(tcp_concurrent)
+    X(tcp_concurrent) \
+    X(success_count) \
+    X(failure_count)
 
 #define STATS_HTTP_FIELDS \
     X(http_conn_fails) \
@@ -76,11 +81,18 @@ extern metrics_t g_metrics;
     X(tcp_bytes_sent) \
     X(tcp_bytes_received) \
     X(tcp_alloc_pool) \
-    X(tcp_return_pool)
+    X(tcp_return_pool) \
+    X(cps)
 
 #define STATS_UDP_FIELDS \
     X(udp_bytes_sent) \
     X(udp_bytes_received)
+
+#define STATS_PHASE_FIELD \
+    X(client_role) \
+    X(server_role) \
+    X(time_index) \
+    X(current_phase)
 
 typedef struct {
 #define X(name) uint64_t name;
@@ -88,16 +100,17 @@ typedef struct {
     STATS_HTTP_FIELDS
     STATS_TCP_FIELDS
     STATS_UDP_FIELDS
+    STATS_PHASE_FIELD
 #undef X
 } stats_t;
 
-extern stats_t g_stats;
-// Stats macros using generic operations
-#define STATS_INC(field)        INC(g_stats, field)
-#define STATS_DEC(field)        DEC(g_stats, field)
-#define STATS_ADD(field, val)   ADD(g_stats, field, val)
-#define STATS_SUB(field, val)   SUB(g_stats, field, val)
-
+extern stats_t *g_current_stats;
+// Stats macros using global pointer
+#define STATS_INC(field)        INC(*g_current_stats, field)
+#define STATS_DEC(field)        DEC(*g_current_stats, field)
+#define STATS_ADD(field, val)   ADD(*g_current_stats, field, val)
+#define STATS_SUB(field, val)   SUB(*g_current_stats, field, val)
+#define STATS_SET(field, val)   SET(*g_current_stats, field, val)
 
 void metrics_init(void);
 void metrics_report(void);
@@ -112,5 +125,6 @@ void metrics_update_cps_https(uint64_t cps);
 void metrics_update_bytes_sent(uint64_t bytes);
 void metrics_update_bytes_received(uint64_t bytes);
 void metrics_reset_bytes_per_second(void);
+void metrics_set_stats(stats_t *stats);
 
 #endif // METRICS_H

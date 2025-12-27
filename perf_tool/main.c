@@ -4,7 +4,9 @@
 #include <sys/prctl.h>
 #include <arpa/inet.h>
 #include <stdlib.h>
+#include <getopt.h>
 
+#include <signal.h>
 #include <ev.h>
 #include <init.h>
 
@@ -16,8 +18,14 @@
 #include "client.h"
 #include "metrics.h"
 #include "scheduler.h"
+#include "pipe_client.h"
 
 struct ev_loop *g_main_loop;
+
+static void sig_cb(EV_P_ ev_signal *w, int revents) {
+    printf("Received signal %d, cleaning up and exiting.\n", w->signum);
+    ev_break(loop, EVBREAK_ALL);
+}
 
 static void timer_10ms_cb(EV_P_ ev_timer *w, int revents)
 {
@@ -48,13 +56,53 @@ static void idle_cb(EV_P_ ev_idle *w, int revents) {
 }
 
 int main(int argc, char *argv[]) {
-    const char *mode = argv[1];
-    const char *config_path = argv[2];
+    char *mode = NULL;
+    char *config_path = NULL;
+    char *socket_path = NULL;
 
-    if (argc != 3) {
-        fprintf(stderr, "Usage: %s <client|server|standalone> <config.json>\n", argv[0]);
+    g_main_loop = ev_default_loop(0);
+
+    ev_signal sigint_watcher;
+    ev_signal_init(&sigint_watcher, sig_cb, SIGINT);
+    ev_signal_start(g_main_loop, &sigint_watcher);
+
+    ev_signal sigterm_watcher;
+    ev_signal_init(&sigterm_watcher, sig_cb, SIGTERM);
+    ev_signal_start(g_main_loop, &sigterm_watcher);
+
+    int opt;
+    int option_index = 0;
+    static struct option long_options[] = {
+        {"socket-path", required_argument, 0, 's'},
+        {0, 0, 0, 0}
+    };
+
+    // Parse command-line arguments using getopt_long
+    while ((opt = getopt_long(argc, argv, "s:", long_options, &option_index)) != -1) {
+        switch (opt) {
+            case 's':
+                socket_path = optarg;
+                break;
+            case '?':
+                fprintf(stderr, "Usage: %s [options] <client|server|standalone> <config.json>\n", argv[0]);
+                return 1;
+        }
+    }
+
+    // After getopt_long, optind is the index of the first non-option argument
+    // There should be two non-option arguments: mode and config_path
+    if (argc - optind < 2) {
+        fprintf(stderr, "Usage: %s [options] <client|server|standalone> <config.json>\n", argv[0]);
         return 1;
     }
+
+    mode = argv[optind];
+    config_path = argv[optind + 1];
+
+    logger_init();
+    logger_set_level(LOG_LEVEL_WARN);
+    //logger_set_level(LOG_LEVEL_DEBUG);
+    logger_enable_colors(1);
 
     printf("Starting in %s mode with config file: %s\n", mode, config_path);
 
@@ -66,14 +114,10 @@ int main(int argc, char *argv[]) {
 
     printf("Config parsed successfully.\n");
 
-    logger_init();
-    logger_set_level(LOG_LEVEL_WARN);
-    //logger_set_level(LOG_LEVEL_DEBUG);
-    logger_enable_colors(1);
-
     metrics_init();
 
     netbsd_init();
+
 
     sysctl_tun("tcp_msl_loop", 1);      // 0.5 seconds (PR_SLOWHZ=2)
     sysctl_tun("tcp_msl_local", 1);     // 1 second
@@ -119,7 +163,7 @@ int main(int argc, char *argv[]) {
                 free_config(&config);
                 return 1;
             }
-            open_dpdk_client_interface(dpdk_config->iface, config.l2.mac_address);
+            open_dpdk_client_interface(dpdk_config->iface);
         } else {
             char dpdk_args[512];
             snprintf(dpdk_args, sizeof(dpdk_args), "-l%d %s", dpdk_config->core_id, dpdk_config->args);
@@ -130,7 +174,7 @@ int main(int argc, char *argv[]) {
             char *token = strtok(dpdk_args_copy, " ");
             while (token != NULL && dpdk_argc < 63) {
                 dpdk_argv[dpdk_argc++] = token;
-                token = strtok(NULL, " ");
+               	token = strtok(NULL, " ");
             }
             dpdk_argv[dpdk_argc] = NULL;
 
@@ -177,7 +221,15 @@ int main(int argc, char *argv[]) {
 
     set_mtu(config.interface.mtu);
 
-    g_main_loop = EV_DEFAULT;
+    if (socket_path) {
+        printf("Using socket path: %s\n", socket_path);
+        int is_client = (strcmp(mode, "client") == 0) ? 1 : 0;
+        int offset_index = is_client ? config.dpdk_client.client_ring_idx : config.dpdk_server.client_ring_idx;
+        pipe_client_init(g_main_loop, socket_path, is_client, offset_index);
+        scheduler_set_paused(true); // Pause scheduler if pipe socket is enabled
+    }
+
+    //g_main_loop = EV_DEFAULT;
     ev_timer timer_10ms_watcher;
     ev_timer timer_1s_watcher;
     ev_idle idle_watcher;

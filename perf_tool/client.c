@@ -133,14 +133,14 @@ static void client_idle_cb(EV_P_ ev_timer *w, int revents) {
 
     if (strcmp(type, "TCP_CONCURRENT") == 0 || strcmp(type, "HTTP_REQUESTS") == 0) {
 #if 0
-        int excess = (int)g_stats.tcp_concurrent - g_current_target_connections;
+        int excess = (int)g_current_stats->tcp_concurrent - g_current_target_connections;
         if (excess > 0) {
             http_client_close_excess_connections(excess);
         }
 #endif
-        int connections_to_create = g_current_target_connections - (int)g_stats.tcp_concurrent;
+        int connections_to_create = g_current_target_connections - (int)g_current_stats->tcp_concurrent;
         for (int i = 0; i < connections_to_create; i++) {
-            if (g_stats.tcp_concurrent >= (uint64_t)g_current_target_connections) {
+            if (g_current_stats->tcp_concurrent >= (uint64_t)g_current_target_connections) {
                 break;
             }
             create_http_connection(EV_A_ config);
