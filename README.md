@@ -71,3 +71,61 @@ This project can be built using either Make or Meson.
     meson setup build -Duse_dpdk=true --reconfigure
     ninja -C build
     ```
+
+## Performance
+
+Performance test results for Connections Per Second (CPS).
+
+### memif interface
+
+| Cores | CPS   |
+|-------|-------|
+| 1     | 48K   |
+| 2     | 87K   |
+| 4     | 137K  |
+| 8     | 270K  |
+| 16    | 457K  |
+| 32    | 850K  |
+| 40    | 1.05M |
+| 50    | 1.25M |
+
+#### memif interface performance graph
+
+```
+      1 Core  (48K)   | ##
+      2 Cores (87K)   | ###
+      4 Cores (137K)  | #####
+      8 Cores (270K)  | ###########
+      16 Cores(457K)  | ##################
+      32 Cores(850K)  | ##################################
+      40 Cores(1.05M) | ##########################################
+      50 Cores(1.25M) | ##################################################
+(Each # represents approximately 25K CPS)
+```
+
+### mlx card (cx6) interface
+
+| Cores | CPS   |
+|-------|-------|
+| 1     | 45K   |
+| 2     | 83K   |
+| 4     | 130K  |
+| 8     | 265K  |
+| 16    | 445K  |
+| 32    | 850K  |
+| 40    | 890K  |
+| 50    | 890K  |
+
+#### mlx card (cx6) interface performance graph
+
+```
+      1 Core  (45K)   | ##
+      2 Cores (83K)   | ###
+      4 Cores (130K)  | #####
+      8 Cores (265K)  | ###########
+      16 Cores(445K)  | ##################
+      32 Cores(850K)  | ##################################
+      40 Cores(890K)  | ####################################
+      50 Cores(890K)  | ####################################
+(Each # represents approximately 25K CPS)
+```
