@@ -32,6 +32,7 @@
 #include <rte_per_lcore.h>
 #include <rte_ring.h>
 #include <rte_byteorder.h> // Added to resolve RTE_BE16_TO_CPU
+#include <rte_errno.h>
 
 #include "cJSON.h"
 #include "common.h"
@@ -64,8 +65,8 @@ ip_addr_hash_func(const void *key, uint32_t key_len, uint32_t init_val)
 #define MAX_EAL_ARGS 64 // Max number of DPDK EAL arguments
 
 
-#define RX_RING_SIZE 1024/2
-#define TX_RING_SIZE 1024/2
+#define RX_RING_SIZE 1024
+#define TX_RING_SIZE 1024
 #define MBUFS_PER_WORKER (RX_RING_SIZE+TX_RING_SIZE)
 #define NUM_MBUFS (8191 * 8)
 #define MBUF_CACHE_SIZE 250
@@ -74,6 +75,9 @@ ip_addr_hash_func(const void *key, uint32_t key_len, uint32_t init_val)
 
 #define NB_RX_QUEUES 1
 #define NB_TX_QUEUES 1
+
+#define LINK_CHECK_INTERVAL_MS 100
+#define MAX_LINK_CHECKS 100 /* 100 * 100ms = 10s */
 
 static volatile sig_atomic_t quit_signal = 0;
 
@@ -94,6 +98,40 @@ static int parse_full_config(const char *path); // Forward declaration
 
 static int init_client_hash_table(void); // Forward declaration for client hash table initialization
 
+/* Check and print the link status of @port_id in up to 2s */
+static void check_eth_link_status(uint8_t port_id)
+{
+#define CHECK_INTERVAL 100 /* 100ms */
+#define MAX_CHECK_TIME 20 /* 2s (20 * 100ms) in total */
+    uint8_t count, print_flag = 0;
+    struct rte_eth_link link;
+
+    printf("Checking link status... ");
+    for (count = 0; count <= MAX_CHECK_TIME; count++) {
+        memset(&link, 0, sizeof(link));
+        rte_eth_link_get_nowait(port_id, &link);
+
+        if (print_flag == 1) {
+            if (link.link_status)
+                printf("Port %d Link Up - speed %u Mbps - %s\n", port_id,
+                      (unsigned)link.link_speed,
+                      (link.link_duplex == RTE_ETH_LINK_FULL_DUPLEX) ?
+                      ("full-duplex") : ("half-duplex"));
+            else
+                printf("Port %d Link Down.\n", port_id);
+
+            break;
+        }
+
+        /* wait and retry if the link is down */
+        if (link.link_status == RTE_ETH_LINK_DOWN && count < (MAX_CHECK_TIME - 1)) {
+            rte_delay_ms(CHECK_INTERVAL);
+        } else {
+            print_flag = 1;
+        }
+    }
+}
+
 static inline int port_init(uint16_t port, struct rte_mempool *mbuf_pool, struct lb_shared_info *shared_info) {
     struct rte_eth_conf port_conf;
     uint16_t nb_rxd = RX_RING_SIZE;
@@ -104,6 +142,9 @@ static inline int port_init(uint16_t port, struct rte_mempool *mbuf_pool, struct
     struct rte_eth_txconf txconf;
     if (!rte_eth_dev_is_valid_port(port))
         return -1;
+    
+    // Stop device in case it was not properly stopped
+    rte_eth_dev_stop(port);
 
     memset(&port_conf, 0, sizeof(struct rte_eth_conf));
     port_conf.rxmode.mq_mode = RTE_ETH_MQ_RX_RSS; // Enable RSS
@@ -145,6 +186,9 @@ static inline int port_init(uint16_t port, struct rte_mempool *mbuf_pool, struct
     retval = rte_eth_dev_start(port);
     if (retval < 0)
         return retval;
+
+    rte_eth_dev_set_link_up(0);
+    check_eth_link_status(0);
 
     struct rte_ether_addr addr;
     retval = rte_eth_macaddr_get(port, &addr);
@@ -198,9 +242,15 @@ void dump_mbuf_hex(struct rte_mbuf *mbuf, char *msg)
     }
 }
 
-static int lcore_rx(__attribute__((unused)) void *arg) {
+
+struct lcore_arg {
+	uint16_t queue_id;
+};
+
+static int lcore_rx(void *arg) {
+    struct lcore_arg *l_arg = (struct lcore_arg *)arg;
+    const uint16_t queue_id = l_arg->queue_id;
     const unsigned lcore_id = rte_lcore_id();
-    const uint16_t queue_id = 0;
     struct rte_mbuf *bufs[BURST_SIZE];
     struct rte_mbuf *client_bufs[MAX_CLIENTS][BURST_SIZE];
     uint16_t client_buf_counts[MAX_CLIENTS] = {0};
@@ -221,7 +271,7 @@ static int lcore_rx(__attribute__((unused)) void *arg) {
                 int ret_hash;
                 uint16_t eth_type = rte_be_to_cpu_16(eth_hdr->ether_type);
 
-                memset(&dst_ip, 0, sizeof(ip_addr_t));
+                //memset(&dst_ip, 0, sizeof(ip_addr_t));
 
                 if (eth_type == RTE_ETHER_TYPE_IPV4) {
                     struct rte_ipv4_hdr *ipv4_hdr =
@@ -281,7 +331,6 @@ static int lcore_rx(__attribute__((unused)) void *arg) {
                             rte_pktmbuf_free(client_bufs[client_id][j]);
                         }
                     }
-                    ;//printf("Send %d pkts to client: %d\n", nb_enqueued, client_id);
                     client_buf_counts[client_id] = 0;
                 }
             }
@@ -299,55 +348,81 @@ static int lcore_rx(__attribute__((unused)) void *arg) {
                         rte_pktmbuf_free(client_bufs[i][j]);
                     }
                 }
-                ;//printf("Send %d pkts to client: %d\n", nb_enqueued, i);
                 client_buf_counts[i] = 0;
             }
         }
     }
-    RTE_LOG(INFO, LB, "Lcore %u (RX) exiting.\n", lcore_id);
+    RTE_LOG(INFO, LB, "Lcore %u (RX, queue %u) exiting.\n", lcore_id, queue_id);
+	if (l_arg) {
+		free(l_arg);
+	}
     return 0;
 }
 
-static int lcore_tx(__attribute__((unused)) void *arg) {
+static int lcore_tx(void *arg) {
+    struct lcore_arg *l_arg = (struct lcore_arg *)arg;
+    const uint16_t queue_id = l_arg->queue_id;
     const unsigned lcore_id = rte_lcore_id();
-    const uint16_t queue_id = 0;
     struct rte_mbuf *tx_burst_buffer[BURST_SIZE];
 
     RTE_LOG(INFO, LB, "Starting TX loop on lcore %u, queue %u for %u clients\n",
             lcore_id, queue_id, num_clients);
 
     while (!quit_signal) {
-        /* TX path: Aggregate packets from all clients into a single burst */
+		/* TX path: Dequeue from rings and send */
         uint16_t nb_to_tx = 0;
         for (unsigned i = 0; i < num_clients; i++) {
-            uint16_t space_left = BURST_SIZE - nb_to_tx;
-            if (space_left == 0)
-                break;
-            uint16_t nb_dequeued = rte_ring_dequeue_burst(
-                tx_rings[i], (void **)&tx_burst_buffer[nb_to_tx], space_left,
-                NULL);
-            nb_to_tx += nb_dequeued;
+            for (;;) {
+                uint16_t space_left = BURST_SIZE - nb_to_tx;
+                if (space_left == 0) {
+                    // Buffer full, send it
+                    uint16_t nb_tx = rte_eth_tx_burst(0, queue_id, tx_burst_buffer, nb_to_tx);
+                    if (nb_tx < nb_to_tx) {
+						RTE_LOG(
+							WARNING, LB,
+							"Failed to send all packets to NIC. Dropping %u packets.\n",
+							nb_to_tx - nb_tx);
+                        for (uint16_t j = nb_tx; j < nb_to_tx; j++) {
+                            rte_pktmbuf_free(tx_burst_buffer[j]);
+                        }
+                    }
+                    nb_to_tx = 0;
+                    continue; // Try to dequeue from the same ring again
+                }
+
+                uint16_t nb_dequeued = rte_ring_dequeue_burst(
+                    tx_rings[i], (void **)&tx_burst_buffer[nb_to_tx], space_left, NULL);
+                
+                if (nb_dequeued == 0) {
+                    // Ring i is empty, move to next ring
+                    break; 
+                }
+                
+                nb_to_tx += nb_dequeued;
+            }
         }
 
+        // Send any remaining packets
         if (nb_to_tx > 0) {
-            uint16_t nb_tx =
-                rte_eth_tx_burst(0, queue_id, tx_burst_buffer, nb_to_tx);
+            uint16_t nb_tx = rte_eth_tx_burst(0, queue_id, tx_burst_buffer, nb_to_tx);
             if (nb_tx < nb_to_tx) {
-                RTE_LOG(
-                    WARNING, LB,
-                    "Failed to send all packets to NIC. Dropping %u packets.\n",
-                    nb_to_tx - nb_tx);
+				RTE_LOG(
+					WARNING, LB,
+					"Failed to send all packets to NIC. Dropping %u packets.\n",
+					nb_to_tx - nb_tx);
                 for (uint16_t j = nb_tx; j < nb_to_tx; j++) {
                     rte_pktmbuf_free(tx_burst_buffer[j]);
                 }
-            } else {
-                ;//printf("Send out %d pkts\n", nb_tx);
             }
         }
     }
-    RTE_LOG(INFO, LB, "Lcore %u (TX) exiting.\n", lcore_id);
+    RTE_LOG(INFO, LB, "Lcore %u (TX, queue %u) exiting.\n", lcore_id, queue_id);
+	if (l_arg) {
+		free(l_arg);
+	}
     return 0;
 }
+
 
 static void cleanup_dpdk_config(void) {
     if (dpdk_config_args != NULL) {
@@ -494,7 +569,7 @@ int main(int argc, char *argv[]) {
         rte_panic("No Ethernet ports found\n");
 
 
-    unsigned num_mbufs = (4 * (RING_SIZE + RING_SIZE)) + (num_clients * MBUFS_PER_WORKER);
+    unsigned num_mbufs = (8 * (RING_SIZE + RING_SIZE)) + (num_clients * MBUFS_PER_WORKER);
     int i = 0;
     while (num_mbufs) {
         i++;
@@ -510,7 +585,7 @@ int main(int argc, char *argv[]) {
         rte_panic("Cannot create mbuf pool\n");
 
     for (unsigned i = 0; i < num_clients; i++) {
-        char ring_name[32];
+        char ring_name[64];
         snprintf(ring_name, sizeof(ring_name), RX_RING_NAME_TEMPLATE, i);
         rx_rings[i] = rte_ring_create(ring_name, RING_SIZE, rte_socket_id(),
                                       RING_F_SP_ENQ | RING_F_SC_DEQ);
@@ -527,31 +602,46 @@ int main(int argc, char *argv[]) {
         rte_panic("Cannot init port %u\n", portid);
     RTE_LOG(INFO, LB, "Finished EAL and port initialization\n");
 
-    unsigned rx_core_id = lb_core_id;
-    unsigned tx_core_id = lb_core_id + 1;
+    unsigned core1_id = lb_core_id;
+    unsigned core2_id = lb_core_id + 1;
 
-    // The main lcore from EAL should be our RX core.
-    if (rte_lcore_id() != rx_core_id) {
-        rte_panic("Main lcore (%u) is not the configured core_id (%u).\n", rte_lcore_id(), rx_core_id);
+    // The main lcore from EAL should be our first core.
+    if (rte_lcore_id() != core1_id) {
+        rte_panic("Main lcore (%u) is not the configured core_id (%u).\n", rte_lcore_id(), core1_id);
     }
     
-    // Check if TX core is enabled and is a worker core.
-    if (!rte_lcore_is_enabled(tx_core_id) || tx_core_id == rte_get_main_lcore()) {
-        rte_panic("TX core %u is not an enabled worker lcore.\n", tx_core_id);
+    // Check if the second core is enabled and is a worker core.
+    if (!rte_lcore_is_enabled(core2_id) || core2_id == rte_get_main_lcore()) {
+        rte_panic("Second core %u is not an enabled worker lcore.\n", core2_id);
     }
 
-    RTE_LOG(INFO, LB, "Launching TX on worker lcore %u...\n", tx_core_id);
-    if (rte_eal_remote_launch(lcore_tx, NULL, tx_core_id) != 0) {
-        rte_panic("Failed to launch TX on lcore %u.", tx_core_id);
+    struct lcore_arg *arg_tx = malloc(sizeof(struct lcore_arg));
+	if (!arg_tx) {
+		rte_panic("cannot allocate memory for lcore arg2\n");
+	}
+    arg_tx->queue_id = 0;
+
+    RTE_LOG(INFO, LB, "Launching TX on worker lcore %u (queue 1)...\n", core2_id);
+    if (rte_eal_remote_launch(lcore_tx, arg_tx, core2_id) != 0) {
+		free(arg_tx);
+        rte_panic("Failed to launch TX on lcore %u.", core2_id);
     }
 
-    RTE_LOG(INFO, LB, "Starting RX on main lcore %u...\n", rx_core_id);
-    lcore_rx(NULL); // This will block until quit_signal
+    struct lcore_arg *arg_rx = malloc(sizeof(struct lcore_arg));
+	if (!arg_rx) {
+		rte_panic("cannot allocate memory for lcore arg1\n");
+	}
+    arg_rx->queue_id = 0;
+    RTE_LOG(INFO, LB, "Starting RX on main lcore %u (queue 0)...\n", core1_id);
+    lcore_rx(arg_rx); // This will block until quit_signal
 
-    rte_eal_wait_lcore(tx_core_id);
+    rte_eal_wait_lcore(core2_id);
 
     RTE_LOG(INFO, LB, "All lcores have finished. Exiting.\n");
 
+    RTE_LOG(INFO, LB, "Stopping port %u...\n", portid);
+    rte_eth_dev_stop(portid);
+    rte_eth_dev_close(portid);
 
     return 0;
 }

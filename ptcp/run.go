@@ -371,7 +371,7 @@ func runPrepare(buildDir, configDir string) {
 
 
 		fmt.Println("Waiting 1 second before starting clients...")
-		time.Sleep(2 * time.Second)
+		time.Sleep(5 * time.Second)
 	}
 
 	// Run client-side components if lb_c.json exists
@@ -390,7 +390,7 @@ func runPrepare(buildDir, configDir string) {
 			fmt.Printf("Started lb_c with PID: %d\n", cmdLbC.Process.Pid)
 			go cmdLbC.Wait()
 		}
-
+		time.Sleep(5 * time.Second)
 	}
 
 	// Run server-side components if lb_s.json exists
@@ -427,7 +427,7 @@ func runPrepare(buildDir, configDir string) {
 		}
 
 		fmt.Println("Waiting 1 second before starting clients...")
-		time.Sleep(2 * time.Second)
+		time.Sleep(5 * time.Second)
 	}
 
 	// Run client-side components if lb_c.json exists
@@ -462,7 +462,7 @@ func runPrepare(buildDir, configDir string) {
 				}
 			}
 		}
-		time.Sleep(2 * time.Second)
+		time.Sleep(5 * time.Second)
 	}
 
 	// Save pids to file
@@ -587,30 +587,82 @@ func runStop() {
 		return
 	}
 
+	// Terminate all processes gracefully
 	for _, pid := range pids {
 		process, err := os.FindProcess(pid)
 		if err != nil {
 			fmt.Println("Error finding process:", pid, err)
 			continue
 		}
-		if err := process.Kill(); err != nil {
-			// On Unix, Process.Kill always returns an error.
-			// We can check if the process is still alive.
-			if err.Error() != "os: process already finished" {
-				// To check if process is still running, we send signal 0
-				errSig := process.Signal(syscall.Signal(0))
-				if errSig == nil {
-					fmt.Println("Error killing process:", pid, err)
-				} else {
-					fmt.Println("Process", pid, "killed.")
-				}
+		fmt.Printf("Sending SIGTERM to process %d for graceful shutdown...\n", pid)
+		if err := process.Signal(syscall.SIGTERM); err != nil {
+			if err.Error() == "os: process already finished" || strings.Contains(err.Error(), "no such process") {
+				fmt.Printf("Process %d already finished or does not exist.\n", pid)
 			} else {
-				fmt.Println("Process", pid, "already finished.")
+				fmt.Printf("Error sending SIGTERM to process %d: %v\n", pid, err)
 			}
-		} else {
-			fmt.Println("Process", pid, "killed.")
 		}
 	}
+
+	// Wait for a short period to allow for graceful shutdown
+	fmt.Println("Waiting for 2 seconds...")
+	time.Sleep(2 * time.Second)
+
+	// Force kill any remaining processes
+	for _, pid := range pids {
+		process, err := os.FindProcess(pid)
+		if err != nil {
+			// Already handled in the first loop
+			continue
+		}
+
+		// Check if process is still running by sending signal 0
+		err = process.Signal(syscall.Signal(0))
+		if err == nil {
+			fmt.Printf("Process %d did not terminate, forcing kill with SIGKILL...\n", pid)
+			if killErr := process.Kill(); killErr != nil {
+				if killErr.Error() == "os: process already finished" || strings.Contains(killErr.Error(), "no such process") {
+					fmt.Printf("Process %d was killed.\n", pid)
+				} else {
+					fmt.Printf("Error sending SIGKILL to process %d: %v\n", pid, killErr)
+				}
+			} else {
+				fmt.Printf("Process %d killed.\n", pid)
+			}
+		}
+	}
+
+	// Wait for all processes to exit
+	fmt.Println("Waiting for all processes to exit...")
+	var wg sync.WaitGroup
+	for _, pid := range pids {
+		wg.Add(1)
+		go func(p int) {
+			defer wg.Done()
+			process, err := os.FindProcess(p)
+			if err != nil {
+				return // process not found
+			}
+
+			// Poll until the process is gone
+			for {
+				err := process.Signal(syscall.Signal(0))
+				if err != nil {
+					if err.Error() == "os: process already finished" || strings.Contains(err.Error(), "no such process") {
+						fmt.Printf("Process %d has exited.\n", p)
+						break // Process is gone
+					}
+					// Some other error
+					fmt.Printf("Error checking process %d: %v\n", p, err)
+					break
+				}
+				// Process still exists, wait a bit
+				time.Sleep(100 * time.Millisecond)
+			}
+		}(pid)
+	}
+	wg.Wait()
+	fmt.Println("All processes have exited.")
 
 	// Clear the pid file
 	if err := os.Remove(pidFile); err != nil && !os.IsNotExist(err) {

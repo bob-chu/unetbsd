@@ -14,6 +14,7 @@
 #include <sys/stat.h> // For fstat
 #include "../perf_tool/deps/cjson/cJSON.h" // For JSON processing
 #include <sys/stat.h>
+#include <signal.h>
 #include "common.h"
 
 #define DEFAULT_MAX_CLIENTS 10
@@ -68,6 +69,11 @@ static void client_io_cb(struct ev_loop *loop, ev_io *w, int revents);
 static void remove_client(int idx);
 static void send_aggregated_stats_response(int fd); // New forward declaration
 static void forward_to_clients(const char *message, size_t len); // New forward declaration
+
+static void sig_cb(struct ev_loop *loop, ev_signal *w, int revents) {
+    printf("Received signal %d, cleaning up and exiting.\n", w->signum);
+    ev_break(loop, EVBREAK_ALL);
+}
 
 static void stats_timer_cb(struct ev_loop *loop, ev_timer *w, int revents) {
     if (g_ptm.test_running && g_ptm.ptcp_fd != -1) {
@@ -207,6 +213,15 @@ int main(int argc, char *argv[]) {
     g_server_stats_size = sizeof(stats_t) * max_clients_servers;
 
     g_ptm.loop = EV_DEFAULT;
+
+    ev_signal sigint_watcher;
+    ev_signal_init(&sigint_watcher, sig_cb, SIGINT);
+    ev_signal_start(g_ptm.loop, &sigint_watcher);
+
+    ev_signal sigterm_watcher;
+    ev_signal_init(&sigterm_watcher, sig_cb, SIGTERM);
+    ev_signal_start(g_ptm.loop, &sigterm_watcher);
+
     g_ptm.ptcp_socket_path = ptcp_socket_path;
     g_ptm.ptm_socket_path = ptm_socket_path;
     g_ptm.ptcp_fd = ptcp_fd_local;

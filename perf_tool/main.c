@@ -6,6 +6,7 @@
 #include <stdlib.h>
 #include <getopt.h>
 
+#include <signal.h>
 #include <ev.h>
 #include <init.h>
 
@@ -20,6 +21,11 @@
 #include "pipe_client.h"
 
 struct ev_loop *g_main_loop;
+
+static void sig_cb(EV_P_ ev_signal *w, int revents) {
+    printf("Received signal %d, cleaning up and exiting.\n", w->signum);
+    ev_break(loop, EVBREAK_ALL);
+}
 
 static void timer_10ms_cb(EV_P_ ev_timer *w, int revents)
 {
@@ -55,6 +61,14 @@ int main(int argc, char *argv[]) {
     char *socket_path = NULL;
 
     g_main_loop = ev_default_loop(0);
+
+    ev_signal sigint_watcher;
+    ev_signal_init(&sigint_watcher, sig_cb, SIGINT);
+    ev_signal_start(g_main_loop, &sigint_watcher);
+
+    ev_signal sigterm_watcher;
+    ev_signal_init(&sigterm_watcher, sig_cb, SIGTERM);
+    ev_signal_start(g_main_loop, &sigterm_watcher);
 
     int opt;
     int option_index = 0;
