@@ -374,6 +374,7 @@ ptcp_sources = files(
   'ptcp/tree.go',
   'ptcp/generate.go',
   'ptcp/run.go',
+  'ptcp/web.go',
 )
 
 ptcp_exe = custom_target(

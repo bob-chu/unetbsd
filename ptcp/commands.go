@@ -184,6 +184,13 @@ func initStaticCommands() {
 						runStop()
 					},
 				},
+				{
+					Name:        "get_state",
+					Description: "Get the current state of the test.",
+					Run: func(args []string) {
+						fmt.Println(getState())
+					},
+				},
 			},
 		},
 	}

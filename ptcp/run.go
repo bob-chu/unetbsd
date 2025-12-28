@@ -1,17 +1,17 @@
 package main
 
 import (
+	"bufio"
 	"encoding/json"
 	"fmt"
 	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
+	"sync" // Added for mutex
 	"syscall"
 	"time"
-	"sync" // Added for mutex
-	"strings" // Added for string manipulation
-	"bufio"
 )
 
 var pidFile = filepath.Join(os.TempDir(), "ptcp_pids.json")
@@ -22,6 +22,41 @@ var socketListener net.Listener
 var activeConns = make(map[net.Conn]bool)
 var activeConnsMutex sync.Mutex
 
+// State management
+type State string
+
+const (
+	StateIdle       State = "IDLE"
+	StatePreparing  State = "PREPARING"
+	StatePrepared   State = "PREPARED"
+	StateChecking   State = "CHECKING"   // New
+	StateChecked    State = "CHECKED"    // New
+	StateStarting   State = "STARTING"
+	StateRunning    State = "RUNNING"
+	StateStopping   State = "STOPPING"
+	StateStopped    State = "STOPPED"
+	StateError      State = "ERROR"
+	StateRunDone    State = "RUN_DONE"   // New
+)
+
+var (
+	currentState State = StateIdle
+	stateMutex   sync.Mutex
+)
+
+func setState(newState State) {
+	stateMutex.Lock()
+	defer stateMutex.Unlock()
+	currentState = newState
+	fmt.Printf("State changed to: %s\n", currentState)
+}
+
+func getState() State {
+	stateMutex.Lock()
+	defer stateMutex.Unlock()
+	return currentState
+}
+
 // Stats tracking
 var statsMutex sync.Mutex
 
@@ -31,10 +66,11 @@ type roleStats struct {
 }
 
 type clientConnectionContext struct {
-	Ready         bool
-	Client        roleStats
-	Server        roleStats
+	Ready  bool
+	Client roleStats
+	Server roleStats
 }
+
 var clientConnectionContexts = make(map[net.Conn]*clientConnectionContext)
 
 // handleClientConnection manages a single client connection, reading messages and updating status
@@ -56,8 +92,7 @@ func handleClientConnection(c net.Conn) {
 			// Error reading or connection closed by client
 			return
 		}
-
-		//fmt.Printf("Received from client %s: %s\n", c.RemoteAddr().String(), message)
+		//fmt.Print(message)
 		message = strings.TrimSpace(message)
 		if len(message) == 0 {
 			continue
@@ -101,23 +136,23 @@ func handleClientConnection(c net.Conn) {
 				currentTimeIndex = uint64(ti)
 			}
 
-						statsMutex.Lock() // Protect shared stdout and connContext access
+			statsMutex.Lock() // Protect shared stdout and connContext access
 
 			var statsOutput strings.Builder
 			statsOutput.WriteString(fmt.Sprintf("Stats from %s (%s): ", c.RemoteAddr().String(), roleName))
 
 			// Define the keys we consider important
 			importantKeys := []string{
-				"time_index",               // test time index
-				"current_phase",            // current phase name
-				"target_connections",       // target connections for client
-				"tcp_concurrent",           // current concurrent connections
-				"connections_opened",       // total connections opened
-				"requests_sent",            // total requests sent
-				"success_count",            // total successful ops
-				"failure_count",            // total failed ops
-				"tcp_bytes_sent",           // total bytes sent
-				"tcp_bytes_received",       // total bytes received
+				"time_index",
+				"current_phase",
+				"target_connections",
+				"tcp_concurrent",
+				"connections_opened",
+				"requests_sent",
+				"success_count",
+				"failure_count",
+				"tcp_bytes_sent",
+				"tcp_bytes_received",
 			}
 
 			timeDelta := int64(0)
@@ -130,10 +165,9 @@ func handleClientConnection(c net.Conn) {
 				if !ok {
 					continue // Skip missing keys
 				}
-				// Only handle numeric values (JSON numbers are unmarshaled as float64)
 				if f, okNum := val.(float64); okNum {
 					currentVal := uint64(f)
-					previousVal := currentRoleStats.LastStats[key] // Will be 0 if not set
+					previousVal := currentRoleStats.LastStats[key]
 
 					isRateKey := key == "connections_opened" || key == "requests_sent" || key == "tcp_bytes_sent" || key == "tcp_bytes_received"
 
@@ -173,6 +207,9 @@ func handleClientConnection(c net.Conn) {
 			connContext.Ready = false
 			activeConnsMutex.Unlock()
 			fmt.Printf("Client %s reported NOT ready.\n", c.RemoteAddr().String())
+		case message == "done":
+			fmt.Println("PTM reported: Test is done.")
+			setState(StateRunDone)
 		default:
 			fmt.Printf("Unknown message from client %s: %s\n", c.RemoteAddr().String(), message)
 		}
@@ -180,7 +217,6 @@ func handleClientConnection(c net.Conn) {
 }
 
 func startSocketServer() error {
-	// Clean up any old socket file
 	if err := os.Remove(ptcpToPtmSocketPath); err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("error removing old socket file: %w", err)
 	}
@@ -212,7 +248,7 @@ func startSocketServer() error {
 			activeConnsMutex.Lock()
 			activeConns[conn] = true
 			clientConnectionContexts[conn] = &clientConnectionContext{
-				Ready: false,
+				Ready:  false,
 				Client: roleStats{LastStats: make(map[string]uint64), LastTimeIndex: 0},
 				Server: roleStats{LastStats: make(map[string]uint64), LastTimeIndex: 0},
 			}
@@ -220,18 +256,20 @@ func startSocketServer() error {
 
 			fmt.Printf("Accepted connection from: %s\n", conn.RemoteAddr().Network())
 
-			go handleClientConnection(conn) // Start handling the connection
+			go handleClientConnection(conn)
 		}
 	}()
 	return nil
 }
 
 func runStartTest() {
+	setState(StateStarting)
 	activeConnsMutex.Lock()
 	defer activeConnsMutex.Unlock()
 
 	if len(activeConns) == 0 {
 		fmt.Println("No perf_tool instances connected to start the test.")
+		setState(StateError) // Changed from StatePrepared to StateError
 		return
 	}
 
@@ -245,6 +283,7 @@ func runStartTest() {
 
 	if !allReady {
 		fmt.Println("Test cannot start: Not all perf_tool instances are ready.")
+		setState(StateError) // Changed from StatePrepared to StateError
 		return
 	}
 
@@ -254,12 +293,15 @@ func runStartTest() {
 		_, err := conn.Write([]byte(message))
 		if err != nil {
 			fmt.Println("Error writing 'run' to socket:", err)
-			conn.Close() // This will trigger the defer in the connection's goroutine to remove it from activeConns
+			conn.Close()
+			setState(StateError)
+			return
 		} else {
 			fmt.Printf("Sent '%s' command to %s\n", message, conn.RemoteAddr().Network())
 		}
 	}
 	fmt.Println("Test start command sent to all ready instances.")
+	setState(StateRunning)
 }
 
 func stopSocketServer() {
@@ -273,50 +315,51 @@ func stopSocketServer() {
 }
 
 func runPrepare(buildDir, configDir string) {
+	setState(StatePreparing)
 	if err := startSocketServer(); err != nil {
 		fmt.Println("Failed to start socket server:", err)
+		setState(StateError)
 		return
 	}
 
-	// Calculate max_clients_clients and max_clients_servers from config
 	var maxClientsClients int
 	var maxClientsServers int
 
-	// Run server-side components if lb_s.json exists
 	lbServerConfig := filepath.Join(configDir, "lb_s.json")
 	if _, err := os.Stat(lbServerConfig); err == nil {
-		// Read num_clients from lb_s.json
 		data, err := os.ReadFile(lbServerConfig)
 		if err != nil {
 			fmt.Println("Error reading lb_s.json:", err)
-		} else {
-			var lbConfig map[string]interface{}
-			if err := json.Unmarshal(data, &lbConfig); err != nil {
-				fmt.Println("Error unmarshalling lb_s.json:", err)
-			} else {
-				if numServers, ok := lbConfig["num_clients"].(float64); ok {
-					maxClientsServers = int(numServers)
-				}
-			}
+			setState(StateError)
+			return
+		}
+		var lbConfig map[string]interface{}
+		if err := json.Unmarshal(data, &lbConfig); err != nil {
+			fmt.Println("Error unmarshalling lb_s.json:", err)
+			setState(StateError)
+			return
+		}
+		if numServers, ok := lbConfig["num_clients"].(float64); ok {
+			maxClientsServers = int(numServers)
 		}
 	}
 
-	// Run client-side components if lb_c.json exists
 	lbClientConfig := filepath.Join(configDir, "lb_c.json")
 	if _, err := os.Stat(lbClientConfig); err == nil {
-		// Read num_clients from lb_c.json
 		data, err := os.ReadFile(lbClientConfig)
 		if err != nil {
 			fmt.Println("Error reading lb_c.json:", err)
-		} else {
-			var lbConfig map[string]interface{}
-			if err := json.Unmarshal(data, &lbConfig); err != nil {
-				fmt.Println("Error unmarshalling lb_c.json:", err)
-			} else {
-				if numClients, ok := lbConfig["num_clients"].(float64); ok {
-					maxClientsClients = int(numClients)
-				}
-			}
+			setState(StateError)
+			return
+		}
+		var lbConfig map[string]interface{}
+		if err := json.Unmarshal(data, &lbConfig); err != nil {
+			fmt.Println("Error unmarshalling lb_c.json:", err)
+			setState(StateError)
+			return
+		}
+		if numClients, ok := lbConfig["num_clients"].(float64); ok {
+			maxClientsClients = int(numClients)
 		}
 	}
 
@@ -329,7 +372,6 @@ func runPrepare(buildDir, configDir string) {
 
 	var pids []int
 
-	// Start ptm
 	ptmPath := filepath.Join(buildDir, "ptm")
 	cmdPtm := exec.Command(ptmPath, "--ptcp-socket", ptcpToPtmSocketPath, "--ptm-socket", ptmSocketPath, "--max-clients-clients", fmt.Sprintf("%d", maxClientsClients), "--max-clients-servers", fmt.Sprintf("%d", maxClientsServers))
 	cmdPtm.Stdout = os.Stdout
@@ -338,6 +380,7 @@ func runPrepare(buildDir, configDir string) {
 	if err := cmdPtm.Start(); err != nil {
 		fmt.Println("Error starting ptm:", err)
 		stopSocketServer()
+		setState(StateError)
 		return
 	}
 	go cmdPtm.Wait()
@@ -347,189 +390,220 @@ func runPrepare(buildDir, configDir string) {
 	lbPath := filepath.Join(buildDir, "lb")
 	perfToolPath := filepath.Join(buildDir, "perf_tool")
 
-	// Clear the pid file
 	if err := os.Remove(pidFile); err != nil && !os.IsNotExist(err) {
 		fmt.Println("Error clearing pid file:", err)
 	}
 
-	// Run server-side components if lb_s.json exists
 	if _, err := os.Stat(lbServerConfig); err == nil {
 		fmt.Println("Starting server-side components...")
-
-		// Run lb_s
 		cmdLbS := exec.Command(lbPath, lbServerConfig)
 		cmdLbS.Stdout = os.Stdout
 		cmdLbS.Stderr = os.Stderr
 		cmdLbS.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 		if err := cmdLbS.Start(); err != nil {
 			fmt.Println("Error starting lb_s:", err)
-		} else {
-			pids = append(pids, cmdLbS.Process.Pid)
-			fmt.Printf("Started lb_s with PID: %d\n", cmdLbS.Process.Pid)
-			go cmdLbS.Wait()
+			setState(StateError)
+			return
 		}
-
-
-		fmt.Println("Waiting 1 second before starting clients...")
+		pids = append(pids, cmdLbS.Process.Pid)
+		fmt.Printf("Started lb_s with PID: %d\n", cmdLbS.Process.Pid)
+		go cmdLbS.Wait()
 		time.Sleep(5 * time.Second)
 	}
 
-	// Run client-side components if lb_c.json exists
 	if _, err := os.Stat(lbClientConfig); err == nil {
 		fmt.Println("Starting client-side components...")
-
-		// Run lb_c
 		cmdLbC := exec.Command(lbPath, lbClientConfig)
 		cmdLbC.Stdout = os.Stdout
 		cmdLbC.Stderr = os.Stderr
 		cmdLbC.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 		if err := cmdLbC.Start(); err != nil {
 			fmt.Println("Error starting lb_c:", err)
-		} else {
-			pids = append(pids, cmdLbC.Process.Pid)
-			fmt.Printf("Started lb_c with PID: %d\n", cmdLbC.Process.Pid)
-			go cmdLbC.Wait()
+			setState(StateError)
+			return
 		}
+		pids = append(pids, cmdLbC.Process.Pid)
+		fmt.Printf("Started lb_c with PID: %d\n", cmdLbC.Process.Pid)
+		go cmdLbC.Wait()
 		time.Sleep(5 * time.Second)
 	}
 
-	// Run server-side components if lb_s.json exists
 	if _, err := os.Stat(lbServerConfig); err == nil {
-		fmt.Println("Starting server-side components...")
-
-		// Read num_clients from lb_s.json
 		data, err := os.ReadFile(lbServerConfig)
 		if err != nil {
 			fmt.Println("Error reading lb_s.json:", err)
-		} else {
-			var lbConfig map[string]interface{}
-			if err := json.Unmarshal(data, &lbConfig); err != nil {
-				fmt.Println("Error unmarshalling lb_s.json:", err)
-			} else {
-				if numServers, ok := lbConfig["num_clients"].(float64); ok {
-					for i := 0; i < int(numServers); i++ {
-						serverConfig := filepath.Join(configDir, fmt.Sprintf("http_server_%d.json", i))
-						cmdServer := exec.Command(perfToolPath, "server", serverConfig, "--socket-path", ptmSocketPath)
-						cmdServer.Stdout = nil 
-						//cmdServer.Stdout = os.Stdout
-						cmdServer.Stderr = os.Stderr
-						cmdServer.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-						if err := cmdServer.Start(); err != nil {
-							fmt.Println("Error starting http_server:", err)
-						} else {
-							pids = append(pids, cmdServer.Process.Pid)
-							fmt.Printf("Started http_server_%d with PID: %d\n", i, cmdServer.Process.Pid)
-							go cmdServer.Wait()
-						}
-					}
+			setState(StateError)
+			return
+		}
+		var lbConfig map[string]interface{}
+		if err := json.Unmarshal(data, &lbConfig); err != nil {
+			fmt.Println("Error unmarshalling lb_s.json:", err)
+			setState(StateError)
+			return
+		}
+		if numServers, ok := lbConfig["num_clients"].(float64); ok {
+			for i := 0; i < int(numServers); i++ {
+				serverConfig := filepath.Join(configDir, fmt.Sprintf("http_server_%d.json", i))
+				cmdServer := exec.Command(perfToolPath, "server", serverConfig, "--socket-path", ptmSocketPath)
+				//cmdServer.Stdout = nil
+				cmdServer.Stdout = os.Stdout
+				cmdServer.Stderr = os.Stderr
+				cmdServer.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+				if err := cmdServer.Start(); err != nil {
+					fmt.Println("Error starting http_server:", err)
+					setState(StateError)
+					return
 				}
+				pids = append(pids, cmdServer.Process.Pid)
+				fmt.Printf("Started http_server_%d with PID: %d\n", i, cmdServer.Process.Pid)
+				go cmdServer.Wait()
 			}
 		}
-
-		fmt.Println("Waiting 1 second before starting clients...")
 		time.Sleep(5 * time.Second)
 	}
 
-	// Run client-side components if lb_c.json exists
 	if _, err := os.Stat(lbClientConfig); err == nil {
-		fmt.Println("Starting client-side components...")
-
-		// Read num_clients from lb_c.json
 		data, err := os.ReadFile(lbClientConfig)
 		if err != nil {
 			fmt.Println("Error reading lb_c.json:", err)
-		} else {
-			var lbConfig map[string]interface{}
-			if err := json.Unmarshal(data, &lbConfig); err != nil {
-				fmt.Println("Error unmarshalling lb_c.json:", err)
-			} else {
-				if numClients, ok := lbConfig["num_clients"].(float64); ok {
-					for i := 0; i < int(numClients); i++ {
-						clientConfig := filepath.Join(configDir, fmt.Sprintf("http_client_%d.json", i))
-						cmdClient := exec.Command(perfToolPath, "client", clientConfig, "--socket-path", ptmSocketPath)
-						cmdClient.Stdout = nil 
-						//cmdClient.Stdout = os.Stdout
-						cmdClient.Stderr = os.Stderr
-						cmdClient.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-						if err := cmdClient.Start(); err != nil {
-							fmt.Println("Error starting http_client:", err)
-						} else {
-							pids = append(pids, cmdClient.Process.Pid)
-							fmt.Printf("Started http_client_%d with PID: %d\n", i, cmdClient.Process.Pid)
-							go cmdClient.Wait()
-						}
-					}
+			setState(StateError)
+			return
+		}
+		var lbConfig map[string]interface{}
+		if err := json.Unmarshal(data, &lbConfig); err != nil {
+			fmt.Println("Error unmarshalling lb_c.json:", err)
+			setState(StateError)
+			return
+		}
+		if numClients, ok := lbConfig["num_clients"].(float64); ok {
+			for i := 0; i < int(numClients); i++ {
+				clientConfig := filepath.Join(configDir, fmt.Sprintf("http_client_%d.json", i))
+				cmdClient := exec.Command(perfToolPath, "client", clientConfig, "--socket-path", ptmSocketPath)
+				//cmdClient.Stdout = nil
+				cmdClient.Stdout = os.Stdout
+				cmdClient.Stderr = os.Stderr
+				cmdClient.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+				if err := cmdClient.Start(); err != nil {
+					fmt.Println("Error starting http_client:", err)
+					setState(StateError)
+					return
 				}
+				pids = append(pids, cmdClient.Process.Pid)
+				fmt.Printf("Started http_client_%d with PID: %d\n", i, cmdClient.Process.Pid)
+				go cmdClient.Wait()
 			}
 		}
 		time.Sleep(5 * time.Second)
 	}
 
-	// Save pids to file
 	pidData, err := json.Marshal(pids)
 	if err != nil {
 		fmt.Println("Error marshalling pids:", err)
-	} else {
-		if err := os.WriteFile(pidFile, pidData, 0644); err != nil {
-			fmt.Println("Error writing pid file:", err)
-		}
+		setState(StateError)
+		return
 	}
+	if err := os.WriteFile(pidFile, pidData, 0644); err != nil {
+		fmt.Println("Error writing pid file:", err)
+		setState(StateError)
+		return
+	}
+	setState(StatePrepared)
+}
+
+// waitForAllClientsReady polls clientConnectionContexts to confirm all connected clients have reported Ready.
+func waitForAllClientsReady(timeout time.Duration, interval time.Duration) bool {
+	start := time.Now()
+	for time.Since(start) < timeout {
+		allReady := true
+		// Lock to safely iterate and check clientConnectionContexts
+		activeConnsMutex.Lock()
+		if len(activeConns) == 0 {
+			activeConnsMutex.Unlock()
+			return false // No clients to wait for
+		}
+		for _, ctx := range clientConnectionContexts {
+			if !ctx.Ready {
+				allReady = false
+				break
+			}
+		}
+		activeConnsMutex.Unlock()
+
+		if allReady {
+			return true
+		}
+		time.Sleep(interval)
+	}
+	return false // Timeout
 }
 
 func runCheck() {
-	activeConnsMutex.Lock()
-	defer activeConnsMutex.Unlock()
+	setState(StateChecking)
 
-	if len(activeConns) == 0 {
+	// Ensure all clients' Ready status is reset before starting a new check cycle.
+	activeConnsMutex.Lock()
+	// Capture active connections at the start to iterate safely, as handleClientConnection might modify activeConns
+	currentActiveConnsSnapshot := make([]net.Conn, 0, len(activeConns))
+	for conn := range activeConns {
+		currentActiveConnsSnapshot = append(currentActiveConnsSnapshot, conn)
+		if ctx, ok := clientConnectionContexts[conn]; ok {
+			ctx.Ready = false
+		}
+	}
+	activeConnsMutex.Unlock() // Unlock after snapshot and resetting Ready flags
+
+	if len(currentActiveConnsSnapshot) == 0 {
 		fmt.Println("No perf_tool instances connected to check.")
+		setState(StateError)
 		return
 	}
 
 	fmt.Println("Checking readiness of perf_tool instances...")
 	message := "check"
-	allReady := true
-
-	// Reset all client ready statuses before sending check
-	for conn := range activeConns {
-		if ctx, ok := clientConnectionContexts[conn]; ok {
-			ctx.Ready = false
-		}
-	}
-
-	for conn := range activeConns {
-		_, err := conn.Write([]byte(message))
+	
+	// Send "check" command to all clients in the snapshot.
+	for _, conn := range currentActiveConnsSnapshot {
+		_, err := conn.Write([]byte(message + "\n")) // Add newline for ReadString
 		if err != nil {
 			fmt.Printf("Error writing 'check' to %s: %v\n", conn.RemoteAddr().Network(), err)
-			conn.Close() // Close connection if writing fails
-			allReady = false
+			// Handle disconnection: handleClientConnection goroutine will clean up.
 		} else {
 			fmt.Printf("Sent '%s' command to %s (Network: %s, Addr: %s)\n", message, conn.RemoteAddr(), conn.RemoteAddr().Network(), conn.RemoteAddr().String())
 		}
 	}
-	// This is a synchronous check for now. In a real-world scenario, you might
-	// want to wait for responses with a timeout. For simplicity, we're relying
-	// on the handleClientConnection goroutines to update clientReadyStatus.
-	// We'll give a small delay for responses to come back.
-	time.Sleep(2 * time.Second) // Increased sleep for debugging
-	fmt.Println("\n--- Readiness Report ---")
-	if len(activeConns) == 0 {
-		fmt.Println("No perf_tool instances are connected.")
+
+	// Wait for all clients to report ready
+	if !waitForAllClientsReady(10*time.Second, 500*time.Millisecond) {
+		fmt.Println("WARNING: Not all connected perf_tool instances are READY within timeout.")
+		setState(StateError)
 		return
 	}
 
-	for conn := range activeConns {
-		if ctx, ok := clientConnectionContexts[conn]; ok && ctx.Ready {
-			fmt.Printf("Client %s: READY\n", conn.RemoteAddr().Network())
-		} else {
-			fmt.Printf("Client %s: NOT READY (or status not yet reported)\n", conn.RemoteAddr().Network())
-			allReady = false
+	// Final check and report
+	finalAllReady := true
+	activeConnsMutex.Lock() // Lock to safely access activeConns and clientConnectionContexts for final report
+	if len(activeConns) == 0 { // Check if clients disconnected during wait
+		fmt.Println("No perf_tool instances are connected for final report after waiting.")
+		finalAllReady = false
+	} else {
+		fmt.Println("\n--- Readiness Report ---")
+		for conn := range activeConns {
+			if ctx, ok := clientConnectionContexts[conn]; ok && ctx.Ready {
+				fmt.Printf("Client %s: READY\n", conn.RemoteAddr().Network())
+			} else {
+				fmt.Printf("Client %s: NOT READY (or status not yet reported)\n", conn.RemoteAddr().Network())
+				finalAllReady = false
+			}
 		}
 	}
+	activeConnsMutex.Unlock()
 
-	if allReady {
+	if finalAllReady {
 		fmt.Println("All connected perf_tool instances are READY.")
+		setState(StateChecked)
 	} else {
-		fmt.Println("WARNING: Not all connected perf_tool instances are READY.")
+		fmt.Println("WARNING: Not all connected perf_tool instances are READY. Setting state to ERROR.")
+		setState(StateError)
 	}
 }
 
@@ -545,31 +619,25 @@ func runGetStats() {
 	fmt.Println("Requesting statistics from perf_tool instances...")
 	message := "get_stats"
 
-	// Reset any previous stats storage (if we had one)
-	// For now, we'll just print them as they come in handleClientConnection
-
 	for conn := range activeConns {
 		_, err := conn.Write([]byte(message))
 		if err != nil {
 			fmt.Printf("Error writing 'get_stats' to %s: %v\n", conn.RemoteAddr().String(), err)
-			conn.Close() // Close connection if writing fails
+			conn.Close()
 		} else {
 			fmt.Printf("Sent '%s' command to %s\n", message, conn.RemoteAddr().String())
 		}
 	}
 
-	// Wait for a duration to allow clients to respond.
-	// In a real-world scenario, we'd use channels to collect responses with a timeout.
 	fmt.Println("Waiting for statistics responses (2 seconds)...")
 	time.Sleep(2 * time.Second)
 
 	fmt.Println("\n--- Statistics Report (Raw JSON) ---")
-	// The actual printing of JSON will happen asynchronously in handleClientConnection
-	// This function just triggers the request and waits.
 }
 
 func runStop() {
-	stopSocketServer() // Call stopSocketServer here
+	setState(StateStopping)
+	stopSocketServer()
 
 	pidData, err := os.ReadFile(pidFile)
 	if err != nil {
@@ -578,16 +646,17 @@ func runStop() {
 		} else {
 			fmt.Println("Error reading pid file:", err)
 		}
+		setState(StateIdle)
 		return
 	}
 
 	var pids []int
 	if err := json.Unmarshal(pidData, &pids); err != nil {
 		fmt.Println("Error unmarshalling pids:", err)
+		setState(StateError)
 		return
 	}
 
-	// Terminate all processes gracefully
 	for _, pid := range pids {
 		process, err := os.FindProcess(pid)
 		if err != nil {
@@ -604,19 +673,15 @@ func runStop() {
 		}
 	}
 
-	// Wait for a short period to allow for graceful shutdown
 	fmt.Println("Waiting for 2 seconds...")
 	time.Sleep(2 * time.Second)
 
-	// Force kill any remaining processes
 	for _, pid := range pids {
 		process, err := os.FindProcess(pid)
 		if err != nil {
-			// Already handled in the first loop
 			continue
 		}
 
-		// Check if process is still running by sending signal 0
 		err = process.Signal(syscall.Signal(0))
 		if err == nil {
 			fmt.Printf("Process %d did not terminate, forcing kill with SIGKILL...\n", pid)
@@ -632,7 +697,6 @@ func runStop() {
 		}
 	}
 
-	// Wait for all processes to exit
 	fmt.Println("Waiting for all processes to exit...")
 	var wg sync.WaitGroup
 	for _, pid := range pids {
@@ -641,22 +705,18 @@ func runStop() {
 			defer wg.Done()
 			process, err := os.FindProcess(p)
 			if err != nil {
-				return // process not found
+				return
 			}
-
-			// Poll until the process is gone
 			for {
 				err := process.Signal(syscall.Signal(0))
 				if err != nil {
 					if err.Error() == "os: process already finished" || strings.Contains(err.Error(), "no such process") {
 						fmt.Printf("Process %d has exited.\n", p)
-						break // Process is gone
+						break
 					}
-					// Some other error
 					fmt.Printf("Error checking process %d: %v\n", p, err)
 					break
 				}
-				// Process still exists, wait a bit
 				time.Sleep(100 * time.Millisecond)
 			}
 		}(pid)
@@ -664,13 +724,12 @@ func runStop() {
 	wg.Wait()
 	fmt.Println("All processes have exited.")
 
-	// Clear the pid file
 	if err := os.Remove(pidFile); err != nil && !os.IsNotExist(err) {
 		fmt.Println("Error clearing pid file:", err)
 	}
 
-	// Also remove ptm socket
 	if err := os.Remove(ptmSocketPath); err != nil && !os.IsNotExist(err) {
 		fmt.Println("Error removing ptm socket file:", err)
 	}
+	setState(StateStopped)
 }

@@ -522,10 +522,10 @@ static void ptcp_io_cb(struct ev_loop *loop, ev_io *w, int revents) {
             printf("Received from ptcp: %s\n", buffer);
 
             // Handle plain string commands
-            if (strcmp(buffer, "get_stats") == 0) {
+            if (strncmp(buffer, "get_stats", strlen("get_stats")) == 0) {
                 send_aggregated_stats_response(g_ptm.ptcp_fd);
                 return;
-            } else if (strcmp(buffer, "check") == 0) { // Specific handling for "check"
+            } else if (strncmp(buffer, "check", strlen("check")) == 0) { // Specific handling for "check"
                 // Reset check_status_flag for all clients
                 for (int i = 0; i < g_ptm.num_clients; i++) {
                     if (g_ptm.client_info_array[i]) {
@@ -535,7 +535,7 @@ static void ptcp_io_cb(struct ev_loop *loop, ev_io *w, int revents) {
                 forward_to_clients(buffer, n); // Forward "check" to all clients
                 printf("Reset client check_status_flags and forwarded 'check' command.\n");
                 return; // Command handled
-            } else if (strcmp(buffer, "run") == 0) { // Specific handling for "run"
+            } else if (strncmp(buffer, "run", strlen("run")) == 0) { // Specific handling for "run"
                 if (!g_ptm.test_running) {
                     g_ptm.test_running = 1;
                     ev_timer_start(g_ptm.loop, &g_ptm.stats_timer);
@@ -543,7 +543,7 @@ static void ptcp_io_cb(struct ev_loop *loop, ev_io *w, int revents) {
                 }
                 forward_to_clients(buffer, n);
                 return; // Command handled
-            } else if (strcmp(buffer, "stop") == 0) {
+            } else if (strncmp(buffer, "stop", strlen("stop")) == 0) {
                 if (g_ptm.test_running) {
                     g_ptm.test_running = 0;
                     ev_timer_stop(g_ptm.loop, &g_ptm.stats_timer);
@@ -658,7 +658,7 @@ static void client_io_cb(struct ev_loop *loop, ev_io *w, int revents) {
                 }
             }
         } else if (n == 0) {
-            printf("Client %d connection closed\n", idx);
+            printf("222222222222 Client %d connection closed\n", idx);
             remove_client(idx);
         } else {
             perror("Error reading from client");
@@ -698,4 +698,16 @@ static void remove_client(int idx) {
 
 
     g_ptm.num_clients--;
+
+    // If all clients have exited and a test was running, send a "done" message to ptcp
+    if (g_ptm.num_clients == 0 && g_ptm.test_running && g_ptm.ptcp_fd != -1) {
+        g_ptm.test_running = 0;
+        ev_timer_stop(g_ptm.loop, &g_ptm.stats_timer);
+        printf("All clients disconnected. Test finished. Sent 'done' to ptcp.\n");
+    }
+    const char *done_message = "done\n";
+    if (send(g_ptm.ptcp_fd, done_message, strlen(done_message), 0) == -1) {
+        perror("Failed to send 'done' message to ptcp");
+    }
+
 }
