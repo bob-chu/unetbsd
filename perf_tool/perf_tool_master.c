@@ -109,38 +109,51 @@ static CLIENT_TYPE get_client_type_from_string(const char *type_str) {
 #endif
 static void aggregate_stats(stats_t *out_stats, int client_role_filter) {
     memset(out_stats, 0, sizeof(stats_t));
+    uint64_t max_time_index = 0;
+    int first_found = 0;
 
     if (client_role_filter == 0) { // Aggregate client stats
         for (int i = 0; i < g_max_clients_clients; i++) {
             stats_t *client_stat = (stats_t *)((char *)g_shm_client_stats + (i * sizeof(stats_t)));
+            if (client_stat->connections_opened == 0 && client_stat->connections_closed == 0 && client_stat->tcp_bytes_sent == 0) continue;
+
 #define X(name) out_stats->name += client_stat->name;
             STATS_FIELDS
             STATS_HTTP_FIELDS
             STATS_TCP_FIELDS
             STATS_UDP_FIELDS
 #undef X
-            if (i == 0) { // Only set these once from the first client
+            if (!first_found) {
                 out_stats->client_role = 1;
-                out_stats->time_index = client_stat->time_index;
                 out_stats->current_phase = client_stat->current_phase;
+                first_found = 1;
+            }
+            if (client_stat->time_index > max_time_index) {
+                max_time_index = client_stat->time_index;
             }
         }
     } else if (client_role_filter == 1) { // Aggregate server stats
         for (int i = 0; i < g_max_clients_servers; i++) {
             stats_t *server_stat = (stats_t *)((char *)g_shm_server_stats + (i * sizeof(stats_t)));
+            if (server_stat->connections_opened == 0 && server_stat->connections_closed == 0 && server_stat->tcp_bytes_sent == 0) continue;
+
 #define X(name) out_stats->name += server_stat->name;
             STATS_FIELDS
             STATS_HTTP_FIELDS
             STATS_TCP_FIELDS
             STATS_UDP_FIELDS
 #undef X
-            if (i == 0) { // Only set these once from the first server
+            if (!first_found) {
                 out_stats->server_role = 1;
-                out_stats->time_index = server_stat->time_index;
                 out_stats->current_phase = server_stat->current_phase;
+                first_found = 1;
+            }
+            if (server_stat->time_index > max_time_index) {
+                max_time_index = server_stat->time_index;
             }
         }
     }
+    out_stats->time_index = max_time_index;
 }
 
 static void usage(const char *prog) {

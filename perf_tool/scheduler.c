@@ -131,8 +131,8 @@ void scheduler_check_phase_transition(const char *role) {
     STATS_SET(requests_sent, g_current_stats->requests_sent);
     STATS_SET(tcp_bytes_sent, g_current_stats->tcp_bytes_sent);
     STATS_SET(tcp_bytes_received, g_current_stats->tcp_bytes_received);
-    STATS_SET(success_count, success_per_second);
-    STATS_SET(failure_count, failure_per_second);
+    STATS_SET(success_count, current_metrics.success_count);
+    STATS_SET(failure_count, current_metrics.failure_count);
 
     // Get the current accumulated byte counts from metrics for display
 

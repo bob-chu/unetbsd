@@ -59,17 +59,24 @@ func getState() State {
 
 // Stats tracking
 var statsMutex sync.Mutex
+var (
+	globalStats      = make(map[string]interface{})
+	globalStatsMutex sync.RWMutex
+)
 
 type roleStats struct {
 	LastStats     map[string]uint64
 	LastTimeIndex uint64
+	Initialized   bool
 }
 
 type clientConnectionContext struct {
+	ID     string // Unique ID
 	Ready  bool
 	Client roleStats
 	Server roleStats
 }
+var connectionIDCounter int
 
 var clientConnectionContexts = make(map[net.Conn]*clientConnectionContext)
 
@@ -139,7 +146,7 @@ func handleClientConnection(c net.Conn) {
 			statsMutex.Lock() // Protect shared stdout and connContext access
 
 			var statsOutput strings.Builder
-			statsOutput.WriteString(fmt.Sprintf("Stats from %s (%s): ", c.RemoteAddr().String(), roleName))
+			statsOutput.WriteString(fmt.Sprintf("Stats from %s (%s): ", connContext.ID, roleName))
 
 			// Define the keys we consider important
 			importantKeys := []string{
@@ -155,8 +162,13 @@ func handleClientConnection(c net.Conn) {
 				"tcp_bytes_received",
 			}
 
+			if currentRoleStats.Initialized && currentTimeIndex <= currentRoleStats.LastTimeIndex {
+				statsMutex.Unlock()
+				continue // Ignore duplicate or older time indices
+			}
+
 			timeDelta := int64(0)
-			if currentRoleStats.LastTimeIndex != 0 && currentTimeIndex > currentRoleStats.LastTimeIndex {
+			if currentRoleStats.Initialized {
 				timeDelta = int64(currentTimeIndex - currentRoleStats.LastTimeIndex)
 			}
 
@@ -169,7 +181,11 @@ func handleClientConnection(c net.Conn) {
 					currentVal := uint64(f)
 					previousVal := currentRoleStats.LastStats[key]
 
-					isRateKey := key == "connections_opened" || key == "requests_sent" || key == "tcp_bytes_sent" || key == "tcp_bytes_received"
+					isRateKey := key == "tcp_bytes_sent" || key == "tcp_bytes_received" || key == "responses_received" ||
+							key == "success_count" || key == "failure_count" || key == "http_req_sent" ||
+							key == "http_req_rcvd" || key == "http_rsp_hdr_send" || key == "http_rsp_body_send" ||
+							key == "http_rsp_body_send_done" || key == "connections_opened" || key == "connections_closed" ||
+							key == "requests_sent"
 
 					if isRateKey && currentRoleStats.LastTimeIndex != 0 && timeDelta > 0 {
 						var valueDelta uint64
@@ -183,9 +199,11 @@ func handleClientConnection(c net.Conn) {
 						if key == "tcp_bytes_sent" || key == "tcp_bytes_received" {
 							mbps := (rate * 8) / 1000000.0 // Convert bytes/s to Mbps
 							statsOutput.WriteString(fmt.Sprintf("%s:%.2fMbps ", key, mbps))
+							stats[key+"_mbps"] = mbps
 						} else {
 							statsOutput.WriteString(fmt.Sprintf("%s:%.2f/s ", key, rate))
 						}
+						stats[key+"_rate"] = rate
 					} else {
 						statsOutput.WriteString(fmt.Sprintf("%s:%d ", key, currentVal))
 					}
@@ -195,8 +213,23 @@ func handleClientConnection(c net.Conn) {
 				}
 			}
 			currentRoleStats.LastTimeIndex = currentTimeIndex
+			currentRoleStats.Initialized = true
 			fmt.Println(statsOutput.String())
 			statsMutex.Unlock()
+
+			// Update global stats
+			globalStatsMutex.Lock()
+			if globalStats["clients"] == nil {
+				globalStats["clients"] = make(map[string]interface{})
+			}
+			clientsMap := globalStats["clients"].(map[string]interface{})
+			
+			// Augment stats with role and timestamp
+			stats["role"] = roleName
+			stats["last_update"] = time.Now().UnixMilli()
+			
+			clientsMap[connContext.ID+"-"+roleName] = stats
+			globalStatsMutex.Unlock()
 		case message == "ready":
 			activeConnsMutex.Lock()
 			connContext.Ready = true
@@ -247,7 +280,9 @@ func startSocketServer() error {
 
 			activeConnsMutex.Lock()
 			activeConns[conn] = true
+			connectionIDCounter++
 			clientConnectionContexts[conn] = &clientConnectionContext{
+				ID:     fmt.Sprintf("node-%d", connectionIDCounter),
 				Ready:  false,
 				Client: roleStats{LastStats: make(map[string]uint64), LastTimeIndex: 0},
 				Server: roleStats{LastStats: make(map[string]uint64), LastTimeIndex: 0},
@@ -302,6 +337,19 @@ func runStartTest() {
 	}
 	fmt.Println("Test start command sent to all ready instances.")
 	setState(StateRunning)
+
+	// Start stats polling loop
+	go func() {
+		ticker := time.NewTicker(1 * time.Second)
+		defer ticker.Stop()
+		for {
+			<-ticker.C
+			if getState() != StateRunning {
+				return
+			}
+			runGetStats() // Trigger stats update
+		}
+	}()
 }
 
 func stopSocketServer() {
@@ -315,6 +363,9 @@ func stopSocketServer() {
 }
 
 func runPrepare(buildDir, configDir string) {
+	// Kill any existing perf_tool processes to prevent duplicates (zombies)
+	exec.Command("pkill", "perf_tool").Run()
+
 	setState(StatePreparing)
 	if err := startSocketServer(); err != nil {
 		fmt.Println("Failed to start socket server:", err)
@@ -445,8 +496,8 @@ func runPrepare(buildDir, configDir string) {
 			for i := 0; i < int(numServers); i++ {
 				serverConfig := filepath.Join(configDir, fmt.Sprintf("http_server_%d.json", i))
 				cmdServer := exec.Command(perfToolPath, "server", serverConfig, "--socket-path", ptmSocketPath)
-				//cmdServer.Stdout = nil
-				cmdServer.Stdout = os.Stdout
+				cmdServer.Stdout = nil
+				//cmdServer.Stdout = os.Stdout
 				cmdServer.Stderr = os.Stderr
 				cmdServer.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 				if err := cmdServer.Start(); err != nil {
@@ -479,8 +530,8 @@ func runPrepare(buildDir, configDir string) {
 			for i := 0; i < int(numClients); i++ {
 				clientConfig := filepath.Join(configDir, fmt.Sprintf("http_client_%d.json", i))
 				cmdClient := exec.Command(perfToolPath, "client", clientConfig, "--socket-path", ptmSocketPath)
-				//cmdClient.Stdout = nil
-				cmdClient.Stdout = os.Stdout
+				cmdClient.Stdout = nil
+				//cmdClient.Stdout = os.Stdout
 				cmdClient.Stderr = os.Stderr
 				cmdClient.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 				if err := cmdClient.Start(); err != nil {
@@ -625,14 +676,9 @@ func runGetStats() {
 			fmt.Printf("Error writing 'get_stats' to %s: %v\n", conn.RemoteAddr().String(), err)
 			conn.Close()
 		} else {
-			fmt.Printf("Sent '%s' command to %s\n", message, conn.RemoteAddr().String())
+			// fmt.Printf("Sent '%s' command to %s\n", message, conn.RemoteAddr().String())
 		}
 	}
-
-	fmt.Println("Waiting for statistics responses (2 seconds)...")
-	time.Sleep(2 * time.Second)
-
-	fmt.Println("\n--- Statistics Report (Raw JSON) ---")
 }
 
 func runStop() {
@@ -732,4 +778,7 @@ func runStop() {
 		fmt.Println("Error removing ptm socket file:", err)
 	}
 	setState(StateStopped)
+	globalStatsMutex.Lock()
+	delete(globalStats, "clients")
+	globalStatsMutex.Unlock()
 }
