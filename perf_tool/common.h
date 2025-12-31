@@ -2,6 +2,7 @@
 #define __COMMON_H__
 
 #include <rte_ether.h>
+#include <rte_ethdev.h>
 
 #define MAX_CONN_SIZE 8192
 #define CLIENT_SHM_PATH "/tmp/ptm_client_stats"
@@ -11,6 +12,7 @@
 
 struct lb_shared_info {
 	struct rte_ether_addr port_mac;
+	struct rte_eth_stats stats;
 };
 
 #endif

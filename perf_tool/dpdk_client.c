@@ -200,3 +200,8 @@ void open_dpdk_client_interface(char *if_name)
     virt_if_register_callbacks(v_if, dpdk_client_if_output, NULL);
 }
 
+
+struct lb_shared_info* get_lb_shared_info(void) {
+    return shared_info;
+}
+

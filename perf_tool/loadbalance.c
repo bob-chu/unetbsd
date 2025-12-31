@@ -74,8 +74,8 @@ ip_addr_hash_func(const void *key, uint32_t key_len, uint32_t init_val)
 #define BURST_SIZE 64 
 #define JUMBO_FRAME_MAX_SIZE 9200
 
-#define NB_RX_QUEUES 1
-#define NB_TX_QUEUES 1
+#define NB_RX_QUEUES 2
+#define NB_TX_QUEUES 2
 
 #define LINK_CHECK_INTERVAL_MS 100
 #define MAX_LINK_CHECKS 100 /* 100 * 100ms = 10s */
@@ -92,6 +92,9 @@ static int lb_core_id = 0; // Global variable for core_id
 static char *eal_args_array[MAX_EAL_ARGS]; // Array to hold parsed EAL arguments
 static int eal_args_count = 0; // Count of parsed EAL arguments
 static cJSON *global_clients_json = NULL; // Global cJSON object to hold clients array
+static struct lb_shared_info *shared_info; // Make shared_info global
+
+
 // Forward declaration for cleanup
 static void cleanup_dpdk_config(void);
 static int parse_full_config(const char *path); // Forward declaration
@@ -273,11 +276,23 @@ static int lcore_rxtx(void *arg) {
     uint16_t client_buf_counts[MAX_CLIENTS] = {0};
 	struct rte_mbuf *tx_burst_buffer[BURST_SIZE];
 
+    // Add for stats collection
+    uint64_t last_stats_time = 0;
+    const uint64_t tsc_hz = rte_get_tsc_hz();
+    const uint64_t stats_interval = tsc_hz; // 1 second
 
     RTE_LOG(INFO, LB, "Starting RX/TX loop on lcore %u, queue %u for %u clients\n",
             lcore_id, queue_id, num_clients);
 
     while (!quit_signal) {
+        // Stats collection logic - only on main lcore
+        if (lcore_id == rte_get_main_lcore()) {
+            uint64_t cur_tsc = rte_rdtsc();
+            if (cur_tsc - last_stats_time > stats_interval) {
+                rte_eth_stats_get(0, &shared_info->stats);
+                last_stats_time = cur_tsc;
+            }
+        }
         /* RX path: Receive from NIC and distribute to clients */
         uint16_t nb_rx = rte_eth_rx_burst(0, queue_id, bufs, BURST_SIZE);
         if (nb_rx > 0) {
@@ -728,16 +743,14 @@ int main(int argc, char *argv[]) {
         rte_panic("Cannot init EAL\n");
     }
     
-	const struct rte_memzone *mz;
-    struct lb_shared_info *shared_info;
-
-    mz = rte_memzone_reserve(LB_SHARED_MEMZONE, sizeof(struct lb_shared_info),
+    const struct rte_memzone *mz = rte_memzone_reserve(LB_SHARED_MEMZONE, sizeof(struct lb_shared_info),
                              rte_socket_id(), 0);
     if (mz == NULL) {
         rte_panic("Cannot reserve memzone for shared info\n");
     }
     shared_info = (struct lb_shared_info *)mz->addr;
-
+    // Initialize shared memory to zero
+    memset(shared_info, 0, sizeof(struct lb_shared_info));
 
     if (init_client_hash_table() < 0)
         rte_panic("Failed to initialize client hash table");
@@ -766,12 +779,12 @@ int main(int argc, char *argv[]) {
         char ring_name[64];
         snprintf(ring_name, sizeof(ring_name), RX_RING_NAME_TEMPLATE, i);
         rx_rings[i] = rte_ring_create(ring_name, RING_SIZE, rte_socket_id(),
-                                      RING_F_SP_ENQ | RING_F_SC_DEQ);
+                                      RING_F_SC_DEQ);
         if (rx_rings[i] == NULL)
             rte_panic("Cannot create RX ring %u\n", i);
         snprintf(ring_name, sizeof(ring_name), TX_RING_NAME_TEMPLATE, i);
         tx_rings[i] = rte_ring_create(ring_name, RING_SIZE, rte_socket_id(),
-                                      RING_F_SP_ENQ | RING_F_SC_DEQ);
+                                      RING_F_SP_ENQ);
         if (tx_rings[i] == NULL)
             rte_panic("Cannot create TX ring %u\n", i);
     }
@@ -802,25 +815,25 @@ int main(int argc, char *argv[]) {
             rte_panic("Second core %u is not an enabled worker lcore.\n", core2_id);
         }
 
-        struct lcore_arg *arg_tx = malloc(sizeof(struct lcore_arg));
-        if (!arg_tx) {
+        struct lcore_arg *arg_rxtx2 = malloc(sizeof(struct lcore_arg));
+        if (!arg_rxtx2) {
             rte_panic("cannot allocate memory for lcore arg2\n");
         }
-        arg_tx->queue_id = 0;
+        arg_rxtx2->queue_id = 1;
 
-        RTE_LOG(INFO, LB, "Launching TX on worker lcore %u (queue 0)...\n", core2_id);
-        if (rte_eal_remote_launch(lcore_tx, arg_tx, core2_id) != 0) {
-            free(arg_tx);
-            rte_panic("Failed to launch TX on lcore %u.", core2_id);
+        RTE_LOG(INFO, LB, "Launching RX/TX on worker lcore %u (queue 1)...\n", core2_id);
+        if (rte_eal_remote_launch(lcore_rxtx, arg_rxtx2, core2_id) != 0) {
+            free(arg_rxtx2);
+            rte_panic("Failed to launch RX/TX on lcore %u.", core2_id);
         }
 
-        struct lcore_arg *arg_rx = malloc(sizeof(struct lcore_arg));
-        if (!arg_rx) {
+        struct lcore_arg *arg_rxtx1 = malloc(sizeof(struct lcore_arg));
+        if (!arg_rxtx1) {
             rte_panic("cannot allocate memory for lcore arg1\n");
         }
-        arg_rx->queue_id = 0;
-        RTE_LOG(INFO, LB, "Starting RX on main lcore %u (queue 0)...\n", core1_id);
-        lcore_rx(arg_rx); // This will block until quit_signal
+        arg_rxtx1->queue_id = 0;
+        RTE_LOG(INFO, LB, "Starting RX/TX on main lcore %u (queue 0)...\n", core1_id);
+        lcore_rxtx(arg_rxtx1); // This will block until quit_signal
 
         rte_eal_wait_lcore(core2_id);
     }

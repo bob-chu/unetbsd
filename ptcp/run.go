@@ -160,6 +160,15 @@ func handleClientConnection(c net.Conn) {
 				"failure_count",
 				"tcp_bytes_sent",
 				"tcp_bytes_received",
+                "dpdk_ipackets",
+                "dpdk_opackets",
+                "dpdk_ibytes",
+                "dpdk_ibytes_rate",
+                "dpdk_obytes",
+                "dpdk_obytes_rate",
+                "dpdk_ierrors",
+                "dpdk_oerrors",
+                "dpdk_rx_nombuf",
 			}
 
 			if currentRoleStats.Initialized && currentTimeIndex <= currentRoleStats.LastTimeIndex {

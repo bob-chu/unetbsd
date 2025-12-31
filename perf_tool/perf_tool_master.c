@@ -50,6 +50,11 @@ typedef struct {
     ev_io listen_watcher;
     ev_timer stats_timer;
     int test_running;
+    uint64_t last_aggregated_client_ibytes;
+    uint64_t last_aggregated_client_obytes;
+    uint64_t last_aggregated_server_ibytes;
+    uint64_t last_aggregated_server_obytes;
+    uint64_t last_stats_update_time_us; // Use microseconds for precision
 } ptm_t;
 
 static ptm_t g_ptm;
@@ -91,6 +96,7 @@ static cJSON* stats_to_cjson(const stats_t *stats) {
     STATS_HTTP_FIELDS
     STATS_TCP_FIELDS
     STATS_UDP_FIELDS
+    STATS_DPDK_FIELDS
     STATS_PHASE_FIELD
 #undef X
     return json;
@@ -122,6 +128,7 @@ static void aggregate_stats(stats_t *out_stats, int client_role_filter) {
             STATS_HTTP_FIELDS
             STATS_TCP_FIELDS
             STATS_UDP_FIELDS
+            STATS_DPDK_FIELDS
 #undef X
             if (!first_found) {
                 out_stats->client_role = 1;
@@ -142,6 +149,7 @@ static void aggregate_stats(stats_t *out_stats, int client_role_filter) {
             STATS_HTTP_FIELDS
             STATS_TCP_FIELDS
             STATS_UDP_FIELDS
+            STATS_DPDK_FIELDS
 #undef X
             if (!first_found) {
                 out_stats->server_role = 1;
@@ -242,6 +250,11 @@ int main(int argc, char *argv[]) {
     g_ptm.num_clients = 0;
     g_ptm.max_clients = max_clients_clients + max_clients_servers;
     g_ptm.test_running = 0;
+    g_ptm.last_aggregated_client_ibytes = 0;
+    g_ptm.last_aggregated_client_obytes = 0;
+    g_ptm.last_aggregated_server_ibytes = 0;
+    g_ptm.last_aggregated_server_obytes = 0;
+    g_ptm.last_stats_update_time_us = 0;
 
     // Allocate client arrays
     client_fds_local = (int*)malloc(g_ptm.max_clients * sizeof(int));
@@ -450,6 +463,26 @@ cleanup:
     return ret;
 }
 
+// Helper function to calculate rate
+static double calculate_rate(uint64_t current_value, uint64_t last_value, double time_delta_s) {
+    if (time_delta_s <= 0 || current_value < last_value) { // Handle potential wrap-around or reset
+        return 0.0;
+    }
+    return (double)(current_value - last_value) / time_delta_s;
+}
+
+// Helper function to add accumulated and rate stats to JSON
+static void add_stats_to_json(cJSON *json, const char *prefix, const char *name, uint64_t accumulated_val, double rate_val) {
+    char key_accumulated[256];
+    char key_rate[256];
+
+    snprintf(key_accumulated, sizeof(key_accumulated), "%s%s", prefix, name);
+    snprintf(key_rate, sizeof(key_rate), "%s%s_rate", prefix, name);
+
+    cJSON_AddNumberToObject(json, key_accumulated, accumulated_val);
+    cJSON_AddNumberToObject(json, key_rate, rate_val);
+}
+
 static void forward_to_clients(const char *message, size_t len) {
     for (int i = 0; i < g_ptm.num_clients; i++) {
         printf("Send cmd: %s to client[%d]\n", message, i);
@@ -474,6 +507,13 @@ static void send_aggregated_stats_response(int fd) {
     stats_t aggregated_server_stats;
     aggregate_stats(&aggregated_server_stats, 1); // 1 for server role
 
+    double current_time = ev_now(g_ptm.loop);
+    double time_delta_s = 0;
+
+    if (g_ptm.last_stats_update_time_us != 0) {
+        time_delta_s = (current_time * 1000000 - g_ptm.last_stats_update_time_us) / 1000000.0;
+    }
+
     // Send client stats
     cJSON *client_response_json = cJSON_CreateObject();
     if (!client_response_json) {
@@ -482,6 +522,12 @@ static void send_aggregated_stats_response(int fd) {
     }
     cJSON_AddStringToObject(client_response_json, "response_type", "AGGREGATED_CLIENT_STATS"); // New type
     cJSON_AddItemToObject(client_response_json, "aggregated_stats", stats_to_cjson(&aggregated_client_stats));
+
+    // Add DPDK ibytes and obytes (accumulated and rate)
+    add_stats_to_json(client_response_json, "dpdk_", "ibytes", aggregated_client_stats.dpdk_ibytes,
+                      calculate_rate(aggregated_client_stats.dpdk_ibytes, g_ptm.last_aggregated_client_ibytes, time_delta_s));
+    add_stats_to_json(client_response_json, "dpdk_", "obytes", aggregated_client_stats.dpdk_obytes,
+                      calculate_rate(aggregated_client_stats.dpdk_obytes, g_ptm.last_aggregated_client_obytes, time_delta_s));
 
     char *client_response_str = cJSON_PrintUnformatted(client_response_json);
     if (!client_response_str) {
@@ -508,6 +554,12 @@ static void send_aggregated_stats_response(int fd) {
     cJSON_AddStringToObject(server_response_json, "response_type", "AGGREGATED_SERVER_STATS"); // New type
     cJSON_AddItemToObject(server_response_json, "aggregated_stats", stats_to_cjson(&aggregated_server_stats));
 
+    // Add DPDK ibytes and obytes (accumulated and rate)
+    add_stats_to_json(server_response_json, "dpdk_", "ibytes", aggregated_server_stats.dpdk_ibytes,
+                      calculate_rate(aggregated_server_stats.dpdk_ibytes, g_ptm.last_aggregated_server_ibytes, time_delta_s));
+    add_stats_to_json(server_response_json, "dpdk_", "obytes", aggregated_server_stats.dpdk_obytes,
+                      calculate_rate(aggregated_server_stats.dpdk_obytes, g_ptm.last_aggregated_server_obytes, time_delta_s));
+
     char *server_response_str = cJSON_PrintUnformatted(server_response_json);
     if (!server_response_str) {
         fprintf(stderr, "Failed to print aggregated server stats JSON\n");
@@ -524,8 +576,14 @@ static void send_aggregated_stats_response(int fd) {
     }
     free(server_response_str);
     cJSON_Delete(server_response_json);
-}
 
+    // Update for next cycle
+    g_ptm.last_aggregated_client_ibytes = aggregated_client_stats.dpdk_ibytes;
+    g_ptm.last_aggregated_client_obytes = aggregated_client_stats.dpdk_obytes;
+    g_ptm.last_aggregated_server_ibytes = aggregated_server_stats.dpdk_ibytes;
+    g_ptm.last_aggregated_server_obytes = aggregated_server_stats.dpdk_obytes;
+    g_ptm.last_stats_update_time_us = current_time * 1000000;
+}
 static void ptcp_io_cb(struct ev_loop *loop, ev_io *w, int revents) {
     if (revents & EV_READ) {
         char buffer[4096];
