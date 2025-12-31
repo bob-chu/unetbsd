@@ -22,9 +22,14 @@ func startWebServer() {
 
 	// Serve static files from ptweb/dist
 	staticPath := "./ptweb/dist"
+	// Installed static files from web
+	InstalledstaticPath := "./web"
 	if _, err := os.Stat(staticPath); err == nil {
 		fmt.Printf("Serving static files from %s\n", staticPath)
 		http.Handle("/", http.FileServer(http.Dir(staticPath)))
+	} else if _, err := os.Stat(InstalledstaticPath); err == nil {
+		fmt.Printf("Serving static files from %s\n", InstalledstaticPath)
+		http.Handle("/", http.FileServer(http.Dir(InstalledstaticPath)))
 	} else {
 		fmt.Printf("Warning: Static directory %s not found. Web UI will not be available.\n", staticPath)
 	}
