@@ -72,7 +72,7 @@ ip_addr_hash_func(const void *key, uint32_t key_len, uint32_t init_val)
 #define NUM_MBUFS (8191 * 8)
 #define MBUF_CACHE_SIZE 250
 #define BURST_SIZE 64 
-#define JUMBO_FRAME_MAX_SIZE 9600
+#define JUMBO_FRAME_MAX_SIZE 9200
 
 #define NB_RX_QUEUES 1
 #define NB_TX_QUEUES 1
@@ -149,6 +149,13 @@ static inline int port_init(uint16_t port, struct rte_mempool *mbuf_pool, struct
 
     memset(&port_conf, 0, sizeof(struct rte_eth_conf));
     // Determine supported RSS hash functions
+    retval = rte_eth_dev_info_get(port, &dev_info);
+    if (retval != 0) {
+        RTE_LOG(ERR, LB, "Error getting device (port %u) info: %s\n", port,
+                strerror(-retval));
+        return retval;
+    }
+
     uint64_t rss_hf_temp = RTE_ETH_RSS_IP | RTE_ETH_RSS_UDP | RTE_ETH_RSS_TCP;
     port_conf.rx_adv_conf.rss_conf.rss_hf = rss_hf_temp & dev_info.flow_type_rss_offloads;
 
@@ -160,14 +167,15 @@ static inline int port_init(uint16_t port, struct rte_mempool *mbuf_pool, struct
         RTE_LOG(WARNING, LB, "Port %u: No supported RSS hash functions found. Disabling RSS.\n", port);
     }
 
-    retval = rte_eth_dev_info_get(port, &dev_info);
-    if (retval != 0) {
-        RTE_LOG(ERR, LB, "Error getting device (port %u) info: %s\n", port,
-                strerror(-retval));
-        return retval;
-    }
     if (dev_info.tx_offload_capa & RTE_ETH_TX_OFFLOAD_MBUF_FAST_FREE)
         port_conf.txmode.offloads |= RTE_ETH_TX_OFFLOAD_MBUF_FAST_FREE;
+
+    // Set MTU for jumbo frames
+    uint16_t mtu = JUMBO_FRAME_MAX_SIZE - RTE_ETHER_HDR_LEN - RTE_ETHER_CRC_LEN;
+    retval = rte_eth_dev_set_mtu(port, mtu);
+    if (retval != 0) {
+        RTE_LOG(WARNING, LB, "Port %u: Failed to set MTU to %u: %s\n", port, mtu, strerror(-retval));
+    }
 
     retval =
         rte_eth_dev_configure(port, NB_RX_QUEUES, NB_TX_QUEUES, &port_conf);

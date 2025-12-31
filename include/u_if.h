@@ -27,6 +27,7 @@ int virt_if_mbuf_input(struct virt_interface *vif, void *data);
 int virt_if_add_addr(struct virt_interface *vif, void *addr, unsigned netmask, int is_ipv4);
 void virt_if_add_gateway(struct virt_interface *vif, void *addr);
 void virt_if_add_gateway6(struct virt_interface *vif, void *addr);
+int virt_if_set_mtu(struct virt_interface *vif, int mtu);
 
 
 long netbsd_mbufvec(void *mp, struct iovec *iov, int *n_iov);

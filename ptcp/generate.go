@@ -44,6 +44,8 @@ func generateFiles(template string, count int, outputDir string, numaNode int) {
         return
     }
 
+    fmt.Printf("generateFiles: template=%s, count=%d, outputDir=%s, numaNode=%d\n", template, count, outputDir, numaNode)
+
     // Discover CPUs on the NUMA node and make them usable
     cpus, err := getCPUsForNUMANode(numaNode)
     if err != nil {
@@ -51,6 +53,7 @@ func generateFiles(template string, count int, outputDir string, numaNode int) {
         return
     }
     usable := usableCPUs(cpus)
+    fmt.Printf("found %d CPUs on NUMA node %d, usable: %d\n", len(cpus), numaNode, len(usable))
     if len(usable) == 0 {
         fmt.Println("No usable CPUs available after reserving first 2 cores")
         return
@@ -115,6 +118,7 @@ func generateHttpClientWithCores(count int, outputDir string, lbCore int, client
     }
 
     ips := expandSrcIPRange()
+    fmt.Printf("expandSrcIPRange found %d IPs\n", len(ips))
     if len(ips) == 0 {
         fmt.Println("Invalid or missing IP range at network.l3.src_ip_start / src_ip_end")
         return
@@ -174,6 +178,7 @@ func generateHttpClientWithCores(count int, outputDir string, lbCore int, client
         }
 
         filename := filepath.Join(outputDir, fmt.Sprintf("http_client_%d.json", i))
+        fmt.Printf("writing client config to %s\n", filename)
         writeJSON(filename, cfgCopy)
     }
 
@@ -193,6 +198,7 @@ func generateHttpServerWithCores(count int, outputDir string, lbCore int, server
     }
 
     ips := expandDstIPRange()
+    fmt.Printf("expandDstIPRange found %d IPs\n", len(ips))
     if len(ips) == 0 {
         fmt.Println("Invalid or missing IP range at network.l3.dst_ip_start / dst_ip_end")
         return
@@ -252,6 +258,7 @@ func generateHttpServerWithCores(count int, outputDir string, lbCore int, server
         }
 
         filename := filepath.Join(outputDir, fmt.Sprintf("http_server_%d.json", i))
+        fmt.Printf("writing server config to %s\n", filename)
         writeJSON(filename, cfgCopy)
     }
 

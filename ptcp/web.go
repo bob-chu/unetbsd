@@ -55,7 +55,7 @@ func handleGenerate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if template == "list" {
-		go generateFiles("list", 0, "", 0)
+		generateFiles("list", 0, "", 0)
 		fmt.Fprintln(w, "Generate command for list issued.")
 		return
 	}
@@ -81,7 +81,7 @@ func handleGenerate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	go generateFiles(template, count, outputDir, numaNode)
+	generateFiles(template, count, outputDir, numaNode)
 	fmt.Fprintf(w, "Generate command issued for template %s.", template)
 }
 

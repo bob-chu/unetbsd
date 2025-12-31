@@ -58,6 +58,8 @@ typedef struct {
   char **response_headers;
   int response_headers_count;
   int response_body_size;
+  int response_code;
+  char *response_body;
 } http_path_config_t;
 
 typedef struct {

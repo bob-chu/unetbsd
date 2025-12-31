@@ -496,8 +496,8 @@ func runPrepare(buildDir, configDir string) {
 			for i := 0; i < int(numServers); i++ {
 				serverConfig := filepath.Join(configDir, fmt.Sprintf("http_server_%d.json", i))
 				cmdServer := exec.Command(perfToolPath, "server", serverConfig, "--socket-path", ptmSocketPath)
-				cmdServer.Stdout = nil
 				//cmdServer.Stdout = os.Stdout
+				cmdServer.Stdout = nil 
 				cmdServer.Stderr = os.Stderr
 				cmdServer.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 				if err := cmdServer.Start(); err != nil {
@@ -530,8 +530,8 @@ func runPrepare(buildDir, configDir string) {
 			for i := 0; i < int(numClients); i++ {
 				clientConfig := filepath.Join(configDir, fmt.Sprintf("http_client_%d.json", i))
 				cmdClient := exec.Command(perfToolPath, "client", clientConfig, "--socket-path", ptmSocketPath)
-				cmdClient.Stdout = nil
 				//cmdClient.Stdout = os.Stdout
+				cmdClient.Stdout = nil 
 				cmdClient.Stderr = os.Stderr
 				cmdClient.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 				if err := cmdClient.Start(); err != nil {

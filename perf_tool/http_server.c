@@ -18,9 +18,9 @@
 #include "tcp_layer.h"
 #include "ssl_layer.h"
 
-#define BUFFER_SIZE 7000
+
 #define CLIENT_DATA_POOL_SIZE 16384
-#define MAX_SEND_BUFFER_SIZE 1024*4
+#define MAX_SEND_BUFFER_SIZE 16384
 
 typedef struct {
     const char *path;
@@ -67,19 +67,25 @@ void init_response_buffers(perf_config_t *config) {
         path_response_data_t *path_response = &g_path_responses[i];
 
         path_response->path = path_config->path;
-        path_response->response_body_size = path_config->response_body_size;
-        path_response->response_body = (char*)malloc(path_response->response_body_size);
+        
+        if (path_config->response_body != NULL) {
+            path_response->response_body_size = strlen(path_config->response_body);
+            path_response->response_body = strdup(path_config->response_body);
+        } else {
+            path_response->response_body_size = path_config->response_body_size;
+            path_response->response_body = (char*)malloc(path_response->response_body_size);
 
-        if (path_response->response_body_size > 0) {
-            int pos = 0;
-            while (pos < (int)path_response->response_body_size) {
-                const char *word = words[rand() % word_count];
-                int len = strlen(word);
-                if (pos + len > (int)path_response->response_body_size) len = path_response->response_body_size - pos;
-                memcpy(path_response->response_body + pos, word, len);
-                pos += len;
-                if (pos < (int)path_response->response_body_size) {
-                    path_response->response_body[pos++] = ' ';
+            if (path_response->response_body_size > 0) {
+                int pos = 0;
+                while (pos < (int)path_response->response_body_size) {
+                    const char *word = words[rand() % word_count];
+                    int len = strlen(word);
+                    if (pos + len > (int)path_response->response_body_size) len = path_response->response_body_size - pos;
+                    memcpy(path_response->response_body + pos, word, len);
+                    pos += len;
+                    if (pos < (int)path_response->response_body_size) {
+                        path_response->response_body[pos++] = ' ';
+                    }
                 }
             }
         }
@@ -87,7 +93,14 @@ void init_response_buffers(perf_config_t *config) {
         char temp_header[4096];
         char *p = temp_header;
 
-        p += snprintf(p, sizeof(temp_header), "HTTP/1.1 200 OK\r\n");
+        int status_code = path_config->response_code > 0 ? path_config->response_code : 200;
+        const char *status_text = "OK";
+        if (status_code == 404) status_text = "Not Found";
+        else if (status_code == 201) status_text = "Created";
+        else if (status_code == 500) status_text = "Internal Server Error";
+        // for simplicity, just a few. We can make it more robust if needed.
+
+        p += snprintf(p, sizeof(temp_header), "HTTP/1.1 %d %s\r\n", status_code, status_text);
         for (int j = 0; j < path_config->response_headers_count; j++) {
             p += snprintf(p, sizeof(temp_header) - (p - temp_header), "%s\r\n", path_config->response_headers[j]);
         }

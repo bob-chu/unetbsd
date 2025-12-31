@@ -173,8 +173,6 @@ netbsd_srcs = [
     'src/u_fd.c'
 ]
 
-# Apply patch for TCP output cache in userspace event-driven model
-patch_file = 'disable_cache_optimization.patch'
 
 libnetbsdstack_static = static_library(
     'netbsdstack',
@@ -196,6 +194,8 @@ libnetbsdstack_static = static_library(
     override_options : ['cpp_std=none']
 )
 
+
+
 libnetbsdstack_shared = shared_library(
     'netbsdstack',
     netbsd_srcs,
@@ -216,9 +216,9 @@ libnetbsdstack_shared = shared_library(
     override_options : ['cpp_std=none']
 )
 
-# Note: Applying patches directly in Meson might require a custom target or script
-# since Meson doesn't have built-in patch application like this.
-# For now, ensure the patch is applied manually or through a setup script.
+
+# Apply patch for TCP output cache in userspace event-driven model
+patch_file = 'disable_cache_optimization.patch'
 message('Make sure to apply the patch ' + patch_file + ' to the NetBSD source if needed.')
 
 app_srcs = [
@@ -275,7 +275,7 @@ perf_tool_srcs = [
     'perf_tool/ssl_layer.c',
     'perf_tool/deps/picohttpparser/picohttpparser.c',
     'perf_tool/dpdk_client.c',
-    'perf_tool/pipe_client.c'
+    'perf_tool/pipe_client.c',
 ]
 
 executable(
@@ -377,11 +377,34 @@ ptcp_sources = files(
   'ptcp/web.go',
 )
 
+# Build ptweb (Vue frontend)
+ptweb_sources = files(
+  'ptweb/package.json',
+  'ptweb/vite.config.js',
+  'ptweb/index.html',
+  'ptweb/src/App.vue',
+  'ptweb/src/main.js',
+  'ptweb/src/api.js',
+  'ptweb/src/components/MonitorPanel.vue',
+  'ptweb/src/components/ControlPanel.vue',
+  'ptweb/src/components/ConfigPanel.vue',
+  'ptweb/src/components/StatusPanel.vue',
+)
+
+ptweb_build = custom_target(
+    'ptweb',
+    input : ptweb_sources,
+    output : 'ptweb_build.stamp',
+    command : ['sh', '-c', 'cd ../ptweb && npm install && npm run build && touch ../build/@OUTPUT@'],
+    build_by_default: true
+)
+
 ptcp_exe = custom_target(
     'ptcp',
     input : ptcp_sources,
     output : 'ptcp',
     command : ['sh', '-c', 'cd ../ptcp && CGO_ENABLED=0 go build -o ../build/@OUTPUT@ -buildvcs=false .'],
+    depends : [ptweb_build],
     build_by_default: true,
     install : true,
     install_dir : get_option('bindir')

@@ -8,7 +8,7 @@
   },
   "objective": {
     "type": "HTTP_REQUESTS",
-    "value": 1000,
+    "value": 25,
     "requests_per_connection": 1
   },
   "http_config": {
@@ -26,12 +26,12 @@
           "Server: unetbsd",
           "Content-Type: text/plain"
         ],
-        "response_body_size": 100
+        "response_body_size": 10000
       }
     ]
   },
   "interface": {
-    "mtu": 2000
+    "mtu": 8000
   },
   "network": {
     "l2": {
@@ -53,7 +53,7 @@
   },
   "dpdk_client": {
     "iface": "memif_c",
-    "args": "--vdev=net_memif,id=0,role=client --proc-type=primary --file-prefix=memif_c",
+    "args": "--vdev=net_memif,id=0,role=client,bsize=9216 --proc-type=primary --file-prefix=memif_c",
     "is_dpdk_client": 1,
     "client_ring_idx": 0,
     "client_lcore_id": 0,
@@ -61,7 +61,7 @@
   },
   "dpdk_server": {
     "iface": "memif_s",
-    "args": "--vdev=net_memif,id=0,role=server --proc-type=primary --file-prefix=memif_s",
+    "args": "--vdev=net_memif,id=0,role=server,bsize=9216 --proc-type=primary --file-prefix=memif_s",
     "is_dpdk_client": 1,
     "client_ring_idx": 0,
     "client_lcore_id": 0,

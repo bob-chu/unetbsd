@@ -33,8 +33,8 @@ ifioctl_virt(struct ifnet *ifp, u_long cmd, void *data)
     switch (cmd) {
         case SIOCSIFMTU:
             ifp->if_mtu = *(int *)data;
-            if (ifp->if_mtu > 9000) {
-                ifp->if_mtu = 9000; // Cap at 9000 for jumbo frame support
+            if (ifp->if_mtu > 9216) {
+                ifp->if_mtu = 9216; // Cap at 9216 for jumbo frame support
             }
             return 0;
         case SIOCGIFMTU:
@@ -62,7 +62,7 @@ struct virt_interface *virt_if_create(const char *name)
     memset(ifp, 0, sizeof(*ifp));
     strlcpy(ifp->if_xname, "virt0", IFNAMSIZ);
     ifp->if_softc = gl_vif;
-    ifp->if_mtu = ETHERMTU;
+    ifp->if_mtu = 9000; // Default to 9000 for jumbo frames
     ifp->if_flags = IFF_MULTICAST | IFF_UP | IFF_RUNNING;
     ifp->if_init = virt_if_init;
     ifp->if_start = virt_if_start;
@@ -94,7 +94,7 @@ virt_if_attach(struct virt_interface *vif, const uint8_t *ether_addr)
     }
     */
     ether_ifattach(gl_vif->ifp, ether_addr);
-    //gl_vif->ifp->if_mtu = 7000; // Support jumbo frames up to 9000 bytes
+    gl_vif->ifp->if_mtu = 9000; // Support jumbo frames up to 9000 bytes
     return 0;
 }
 
@@ -115,24 +115,30 @@ int virt_if_output(struct virt_interface *vif, void *data, size_t len) {
 int virt_if_input(struct virt_interface *vif, void *data, size_t len) {
     vif = gl_vif;
     struct mbuf *m;
-    if (len > MCLBYTES) {
-        printf("Input data size %zu exceeds maximum mbuf cluster size %d", len, MCLBYTES);
-        return -1;
+
+    if (len <= MCLBYTES) {
+        m = m_getcl(M_NOWAIT, MT_DATA, M_PKTHDR);
+        if (!m) {
+            printf("Failed to allocate mbuf for input data\n");
+            return -1;
+        }
+        m->m_data += 32; // Reserve space for headers
+        if (len > M_TRAILINGSPACE(m)) {
+            m_free(m);
+            printf("Input data size %zu exceeds available space in mbuf\n", len);
+            return -1;
+        }
+        u_memcpy(m->m_data, data, len);
+        m->m_len = len;
+    } else {
+        // Handle jumbo frames by chaining mbufs
+        m = netbsd_mget_hdr(data, len);
+        if (!m) {
+            printf("Failed to allocate chained mbufs for jumbo frame (len=%zu)\n", len);
+            return -1;
+        }
     }
-    m = m_getcl(M_NOWAIT, MT_DATA, M_PKTHDR);
-    if (!m) {
-        printf("Failed to allocate mbuf for input data");
-        return -1;
-    }
-    /* Do we need this ? */
-    m->m_data += 32; // Reserve space for headers
-    if (len > M_TRAILINGSPACE(m)) {
-        m_free(m);
-        printf("Input data size %zu exceeds available space in mbuf", len);
-        return -1;
-    }
-    u_memcpy(m->m_data, data, len);
-    m->m_len = len;
+
     m->m_pkthdr.len = len;
     m->m_pkthdr._rcvif.index = vif->ifp->if_index;
 
@@ -298,56 +304,102 @@ void netbsd_freembuf(void *mbuf) {
 
 void *netbsd_mget_hdr(void *data, int len)
 {
-    struct mbuf *m;
-    if (len > MHLEN) {
+    struct mbuf *m, *m_curr;
+    int remaining = len;
+    int chunk;
+    char *p = (char *)data;
+
+    /* Allocate the header mbuf */
+    if (remaining > MHLEN) {
         m = m_getcl(M_NOWAIT, MT_DATA, M_PKTHDR);
-        if (m == NULL) {
-            return NULL;
-        }
-        if (m->m_ext.ext_buf == NULL) {
-            return NULL;
-        }
-        u_memcpy(m->m_data, data, len);
-        m->m_len = len;
     } else {
         m = m_gethdr(M_NOWAIT, MT_DATA);
-        if (m == NULL) {
+    }
+
+    if (m == NULL) return NULL;
+
+    chunk = M_TRAILINGSPACE(m);
+    if (chunk > remaining) chunk = remaining;
+
+    u_memcpy(m->m_data, p, chunk);
+    m->m_len = chunk;
+    p += chunk;
+    remaining -= chunk;
+
+    m_curr = m;
+    while (remaining > 0) {
+        struct mbuf *n;
+        if (remaining > MLEN) {
+            n = m_getcl(M_NOWAIT, MT_DATA, 0);
+        } else {
+            MGET(n, M_NOWAIT, MT_DATA);
+        }
+
+        if (n == NULL) {
+            m_freem(m);
             return NULL;
         }
 
-        u_memcpy(m->m_data, data, len);
-        m->m_len = len;
+        chunk = M_TRAILINGSPACE(n);
+        if (chunk > remaining) chunk = remaining;
+
+        u_memcpy(n->m_data, p, chunk);
+        n->m_len = chunk;
+        p += chunk;
+        remaining -= chunk;
+
+        m_curr->m_next = n;
+        m_curr = n;
     }
+
     m->m_pkthdr.len = len;
-    m->m_pkthdr._rcvif.index =gl_vif->ifp->if_index;
+    m->m_pkthdr._rcvif.index = gl_vif->ifp->if_index;
     return m;
 }
 
 void *netbsd_mget_data(void *pre, void *data, int len)
 {
-    struct mbuf *m_new = NULL;
     struct mbuf *m_prev = (struct mbuf *)pre;
+    struct mbuf *m_new_head = NULL;
+    struct mbuf *m_curr = NULL;
+    int remaining = len;
+    int chunk;
+    char *p = (char *)data;
 
-    if (len > MLEN) {
-        m_new = m_getcl(M_NOWAIT, MT_DATA, 0);
-        if (m_new == NULL) {
+    while (remaining > 0) {
+        struct mbuf *n;
+        if (remaining > MLEN) {
+            n = m_getcl(M_NOWAIT, MT_DATA, 0);
+        } else {
+            MGET(n, M_NOWAIT, MT_DATA);
+        }
+
+        if (n == NULL) {
+            if (m_new_head) m_freem(m_new_head);
             return NULL;
         }
-    } else {
-        MGET(m_new, M_NOWAIT, MT_DATA);
-        if (m_new == NULL) {
-            return NULL;
-        }
-    }
-    u_memcpy(m_new->m_data, data, len);
-    m_new->m_len = len;
-    m_new->m_next = NULL;  // Initialize to NULL
 
-    // Link this mbuf to the previous one
-    if (m_prev != NULL) {
-        m_prev->m_next = m_new;
+        chunk = M_TRAILINGSPACE(n);
+        if (chunk > remaining) chunk = remaining;
+
+        u_memcpy(n->m_data, p, chunk);
+        n->m_len = chunk;
+        p += chunk;
+        remaining -= chunk;
+
+        if (m_new_head == NULL) {
+            m_new_head = n;
+        } else {
+            m_curr->m_next = n;
+        }
+        m_curr = n;
     }
-    return m_new;
+
+    if (m_prev != NULL && m_new_head != NULL) {
+        m_prev->m_next = m_new_head;
+    }
+
+    return m_curr; // Return the LAST mbuf in the new chain
 }
 
 int virt_if_mbuf_input(struct virt_interface *vif, void *data)
@@ -358,3 +410,10 @@ int virt_if_mbuf_input(struct virt_interface *vif, void *data)
     ether_input(gl_vif->ifp, data);
     return 0;
 }
+
+int virt_if_set_mtu(struct virt_interface *vif, int mtu)
+{
+    if (!vif || !vif->ifp) return -1;
+    return ifioctl_virt(vif->ifp, SIOCSIFMTU, &mtu);
+}
+

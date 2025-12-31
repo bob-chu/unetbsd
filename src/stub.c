@@ -47,7 +47,7 @@ struct lwp	*curlwp;
  */
 
 const int msize = 512*8;    // Reduced from 512 to allow more mbufs with less memory per mbuf
-const int mclbytes = 2048; // Increased from 2048 to allow larger clusters for better performance
+const int mclbytes = 4096; // Increased from 2048 to allow larger clusters for better performance
 
 //#define PHYSMEM 1048576*2048 // Increased from 256MB to 1GB
 #define PHYSMEM (1048576UL * 2048UL) // Increased from 256MB to 4GB, using unsigned long to prevent overflow
