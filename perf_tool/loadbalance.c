@@ -81,6 +81,7 @@ ip_addr_hash_func(const void *key, uint32_t key_len, uint32_t init_val)
 #define MAX_LINK_CHECKS 100 /* 100 * 100ms = 10s */
 
 static volatile sig_atomic_t quit_signal = 0;
+static volatile bool dump_hex_enabled = false;
 
 static uint32_t num_clients = 0;
 struct rte_ring *rx_rings[MAX_CLIENTS];
@@ -232,22 +233,30 @@ static void signal_handler(int signum) {
     if (signum == SIGINT || signum == SIGTERM) {
         RTE_LOG(INFO, LB, "Signal %d received, preparing to exit...\n", signum);
         quit_signal = 1;
+    } else if (signum == SIGUSR2) {
+        dump_hex_enabled = !dump_hex_enabled;
+        RTE_LOG(INFO, LB, "SIGUSR2 received: dump_mbuf_hex toggled to %s.\n", dump_hex_enabled ? "ENABLED" : "DISABLED");
     }
 }
 
 void dump_mbuf_hex(struct rte_mbuf *mbuf, char *msg)
 {
-    return;
+    if (!dump_hex_enabled) {
+        return;
+    }
     if (!mbuf) {
         printf("Invalid mbuf\n");
         return;
     }
-
+    static pid_t cur_pid;
+    if (cur_pid == 0) {
+        cur_pid = getpid();
+    }
     // Get the pointer to the data and the data length
     const uint8_t *data = rte_pktmbuf_mtod(mbuf, const uint8_t *);
     uint16_t data_len = rte_pktmbuf_data_len(mbuf);
 
-    printf("Mbuf data dump: %s (length=%u):\n", msg, data_len);
+    printf("[%d]: Mbuf data dump: %s (length=%u):\n", cur_pid, msg, data_len);
 
     for (uint16_t i = 0; i < data_len; i++) {
         if (i % 16 == 0) { // Start a new line every 16 bytes
@@ -298,7 +307,7 @@ static int lcore_rxtx(void *arg) {
         if (nb_rx > 0) {
             for (uint16_t i = 0; i < nb_rx; i++) {
                 rte_prefetch0(rte_pktmbuf_mtod(bufs[i], void *));
-
+                dump_mbuf_hex(bufs[i], "IN");
                 struct rte_ether_hdr *eth_hdr = rte_pktmbuf_mtod(bufs[i], struct rte_ether_hdr *);
                 ip_addr_t dst_ip;
                 int32_t *client_id_ptr;
@@ -414,7 +423,11 @@ static int lcore_rxtx(void *arg) {
                     // Ring i is empty, move to next ring
                     break; 
                 }
-                
+                if (dump_hex_enabled) {
+                    for (int i = 0; i < nb_dequeued; i++) {
+                        dump_mbuf_hex(tx_burst_buffer[nb_to_tx+i], "OUT");
+                    }
+                } 
                 nb_to_tx += nb_dequeued;
             }
         }
@@ -710,6 +723,7 @@ int main(int argc, char *argv[]) {
     /* Register signal handler for graceful shutdown */
     signal(SIGINT, signal_handler);
     signal(SIGTERM, signal_handler);
+    signal(SIGUSR2, signal_handler);
 
     atexit(cleanup_dpdk_config); // Register cleanup function
 
