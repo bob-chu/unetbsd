@@ -253,6 +253,7 @@ static void http_on_accept(tcp_conn_t *conn) {
 
 static void on_handshake_complete_cb(ssl_layer_t *layer) {
     LOG_INFO("SSL handshake complete");
+    STATS_INC(ssl_handshakes_completed_server);
     client_data_t *client_data = (client_data_t*)SSL_get_ex_data(layer->ssl, s_ex_data_idx);
     if (client_data) {
         client_data->last_activity_time = ev_now(g_main_loop);

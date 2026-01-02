@@ -292,6 +292,7 @@ executable(
 test_ssl_layer_srcs = [
     'perf_tool/test/test_ssl_layer.c',
     'perf_tool/ssl_layer.c',
+    'perf_tool/metrics.c',
     'perf_tool/config.c',
     'perf_tool/deps/cjson/cJSON.c',
     'app/log.c',

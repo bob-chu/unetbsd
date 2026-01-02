@@ -84,7 +84,7 @@ onUnmounted(() => {
           </div>
           <div class="lg:col-span-1 space-y-6">
             <StatusPanel :state="state" :health="health" :error="error" class="hidden lg:block" /> <!-- duplicated info but kept for structure -->
-            <ControlPanel :state="state" @refresh-state="refreshState" />
+            <ControlPanel :state="state" @refresh-state="refreshState" @switch-to-monitor="activeTab = 'monitor'" />
           </div>
        </div>
 

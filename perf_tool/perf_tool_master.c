@@ -97,6 +97,7 @@ static cJSON* stats_to_cjson(const stats_t *stats) {
     STATS_TCP_FIELDS
     STATS_UDP_FIELDS
     STATS_DPDK_FIELDS
+    STATS_SSL_FIELDS
     STATS_PHASE_FIELD
 #undef X
     return json;
@@ -129,6 +130,7 @@ static void aggregate_stats(stats_t *out_stats, int client_role_filter) {
             STATS_TCP_FIELDS
             STATS_UDP_FIELDS
             STATS_DPDK_FIELDS
+            STATS_SSL_FIELDS
 #undef X
             if (!first_found) {
                 out_stats->client_role = 1;
@@ -150,6 +152,7 @@ static void aggregate_stats(stats_t *out_stats, int client_role_filter) {
             STATS_TCP_FIELDS
             STATS_UDP_FIELDS
             STATS_DPDK_FIELDS
+            STATS_SSL_FIELDS
 #undef X
             if (!first_found) {
                 out_stats->server_role = 1;

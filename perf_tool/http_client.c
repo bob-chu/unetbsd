@@ -81,6 +81,7 @@ static void on_handshake_complete_cb_client(ssl_layer_t *layer) {
     if (http_conn) {
         http_conn->last_activity_time = ev_now(g_main_loop);
         LOG_INFO("SSL handshake complete for client %p", http_conn);
+        STATS_INC(ssl_handshakes_completed_client);
         STATS_INC(connections_opened);
         STATS_INC(requests_sent);
         metrics_inc_success();

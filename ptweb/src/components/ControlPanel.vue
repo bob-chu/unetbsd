@@ -6,7 +6,7 @@ const props = defineProps({
   state: String
 });
 
-const emit = defineEmits(['refresh-state']);
+const emit = defineEmits(['refresh-state', 'switch-to-monitor']);
 
 const loading = ref(false);
 const generateParams = ref({
@@ -38,7 +38,10 @@ const handlePrepare = () => handleAction('Prepare', runPrepare, {
 });
 
 const handleCheck = () => handleAction('Check', runCheck);
-const handleStart = () => handleAction('Start', runStart);
+const handleStart = () => {
+  emit('switch-to-monitor');
+  handleAction('Start', runStart);
+};
 const handleStop = () => handleAction('Stop', runStop);
 
 const isSafeToConfigure = computed(() => 

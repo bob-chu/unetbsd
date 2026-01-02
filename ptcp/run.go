@@ -519,7 +519,7 @@ func runPrepare(buildDir, configDir string) {
 				go cmdServer.Wait()
 			}
 		}
-		time.Sleep(5 * time.Second)
+		//time.Sleep(5 * time.Second)
 	}
 
 	if _, err := os.Stat(lbClientConfig); err == nil {
@@ -553,7 +553,7 @@ func runPrepare(buildDir, configDir string) {
 				go cmdClient.Wait()
 			}
 		}
-		time.Sleep(5 * time.Second)
+		//time.Sleep(5 * time.Second)
 	}
 
 	pidData, err := json.Marshal(pids)
