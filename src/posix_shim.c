@@ -503,8 +503,8 @@ static void shim_init(void)
     }
     
     struct itimerspec timer_spec = {
-        .it_interval = { .tv_sec = 0, .tv_nsec = 10000000 },  // 10ms
-        .it_value = { .tv_sec = 0, .tv_nsec = 10000000 }
+        .it_interval = { .tv_sec = 0, .tv_nsec = 1000000 },  // 1ms (optimized from 10ms)
+        .it_value = { .tv_sec = 0, .tv_nsec = 1000000 }
     };
     if (timerfd_settime(g_timer_fd, 0, &timer_spec, NULL) < 0) {
         fprintf(stderr, "[Shim] ERROR: Failed to set timer\n");
@@ -902,7 +902,7 @@ ssize_t read(int fd, void *buf, size_t count)
         pfds[1].fd = g_timer_fd;
         pfds[1].events = POLLIN;
         
-        real_poll(pfds, 2, 10);
+        real_poll(pfds, 2, 1);  // 1ms timeout (optimized from 10ms)
         lock_robust();
         drive_stack();
         pthread_mutex_unlock(&g_lock);
@@ -1000,7 +1000,7 @@ ssize_t write(int fd, const void *buf, size_t count)
         pfds[1].fd = g_timer_fd;
         pfds[1].events = POLLIN;
         
-        real_poll(pfds, 2, 10);
+        real_poll(pfds, 2, 1);  // 1ms timeout (optimized from 10ms)
         drive_stack_inline(); // Use non-blocking version to avoid deadlock
     }
 }
