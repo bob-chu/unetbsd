@@ -36,7 +36,8 @@
 struct cpu_info cpu0 = {0};
 struct lwp	*curlwp;
 
-#if 1
+// DISABLED: This macro prevents curlwp initialization, causing NULL pointer crash in sobind()
+#if 0
 #ifdef curlwp
 #undef curlwp
 #endif
@@ -275,8 +276,12 @@ lwp_t *gl_lwp;
 struct proc dummy_proc = {0};
 extern struct proc *curproc;
 
+// Thread-local storage for curlwp (used by x86_curlwp in cpu.h)
+__thread struct lwp *__curlwp_tls = &lwp0;
+
 __attribute__((constructor)) void init_dummy_lwp() {
     gl_lwp = &lwp0;
+    __curlwp_tls = &lwp0;  // Initialize TLS curlwp for all threads
 }
 
 static inline lwp_t * __attribute__ ((const)) stub_curlwp(void) { return &lwp0; }
@@ -1051,8 +1056,6 @@ int kthread_create(int pri, int flags, void *cpu, void (*func)(void *), void *ar
 /*
  * socket related
  */
-struct socket;
-
 /* Minimal fileops stub for socketops - defined in sys_socket.c, so commented out here */
 /*
 int soo_read(struct file *fp, off_t *off, struct uio *uio, kauth_cred_t cred, int flags) { return 0; }
@@ -1090,6 +1093,7 @@ static int ifioctl_stub(struct socket *so, u_long cmd, void *data, struct lwp *l
     return 0; // Simulate success for now
 }
 
+/* Define the ifioctl pointer - commented out to avoid multiple definition */
 /* Define the ifioctl pointer - commented out to avoid multiple definition */
 // int (*ifioctl)(struct socket *, u_long, void *, struct lwp *) = ifioctl_stub;
 
@@ -1515,3 +1519,4 @@ devhandle_t	device_handle(device_t dev) { return dummy_devhandle;}
 ssize_t
 device_getprop_data(device_t dev, const char *prop, void *buf, size_t buflen)
 { return 0; }
+

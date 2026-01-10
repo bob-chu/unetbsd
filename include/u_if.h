@@ -33,6 +33,8 @@ int virt_if_set_mtu(struct virt_interface *vif, int mtu);
 long netbsd_mbufvec(void *mp, struct iovec *iov, int *n_iov);
 void netbsd_freembuf(void *mbuf);
 
+
 void *netbsd_mget_hdr(void *data, int len);
 void *netbsd_mget_data(void *pre, void *data, int len);
+int virt_if_get_fd(void);  // Get veth file descriptor for polling
 #endif

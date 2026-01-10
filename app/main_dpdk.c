@@ -474,7 +474,7 @@ static void udp_server_init() {
     udp_server.active = 0;
     int ret = netbsd_socket(&udp_server);
     if (ret) {
-        printf("netbsd create socket error: %d\n");
+        printf("netbsd create socket error: %d\n", ret);
     }
     udp_server.active = 1;
 
@@ -486,7 +486,7 @@ static void udp_server_init() {
 
     ret = netbsd_bind(&udp_server, (struct sockaddr *)&addr);
     if (ret) {
-        printf("bind error: %d\n");
+        printf("bind error: %d\n", ret);
         netbsd_close(&udp_server);
     }
 

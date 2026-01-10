@@ -62,8 +62,8 @@ struct virt_interface *virt_if_create(const char *name)
     memset(ifp, 0, sizeof(*ifp));
     strlcpy(ifp->if_xname, "virt0", IFNAMSIZ);
     ifp->if_softc = gl_vif;
-    ifp->if_mtu = 9000; // Default to 9000 for jumbo frames
-    ifp->if_flags = IFF_MULTICAST | IFF_UP | IFF_RUNNING;
+    ifp->if_mtu = 1500; // Match standard Linux MTU
+    ifp->if_flags = IFF_BROADCAST | IFF_MULTICAST | IFF_UP | IFF_RUNNING;
     ifp->if_init = virt_if_init;
     ifp->if_start = virt_if_start;
     ifp->if_type = IFT_ETHER;
@@ -93,8 +93,20 @@ virt_if_attach(struct virt_interface *vif, const uint8_t *ether_addr)
         return -1;
     }
     */
+    printf("[u_if] virt_if_attach: attaching interface with MAC %02x:%02x:%02x:%02x:%02x:%02x\n",
+           ether_addr[0], ether_addr[1], ether_addr[2], ether_addr[3], ether_addr[4], ether_addr[5]);
+    printf("[u_if] Before ether_ifattach: flags=0x%x\n", gl_vif->ifp->if_flags);
+    
     ether_ifattach(gl_vif->ifp, ether_addr);
-    gl_vif->ifp->if_mtu = 9000; // Support jumbo frames up to 9000 bytes
+    gl_vif->ifp->if_mtu = 1500; // Match standard Linux MTU (was 9000)
+    
+    // Disable hardware checksum offload (veth doesn't support it)
+    gl_vif->ifp->if_capabilities = 0;
+    gl_vif->ifp->if_capenable = 0;
+    
+    printf("[u_if] After ether_ifattach: flags=0x%x, if_output=%p, if_transmit=%p\n",
+           gl_vif->ifp->if_flags, gl_vif->ifp->if_output, gl_vif->ifp->if_transmit);
+    
     return 0;
 }
 
@@ -112,20 +124,29 @@ int virt_if_output(struct virt_interface *vif, void *data, size_t len) {
     return gl_vif->output_cb(data, len, gl_vif->sc_arg);
 }
 
-int virt_if_input(struct virt_interface *vif, void *data, size_t len) {
+int virt_if_input(struct virt_interface *vif, void *data, size_t len)
+{
     vif = gl_vif;
     struct mbuf *m;
+
+    if (!gl_vif || !gl_vif->ifp) {
+        return -1;
+    }
+
+    if (len >= 14) {
+        uint8_t *eb = (uint8_t *)data;
+        uint16_t et = (eb[12] << 8) | eb[13];
+        // printf("[u_if] virt_if_input: len=%zu, eth_type=0x%04x\n", len, et);
+    }
 
     if (len <= MCLBYTES) {
         m = m_getcl(M_NOWAIT, MT_DATA, M_PKTHDR);
         if (!m) {
-            printf("Failed to allocate mbuf for input data\n");
             return -1;
         }
         m->m_data += 32; // Reserve space for headers
         if (len > M_TRAILINGSPACE(m)) {
             m_free(m);
-            printf("Input data size %zu exceeds available space in mbuf\n", len);
             return -1;
         }
         u_memcpy(m->m_data, data, len);
@@ -134,7 +155,6 @@ int virt_if_input(struct virt_interface *vif, void *data, size_t len) {
         // Handle jumbo frames by chaining mbufs
         m = netbsd_mget_hdr(data, len);
         if (!m) {
-            printf("Failed to allocate chained mbufs for jumbo frame (len=%zu)\n", len);
             return -1;
         }
     }
@@ -143,6 +163,7 @@ int virt_if_input(struct virt_interface *vif, void *data, size_t len) {
     m->m_pkthdr._rcvif.index = vif->ifp->if_index;
 
     ether_input(gl_vif->ifp, m);
+    
     return 0;
 }
 
@@ -151,10 +172,15 @@ virt_if_add_addr4(struct virt_interface *vif, struct in_addr *addr, unsigned net
 {
     struct in_aliasreq ifra;
     struct sockaddr_in sin, mask;
-    vif = gl_vif;
+
     if (vif == NULL || vif->ifp == NULL) {
         return -1;
     }
+
+    printf("[u_if] virt_if_add_addr4: Adding IP %d.%d.%d.%d/%u to interface %s\n",
+           (addr->s_addr >> 0) & 0xff, (addr->s_addr >> 8) & 0xff,
+           (addr->s_addr >> 16) & 0xff, (addr->s_addr >> 24) & 0xff,
+           netmask, vif->ifp->if_xname);
 
     memset(&sin, 0, sizeof(sin));
     sin.sin_len = sizeof(sin);
@@ -417,3 +443,9 @@ int virt_if_set_mtu(struct virt_interface *vif, int mtu)
     return ifioctl_virt(vif->ifp, SIOCSIFMTU, &mtu);
 }
 
+// Get veth file descriptor for polling (stub for now)
+int virt_if_get_fd(void)
+{
+    // TODO: Return actual veth FD when veth integration is implemented
+    return -1;
+}

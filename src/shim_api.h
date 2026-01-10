@@ -3,6 +3,7 @@
 
 #include <sys/socket.h>
 #include <stdint.h> // For intptr_t
+#include <pthread.h> // Required for pthread_cond_t
 
 struct netbsd_handle; // Forward declaration
 

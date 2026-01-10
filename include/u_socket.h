@@ -46,8 +46,23 @@ int netbsd_connect(struct netbsd_handle *nh, struct sockaddr *addr);
 
 void netbsd_io_start(struct netbsd_handle *nh);
 int netbsd_accept(struct netbsd_handle *nh_server, struct netbsd_handle *nh_client);
-int netbsd_close(struct netbsd_handle *nh);
+int netbsd_getpeername(struct netbsd_handle *nh, struct sockaddr *sa, socklen_t *alen);
+int netbsd_getsockname(struct netbsd_handle *nh, struct sockaddr *sa, socklen_t *alen);
+int netbsd_setsockopt(struct netbsd_handle *nh, int level, int optname, const void *optval, socklen_t optlen);
+int netbsd_getsockopt(struct netbsd_handle *nh, int level, int optname, void *optval, socklen_t *optlen);
+int netbsd_shutdown(struct netbsd_handle *nh, int how);
+int netbsd_set_nonblocking(struct netbsd_handle *nh, int nonblocking);
+int netbsd_is_nonblocking(struct netbsd_handle *nh);
+int netbsd_is_connecting(struct netbsd_handle *nh);
+int netbsd_is_connected(struct netbsd_handle *nh);
+int netbsd_is_nonblocking(struct netbsd_handle *nh);
+int netbsd_poll_check(struct netbsd_handle *nh, int events);
+void netbsd_get_debug_info(struct netbsd_handle *nh, long *sb_cc, long *sb_hiwat, int *state, int *error, short *sb_flags);
+void netbsd_force_connected(struct netbsd_handle *nh);
 
+#ifdef __cplusplus
+}
+#endif
 int netbsd_socket_error(struct netbsd_handle *nh);
 
 int netbsd_read(struct netbsd_handle *nh, struct iovec *iov, int iovcnt);

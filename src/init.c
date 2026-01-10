@@ -127,25 +127,18 @@ void sysctl_tun(char *name, int val)
 {
     if (strcmp(name, "tcp_msl_local") == 0) {
         tcp_msl_local = val;
-    }
-    if (strcmp(name, "tcp_msl_enable") == 0) {
+    } else if (strcmp(name, "tcp_msl_enable") == 0) {
         tcp_msl_enable = val;
-    }
-    if (strcmp(name, "tcp_msl_loop") == 0) {
+    } else if (strcmp(name, "tcp_msl_loop") == 0) {
         tcp_msl_loop = val;
-    }
-    if (strcmp(name, "tcp_msl_remote") == 0) {
+    } else if (strcmp(name, "tcp_msl_remote") == 0) {
         tcp_msl_remote = val;
-    }
-
-    if (strcmp(name, "tcp_delack_ticks") == 0) {
+    } else if (strcmp(name, "tcp_delack_ticks") == 0) {
         tcp_delack_ticks = val;
-    }
-    if (strcmp(name, "somaxconn") == 0) {
-        tcp_delack_ticks = val;
-    }
-    if (strcmp(name, "tcbhashsize") == 0) {
-        tcp_delack_ticks = val;
+    } else if (strcmp(name, "somaxconn") == 0) {
+        somaxconn = val;
+    } else if (strcmp(name, "tcbhashsize") == 0) {
+        tcbhashsize = val;
     }
 }
 

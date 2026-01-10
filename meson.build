@@ -20,7 +20,7 @@ add_project_arguments(
 
 cflags_user = [
     '-g',
-    '-O2',
+    '-O0',
     '-frename-registers',
     '-funswitch-loops',
     '-fweb',
@@ -319,16 +319,18 @@ executable(
 libnetbsd_shim_srcs = [
     'src/posix_shim.c',
     'src/u_cmdqueue.c',
+    'perf_tool/deps/cjson/cJSON.c',
 ]
 
 shared_library(
     'netbsdshim',
     libnetbsd_shim_srcs,
-    include_directories : [include_directories('include'), include_directories('src')],
-    link_with : libnetbsdstack_static,
+    include_directories : [include_directories('include'), include_directories('src'), include_directories('perf_tool/deps/cjson')],
+    link_with : libnetbsdstack_shared,  # CHANGED: Use shared library to share fd_table!
     dependencies : [cc.find_library('dl', required: true), dependency('threads')] + (get_option('use_dpdk') ? [dpdk_dep_dynamic] : []),
     #c_args : ['-fPIC'],
     link_args : ['-static-libgcc', '-Wl,--whole-archive', '-lpthread', '-lnuma', '-Wl,--no-whole-archive'],
+    c_args : ['-D_FORTIFY_SOURCE=0'],
     install : true
 )
 

@@ -160,7 +160,8 @@ NETBSD_SRCS = \
     	src/u_if.c \
     	src/u_socket.c \
     	src/u_clock.c \
-    	src/u_mem.c
+    	src/u_mem.c \
+    	src/u_fd.c
 
 NETBSD_OBJS = $(NETBSD_SRCS:%.c=$(OBJDIR)/%.o)
 
