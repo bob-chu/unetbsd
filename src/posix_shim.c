@@ -180,28 +180,14 @@ static int shim_packet_output(void *mbuf, size_t len, void *arg)
 {
     if (g_af_packet_fd < 0) return -1;
     
-    // Convert mbuf to iovec
-    struct iovec iov[8];
+    // Convert mbuf to iovec - use writev to avoid extra copy
+    struct iovec iov[16];
     int count = sizeof(iov) / sizeof(iov[0]);
     int total_len = netbsd_mbufvec(mbuf, iov, &count);
     if (total_len <= 0) return -1;
     
-    // Allocate buffer and copy data
-    char *pkt = malloc(total_len);
-    if (!pkt) return -1;
-    
-    int offset = 0;
-    for (int i = 0; i < count; i++) {
-        memcpy(pkt + offset, iov[i].iov_base, iov[i].iov_len);
-        offset += iov[i].iov_len;
-    }
-    
-    // Debug dump TX packet
-    // dump_packet("TX to veth", (uint8_t*)pkt, total_len);
-    
-    // Send to AF_PACKET socket
-    ssize_t sent = write(g_af_packet_fd, pkt, total_len);
-    free(pkt);
+    // Use writev for scatter-gather I/O (zero-copy from mbuf)
+    ssize_t sent = writev(g_af_packet_fd, iov, count);
     
     return (sent > 0) ? 0 : -1;
 }
