@@ -85,7 +85,7 @@ static void soupcall_cb(struct socket *so, void *arg, int events, int waitflag)
 void netbsd_process_event()
 {
     struct netbsd_event *ev;
-    int count = 16;
+    int count = 128; // Increased from 16
     while ((ev = TAILQ_FIRST(&event_queue)) != NULL && count-- > 0) {
         struct netbsd_handle *nh = ev->nh;
         int events;

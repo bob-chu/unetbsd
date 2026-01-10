@@ -152,6 +152,29 @@ static int translate_netbsd_errno(int nb_errno)
     }
 }
 
+// Robust lock helper - recovers from dead owner threads
+static inline void lock_robust(void)
+{
+    int ret = pthread_mutex_lock(&g_lock);
+    if (ret == EOWNERDEAD) {
+        // Previous owner died while holding the lock, recover it
+        fprintf(stderr, "[Shim] WARNING: Recovered mutex from dead thread\n");
+        pthread_mutex_consistent(&g_lock);
+    }
+}
+
+// Robust trylock helper - recovers from dead owner threads
+static inline int trylock_robust(void)
+{
+    int ret = pthread_mutex_trylock(&g_lock);
+    if (ret == EOWNERDEAD) {
+        fprintf(stderr, "[Shim] WARNING: Recovered mutex from dead thread (trylock)\n");
+        pthread_mutex_consistent(&g_lock);
+        return 0;  // Successfully acquired
+    }
+    return ret;
+}
+
 // Packet output callback (NetBSD → external network)
 static int shim_packet_output(void *mbuf, size_t len, void *arg)
 {
@@ -373,10 +396,11 @@ static void load_config(struct shim_config *cfg) {
 __attribute__((constructor))
 static void shim_init(void)
 {
-    // Initialize recursive mutex to handle signal reentrancy
+    // Initialize recursive+robust mutex to handle signal reentrancy and dead threads
     pthread_mutexattr_t ma;
     pthread_mutexattr_init(&ma);
     pthread_mutexattr_settype(&ma, PTHREAD_MUTEX_RECURSIVE);
+    pthread_mutexattr_setrobust(&ma, PTHREAD_MUTEX_ROBUST);  // Recover from dead owner
     pthread_mutex_init(&g_lock, &ma);
     pthread_mutexattr_destroy(&ma);
 
@@ -537,7 +561,7 @@ static void* stack_thread_func(void* arg)
         }
         
         // Process stack with lock held
-        pthread_mutex_lock(&g_lock);
+        lock_robust();
         drive_stack();
         pthread_mutex_unlock(&g_lock);
     }
@@ -592,7 +616,7 @@ static void drive_stack(void)
 // Inline driving (opportunistic, non-blocking)
 static void drive_stack_inline(void)
 {
-    if (pthread_mutex_trylock(&g_lock) == 0) {
+    if (trylock_robust() == 0) {
         drive_stack();
         pthread_mutex_unlock(&g_lock);
     }
@@ -627,7 +651,7 @@ int socket(int domain, int type, int protocol)
     nh->proto = PROTO_TCP;  // We only intercept SOCK_STREAM
     
     // Create NetBSD socket
-    pthread_mutex_lock(&g_lock);
+    lock_robust();
     int ret = netbsd_socket(nh);
     pthread_mutex_unlock(&g_lock);
     
@@ -643,7 +667,7 @@ int socket(int domain, int type, int protocol)
     int internal_fd = u_fd_alloc(nh);
     if (internal_fd < 0) {
         fprintf(stderr, "[Shim] socket() failed: no FDs available\n");
-        pthread_mutex_lock(&g_lock);
+        lock_robust();
         netbsd_close(nh);
         pthread_mutex_unlock(&g_lock);
         errno = EMFILE;
@@ -673,7 +697,7 @@ int close(int fd)
     SHIM_LOG("close(%d) (internal_fd=%d)\n", fd, fd - SHIM_FD_OFFSET);
     
     // Close NetBSD socket
-    pthread_mutex_lock(&g_lock);
+    lock_robust();
     netbsd_close(nh);
     pthread_mutex_unlock(&g_lock);
     
@@ -699,7 +723,7 @@ int bind(int fd, const struct sockaddr *addr, socklen_t addrlen)
     
     SHIM_LOG("bind(%d)\n", fd);
     
-    pthread_mutex_lock(&g_lock);
+    lock_robust();
     int ret = netbsd_bind(nh, addr);
     pthread_mutex_unlock(&g_lock);
     
@@ -726,7 +750,7 @@ int listen(int fd, int backlog)
     
     SHIM_LOG("listen(%d, %d)\n", fd, backlog);
     
-    pthread_mutex_lock(&g_lock);
+    lock_robust();
     int ret = netbsd_listen(nh, backlog);
     pthread_mutex_unlock(&g_lock);
     
@@ -763,7 +787,7 @@ int accept(int fd, struct sockaddr *addr, socklen_t *addrlen)
     
     // Try accept in a loop, driving stack while waiting
     while (1) {
-        pthread_mutex_lock(&g_lock);
+        lock_robust();
         int ret = netbsd_accept(nh, nh_client);
         int is_nb = netbsd_is_nonblocking(nh);
         pthread_mutex_unlock(&g_lock);
@@ -773,7 +797,7 @@ int accept(int fd, struct sockaddr *addr, socklen_t *addrlen)
             // Success - allocate FD
             int client_internal_fd = u_fd_alloc(nh_client);
             if (client_internal_fd < 0) {
-                pthread_mutex_lock(&g_lock);
+                lock_robust();
                 netbsd_close(nh_client);
                 pthread_mutex_unlock(&g_lock);
                 free(nh_client);
@@ -785,7 +809,7 @@ int accept(int fd, struct sockaddr *addr, socklen_t *addrlen)
             if (addr && addrlen) {
                 struct sockaddr_storage ss;
                 socklen_t slen = sizeof(ss);
-                pthread_mutex_lock(&g_lock);
+                lock_robust();
                 int gp_ret = netbsd_getpeername(nh_client, (struct sockaddr *)&ss, &slen);
                 pthread_mutex_unlock(&g_lock);
                 
@@ -826,7 +850,7 @@ int accept(int fd, struct sockaddr *addr, socklen_t *addrlen)
         
         // ALWAYS drive the stack if we are blocking, even if poll didn't trigger,
         // to handle timers and internal state.
-        pthread_mutex_lock(&g_lock);
+        lock_robust();
         drive_stack();
         pthread_mutex_unlock(&g_lock);
     }
@@ -850,7 +874,7 @@ ssize_t read(int fd, void *buf, size_t count)
     
     // Try read in a loop, driving stack while waiting
     while (1) {
-        pthread_mutex_lock(&g_lock);
+        lock_robust();
         int ret = netbsd_read(nh, &iov, 1);
         int is_nb = netbsd_is_nonblocking(nh);
         pthread_mutex_unlock(&g_lock);
@@ -879,7 +903,7 @@ ssize_t read(int fd, void *buf, size_t count)
         pfds[1].events = POLLIN;
         
         real_poll(pfds, 2, 10);
-        pthread_mutex_lock(&g_lock);
+        lock_robust();
         drive_stack();
         pthread_mutex_unlock(&g_lock);
     }
@@ -905,7 +929,7 @@ ssize_t write(int fd, const void *buf, size_t count)
     
     // Try write in a loop, driving stack while waiting
     while (1) {
-        pthread_mutex_lock(&g_lock);
+        lock_robust();
         
         // Debug: check connection before write
         // int is_connected_pre = netbsd_is_connected(nh);
@@ -977,9 +1001,7 @@ ssize_t write(int fd, const void *buf, size_t count)
         pfds[1].events = POLLIN;
         
         real_poll(pfds, 2, 10);
-        pthread_mutex_lock(&g_lock);
-        drive_stack();
-        pthread_mutex_unlock(&g_lock);
+        drive_stack_inline(); // Use non-blocking version to avoid deadlock
     }
 }
 
@@ -1000,70 +1022,52 @@ int connect(int fd, const struct sockaddr *addr, socklen_t addrlen)
     
     // Try connect in a loop (NetBSD connect is non-blocking internally or needs stack driving)
     while (1) {
-        pthread_mutex_lock(&g_lock);
+        lock_robust();
         int ret = netbsd_connect(nh, (struct sockaddr *)addr);
         int is_nb = netbsd_is_nonblocking(nh);
         int is_connecting = netbsd_is_connecting(nh);
         int is_connected = netbsd_is_connected(nh);
+        int so_error = netbsd_socket_error(nh);
         pthread_mutex_unlock(&g_lock);
         
         // Debug logging for connect analysis
-        int raw_ret = ret;
-        int err_raw = translate_netbsd_errno(ret < 0 ? -ret : ret);
-        SHIM_LOG("netbsd_connect(%d) returned %d. is_nb=%d is_connecting=%d is_connected=%d. Translated errno=%d\n", 
-                fd, raw_ret, is_nb, is_connecting, is_connected, err_raw);
+        SHIM_LOG("netbsd_connect(%d) returned %d. is_nb=%d is_connecting=%d is_connected=%d so_error=%d\n", 
+                fd, ret, is_nb, is_connecting, is_connected, so_error);
+
+        if (so_error) {
+            errno = translate_netbsd_errno(so_error);
+            return -1;
+        }
 
         if (ret == 0) {
-            // NetBSD connect returned 0 (initiated).
-            // If blocking, we return 0 and let write() wait if needed.
-            // If non-blocking, we might check is_connecting but usually 0 means success/initiated?
-            // Standard says: 0 success. -1 EINPROGRESS if in progress.
-            // If NetBSD returns 0, it means "Success" or "Allocated".
-            // But state might be connecting.
+            if (is_connected) return 0;
             if (is_nb && is_connecting) {
                errno = EINPROGRESS;
                return -1;
             }
-            return 0; 
-        }
-        
-        int err = translate_netbsd_errno(ret < 0 ? -ret : ret);
-        
-        // If we are already connected, treat EISCONN as success (idempotent connect)
-        // Check both Linux (106) and raw NetBSD (56) values to be safe against header pollution
-        if (err == 106 || err == 56) {
-            SHIM_LOG("connect(%d) already connected (EISCONN), returning success\n", fd);
-            
-            // Debug: Verify connection state via getpeername
-            struct sockaddr_storage ss;
-            socklen_t slen = sizeof(ss);
-            int peer_ret = netbsd_getpeername(nh, (struct sockaddr*)&ss, &slen);
-            SHIM_LOG("connect(%d) getpeername check: ret=%d\n", fd, peer_ret);
-            
-            return 0;
-        }
-        
-        if (err == EINPROGRESS || err == EALREADY || err == EAGAIN) {
-            if (is_nb && err == EINPROGRESS) {
+            // If blocking and still connecting, we must wait
+        } else {
+            int err = translate_netbsd_errno(ret < 0 ? -ret : ret);
+            if (err == EISCONN || err == 106 || err == 56) return 0;
+            if (is_nb && (err == EINPROGRESS || err == EALREADY || err == EAGAIN)) {
                 errno = EINPROGRESS;
                 return -1;
             }
-            // Need to wait and drive stack
-            struct pollfd pfds[2];
-            pfds[0].fd = g_veth_fd;
-            pfds[0].events = POLLIN;
-            pfds[1].fd = g_timer_fd;
-            pfds[1].events = POLLIN;
-            real_poll(pfds, 2, 100);
-            
-            pthread_mutex_lock(&g_lock);
-            drive_stack();
-            pthread_mutex_unlock(&g_lock);
-            continue;
+            if (err != EINPROGRESS && err != EALREADY && err != EAGAIN) {
+                errno = err;
+                return -1;
+            }
         }
         
-        errno = err;
-        return -1;
+        // Need to wait and drive stack
+        struct pollfd pfds[2];
+        pfds[0].fd = g_veth_fd;
+        pfds[0].events = POLLIN;
+        pfds[1].fd = g_timer_fd;
+        pfds[1].events = POLLIN;
+        real_poll(pfds, 2, 5); // Short wait
+        
+        drive_stack_inline();
     }
 }
 
@@ -1144,7 +1148,7 @@ int getsockopt(int fd, int level, int optname, void *optval, socklen_t *optlen)
     SHIM_LOG("getsockopt(%d, level=%d, optname=%d) -> (%d, %d)\n", 
             fd, level, optname, nb_level, nb_optname);
     
-    pthread_mutex_lock(&g_lock);
+    lock_robust();
     int ret = netbsd_getsockopt(nh, nb_level, nb_optname, optval, optlen);
     pthread_mutex_unlock(&g_lock);
     
@@ -1196,7 +1200,7 @@ int setsockopt(int fd, int level, int optname, const void *optval, socklen_t opt
     SHIM_LOG("setsockopt(%d, level=%d, optname=%d) -> (%d, %d)\n", 
             fd, level, optname, nb_level, nb_optname);
     
-    pthread_mutex_lock(&g_lock);
+    lock_robust();
     int ret = netbsd_setsockopt(nh, nb_level, nb_optname, optval, optlen);
     pthread_mutex_unlock(&g_lock);
     
@@ -1229,17 +1233,17 @@ static int shim_do_fcntl(int fd, int cmd, va_list ap)
 
     if (cmd == F_SETFL) {
         if (arg & O_NONBLOCK) {
-            pthread_mutex_lock(&g_lock);
+            lock_robust();
             netbsd_set_nonblocking(nh, 1);
             pthread_mutex_unlock(&g_lock);
         } else {
-            pthread_mutex_lock(&g_lock);
+            lock_robust();
             netbsd_set_nonblocking(nh, 0);
             pthread_mutex_unlock(&g_lock);
         }
         return 0;
     } else if (cmd == F_GETFL) {
-        pthread_mutex_lock(&g_lock);
+        lock_robust();
         int is_nb = netbsd_is_nonblocking(nh);
         pthread_mutex_unlock(&g_lock);
         return is_nb ? O_NONBLOCK : 0;
@@ -1299,7 +1303,7 @@ int ioctl(int fd, unsigned long request, ...)
 
     if (request == FIONBIO) {
         int nb = *(int *)argp;
-        pthread_mutex_lock(&g_lock);
+        lock_robust();
         netbsd_set_nonblocking(nh, nb);
         pthread_mutex_unlock(&g_lock);
         return 0;
@@ -1320,7 +1324,7 @@ int shutdown(int fd, int how)
         return real_shutdown(fd, how);
     }
     
-    pthread_mutex_lock(&g_lock);
+    lock_robust();
     int ret = netbsd_shutdown(nh, how);
     pthread_mutex_unlock(&g_lock);
     
@@ -1341,7 +1345,7 @@ int getsockname(int fd, struct sockaddr *addr, socklen_t *addrlen)
         return real_getsockname(fd, addr, addrlen);
     }
     
-    pthread_mutex_lock(&g_lock);
+    lock_robust();
     int ret = netbsd_getsockname(nh, addr, addrlen);
     pthread_mutex_unlock(&g_lock);
     
@@ -1362,7 +1366,7 @@ int getpeername(int fd, struct sockaddr *addr, socklen_t *addrlen)
         return real_getpeername(fd, addr, addrlen);
     }
     
-    pthread_mutex_lock(&g_lock);
+    lock_robust();
     int ret = netbsd_getpeername(nh, addr, addrlen);
     pthread_mutex_unlock(&g_lock);
     
@@ -1424,7 +1428,7 @@ int poll(struct pollfd *fds, nfds_t nfds, int timeout)
 
             if (nh) {
                 // Check NetBSD socket
-                pthread_mutex_lock(&g_lock);
+                lock_robust();
                 // Note: We might want to pass more flags if needed, but for now map types directly
                 // Assuming standard POLL* constants match (they usually do on Linux)
                 int revents = netbsd_poll_check(nh, fds[i].events);
@@ -1517,8 +1521,42 @@ int poll(struct pollfd *fds, nfds_t nfds, int timeout)
         }
 
         // 4. Wait a bit before retrying
-        // Use a small sleep to yield CPU, effectively busy-wait for low latency I/O
-        usleep(100); // 100us
+        // If we have a timeout, we should wait on g_veth_fd and g_timer_fd to wake up the stack
+        if (timeout != 0) {
+            struct pollfd pfds_internal[2];
+            int internal_count = 0;
+            if (g_veth_fd >= 0) {
+                pfds_internal[internal_count].fd = g_veth_fd;
+                pfds_internal[internal_count].events = POLLIN;
+                internal_count++;
+            }
+            if (g_timer_fd >= 0) {
+                pfds_internal[internal_count].fd = g_timer_fd;
+                pfds_internal[internal_count].events = POLLIN;
+                internal_count++;
+            }
+            
+            // Wait for up to 10ms or until timeout
+            int wait_ms = 10;
+            if (timeout > 0) {
+                uint64_t now = get_time_ms();
+                int remaining = timeout - (int)(now - start_time);
+                if (remaining < wait_ms) wait_ms = remaining > 0 ? remaining : 0;
+            }
+            
+            if (internal_count > 0 && wait_ms > 0) {
+                real_poll(pfds_internal, internal_count, wait_ms);
+            } else if (wait_ms > 0) {
+                usleep(wait_ms * 1000);
+            }
+        }
+
+        drive_stack_inline();
+
+        if (timeout == 0) {
+            rc = 0; // Immediate return
+            goto cleanup;
+        }
     }
 
 cleanup:
