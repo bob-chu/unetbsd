@@ -5,7 +5,8 @@ cc = meson.get_compiler('c')
 
 add_project_arguments(
     '-g',
-    '-O2',
+    '-O3',
+    '-flto',
     '-march=native',
     '-Wall',
     '-Wno-builtin-declaration-mismatch',

@@ -21,8 +21,12 @@ static void virt_if_start(struct ifnet *ifp)
 int virt_transmit(struct ifnet *ifp, struct mbuf *m)
 {
     int total = m->m_pkthdr.len;
-    gl_vif->output_cb((void *)m, total, gl_vif->sc_arg);
-    m_freem(m); // Free the mbuf after the callback
+    int ret = gl_vif->output_cb((void *)m, total, gl_vif->sc_arg);
+    if (ret == 1) {
+        // Callback took ownership of mbuf (e.g., for queuing)
+        return 0;
+    }
+    m_freem(m); // Free the mbuf after the callback if not taken
     return 0;
 }
 
@@ -136,7 +140,8 @@ int virt_if_input(struct virt_interface *vif, void *data, size_t len)
     if (len >= 14) {
         uint8_t *eb = (uint8_t *)data;
         uint16_t et = (eb[12] << 8) | eb[13];
-        // printf("[u_if] virt_if_input: len=%zu, eth_type=0x%04x\n", len, et);
+        // printf("[u_if] virt_if_input: len=%zu, eth_type=0x%04x, dst=%02x:%02x:%02x:%02x:%02x:%02x\n", 
+        //        len, et, eb[0], eb[1], eb[2], eb[3], eb[4], eb[5]);
     }
 
     if (len <= MCLBYTES) {
@@ -446,6 +451,12 @@ int virt_if_set_mtu(struct virt_interface *vif, int mtu)
 // Get veth file descriptor for polling (stub for now)
 int virt_if_get_fd(void)
 {
-    // TODO: Return actual veth FD when veth integration is implemented
     return -1;
 }
+
+// Wrapper to copy data out of mbuf chain
+void netbsd_mbuf_copydata(struct mbuf *m, int off, int len, void *out)
+{
+    m_copydata(m, off, len, out);
+}
+
