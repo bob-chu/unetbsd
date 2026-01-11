@@ -323,16 +323,29 @@ libnetbsd_shim_srcs = [
     'perf_tool/deps/cjson/cJSON.c',
 ]
 
+shim_deps = [cc.find_library('dl', required: true), dependency('threads')]
+shim_inc = [include_directories('include'), include_directories('src'), include_directories('perf_tool/deps/cjson'), include_directories('app')]
+shim_c_args = ['-D_FORTIFY_SOURCE=0']
+
+if get_option('use_dpdk')
+    libnetbsd_shim_srcs += [
+        'app/gen_if.c',
+        'app/log.c'
+    ]
+    shim_deps += [dpdk_dep_dynamic]
+    shim_c_args += ['-DUSE_DPDK']
+endif
+
 shared_library(
     'netbsdshim',
     libnetbsd_shim_srcs,
-    include_directories : [include_directories('include'), include_directories('src'), include_directories('perf_tool/deps/cjson')],
-    link_with : libnetbsdstack_shared,  # CHANGED: Use shared library to share fd_table!
-    dependencies : [cc.find_library('dl', required: true), dependency('threads')] + (get_option('use_dpdk') ? [dpdk_dep_dynamic] : []),
-    #c_args : ['-fPIC'],
+    include_directories : shim_inc,
+    link_with : libnetbsdstack_shared,
+    dependencies : shim_deps,
     link_args : ['-static-libgcc', '-Wl,--whole-archive', '-lpthread', '-lnuma', '-Wl,--no-whole-archive'],
-    c_args : ['-D_FORTIFY_SOURCE=0'],
-    install : true
+    c_args : shim_c_args,
+    install : true,
+    override_options : ['b_lto=false']
 )
 
 if get_option('use_dpdk')

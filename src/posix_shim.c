@@ -52,6 +52,12 @@ static int (*real_getpeername)(int, struct sockaddr*, socklen_t*) = NULL;
 static int (*real_pselect)(int, fd_set*, fd_set*, fd_set*, const struct timespec*, const sigset_t*) = NULL;
 static int (*real_ppoll)(struct pollfd*, nfds_t, const struct timespec*, const sigset_t*) = NULL;
 
+// Backend types
+enum shim_backend {
+    BACKEND_AF_PACKET = 0,
+    BACKEND_DPDK
+};
+
 // Configuration structure
 struct shim_config {
     char if_name[16];
@@ -62,6 +68,8 @@ struct shim_config {
     int mtu;
     int veth_fd;
     int debug;
+    enum shim_backend backend;
+    char dpdk_args[256];
 };
 
 // Global state
@@ -72,6 +80,7 @@ static int g_initialized = 0;
 static int g_timer_fd = -1;
 static int g_veth_fd = -1;
 static int g_debug = 0;
+static enum shim_backend g_backend = BACKEND_AF_PACKET;
 
 // Debug helper
 #define SHIM_LOG(fmt, ...) \
@@ -356,6 +365,21 @@ static int load_json_config(const char *path, struct shim_config *cfg) {
             }
         }
     }
+
+    // Parse backend and DPDK args
+    cJSON *backend = cJSON_GetObjectItem(root, "backend");
+    if (backend && cJSON_IsString(backend)) {
+        if (strcmp(cJSON_GetStringValue(backend), "dpdk") == 0) {
+            cfg->backend = BACKEND_DPDK;
+        } else {
+            cfg->backend = BACKEND_AF_PACKET;
+        }
+    }
+
+    cJSON *dpdk_args = cJSON_GetObjectItem(root, "dpdk_args");
+    if (dpdk_args && cJSON_IsString(dpdk_args)) {
+        strncpy(cfg->dpdk_args, cJSON_GetStringValue(dpdk_args), sizeof(cfg->dpdk_args) - 1);
+    }
     
     cJSON_Delete(root);
     return 0;
@@ -375,6 +399,8 @@ static void load_config(struct shim_config *cfg) {
     cfg->mtu = 1500;
     cfg->veth_fd = -1;
     cfg->debug = 0;
+    cfg->backend = BACKEND_AF_PACKET;
+    cfg->dpdk_args[0] = '\0';
     
     // Try JSON config file first (like LKL)
     const char *config_file = getenv("NETBSD_HIJACK_CONFIG_FILE");
@@ -412,10 +438,15 @@ static void load_config(struct shim_config *cfg) {
     
     if (cfg->debug) {
         g_debug = cfg->debug;
-        SHIM_LOG("Config: if=%s mac=%02x:%02x:%02x:%02x:%02x:%02x ip=%s\n",
+        g_backend = cfg->backend;
+        SHIM_LOG("Config: backend=%s if=%s mac=%02x:%02x:%02x:%02x:%02x:%02x ip=%s\n",
+                cfg->backend == BACKEND_DPDK ? "DPDK" : "AF_PACKET",
                 cfg->if_name, cfg->mac[0], cfg->mac[1], cfg->mac[2],
                 cfg->mac[3], cfg->mac[4], cfg->mac[5], 
                 inet_ntoa((struct in_addr){.s_addr = cfg->ip}));
+        if (cfg->backend == BACKEND_DPDK) {
+            SHIM_LOG("DPDK Args: %s\n", cfg->dpdk_args);
+        }
     }
 }
 
@@ -469,9 +500,12 @@ static void shim_init(void)
     struct shim_config cfg;
     load_config(&cfg);
     g_debug = cfg.debug;
+    g_backend = cfg.backend;
     
     // Initialize NetBSD stack
+    SHIM_LOG("Initializing NetBSD stack...\n");
     netbsd_init();
+    SHIM_LOG("NetBSD stack initialized\n");
     
     // Initialize FD table (redundant, already in netbsd_init, but harmless)
     // fd_table_init();
@@ -482,42 +516,117 @@ static void shim_init(void)
         fprintf(stderr, "[Shim] Using pre-opened veth FD: %d\n", g_veth_fd);
     } else {
         // Create virtual interface
+        SHIM_LOG("Creating virtual interface %s...\n", cfg.if_name);
         g_vif = virt_if_create(cfg.if_name);
         if (!g_vif) {
             fprintf(stderr, "[Shim] ERROR: Failed to create %s\n", cfg.if_name);
             return;
         }
+        SHIM_LOG("Virtual interface created\n");
         
-        // Attach with configured MAC
-        if (virt_if_attach(g_vif, cfg.mac) < 0) {
-            fprintf(stderr, "[Shim] ERROR: Failed to attach veth\n");
+        if (cfg.backend == BACKEND_AF_PACKET) {
+            // Attach with configured MAC
+            SHIM_LOG("Attaching interface with MAC...\n");
+            if (virt_if_attach(g_vif, cfg.mac) < 0) {
+                fprintf(stderr, "[Shim] ERROR: Failed to attach veth\n");
+                return;
+            }
+            SHIM_LOG("Interface attached\n");
+
+            // Configure IP from config
+            uint32_t mask_host = ntohl(cfg.netmask);
+            int prefix_len = __builtin_popcount(mask_host);
+            if (virt_if_add_addr(g_vif, &cfg.ip, prefix_len, 1) < 0) {
+                fprintf(stderr, "[Shim] ERROR: Failed to set IP\n");
+                return;
+            }
+            
+            // Setup AF_PACKET socket for external network I/O
+            g_af_packet_fd = setup_af_packet(cfg.if_name);
+            if (g_af_packet_fd < 0) {
+                fprintf(stderr, "[Shim] WARNING: Failed to setup AF_PACKET, continuing without external network\n");
+            } else {
+                // Register packet output callback
+                virt_if_register_callbacks(g_vif, shim_packet_output, NULL);
+                g_veth_fd = g_af_packet_fd;
+            }
+        } else if (cfg.backend == BACKEND_DPDK) {
+#ifdef USE_DPDK
+            extern int dpdk_init(int argc, char **argv);
+            extern void dpdk_set_virt_if(struct virt_interface *vif);
+            extern int gen_if_output(void *m, long unsigned int total, void *arg);
+            extern struct rte_ether_addr dpdk_port_addr;
+            extern int dpdk_wait_link_up(int timeout_ms);
+            extern void logger_init(void);
+            
+            // Initialize logger for DPDK LOG_INFO/LOG_ERROR calls
+            logger_init();
+
+            fprintf(stderr, "[Shim] DPDK backend selected, parsing args...\n");
+            
+            // Split dpdk_args into argc/argv
+            char *args_dup = strdup(cfg.dpdk_args);
+            char *argv[64];
+            int argc = 0;
+            argv[argc++] = "libnetbsdshim";
+            char *token = strtok(args_dup, " ");
+            while (token && argc < 63) {
+                argv[argc++] = token;
+                token = strtok(NULL, " ");
+            }
+            argv[argc] = NULL;
+
+            fprintf(stderr, "[Shim] Calling dpdk_init with %d args...\n", argc);
+            // Initialize DPDK
+            int dpdk_ret = dpdk_init(argc, argv);
+            fprintf(stderr, "[Shim] dpdk_init returned %d\n", dpdk_ret);
+            if (dpdk_ret < 0) {
+                fprintf(stderr, "[Shim] ERROR: DPDK initialization failed\n");
+                free(args_dup);
+                return;
+            }
+            free(args_dup);
+            fprintf(stderr, "[Shim] DPDK initialized successfully\n");
+            
+            // For memif, wait for the link to come up (client connecting to server)
+            fprintf(stderr, "[Shim] Waiting for link up...\n");
+            dpdk_wait_link_up(2000); // Wait up to 2 seconds for link
+            fprintf(stderr, "[Shim] Link wait complete\n");
+
+            // Re-attach with DPDK port MAC
+            fprintf(stderr, "[Shim] Re-attaching interface with DPDK MAC...\n");
+            virt_if_attach(g_vif, (const uint8_t *)&dpdk_port_addr);
+            fprintf(stderr, "[Shim] Interface re-attached\n");
+            
+            // Configure IP from config
+            uint32_t mask_host = ntohl(cfg.netmask);
+            int prefix_len = __builtin_popcount(mask_host);
+
+            struct in_addr ina;
+            ina.s_addr = cfg.ip;
+            fprintf(stderr, "[Shim] Adding IP %s (DPDK)\n", inet_ntoa(ina));
+            if (virt_if_add_addr(g_vif, &cfg.ip, prefix_len, 1) < 0) {
+                fprintf(stderr, "[Shim] ERROR: Failed to set IP (DPDK)\n");
+                return;
+            }
+            fprintf(stderr, "[Shim] IP added\n");
+
+            fprintf(stderr, "[Shim] Setting up DPDK callbacks...\n");
+            dpdk_set_virt_if(g_vif);
+            virt_if_register_callbacks(g_vif, gen_if_output, NULL);
+            g_veth_fd = -1; // DPDK is polling-only
+            fprintf(stderr, "[Shim] DPDK setup complete\n");
+#else
+            fprintf(stderr, "[Shim] ERROR: DPDK backend requested but not built into shim\n");
             return;
-        }
-        
-        // Configure IP from config (cfg.ip is already in network byte order)
-        // virt_if_add_addr expects prefix length (e.g., 24), not netmask value
-        uint32_t mask_host = ntohl(cfg.netmask);
-        int prefix_len = __builtin_popcount(mask_host);  // Count set bits
-        if (virt_if_add_addr(g_vif, &cfg.ip, prefix_len, 1) < 0) {
-            fprintf(stderr, "[Shim] ERROR: Failed to set IP\n");
-            return;
-        }
-        
-        // Setup AF_PACKET socket for external network I/O
-        g_af_packet_fd = setup_af_packet(cfg.if_name);
-        if (g_af_packet_fd < 0) {
-            fprintf(stderr, "[Shim] WARNING: Failed to setup AF_PACKET, continuing without external network\\n");
-        } else {
-            // Register packet output callback
-            virt_if_register_callbacks(g_vif, shim_packet_output, NULL);
-            g_veth_fd = g_af_packet_fd;  // Use AF_PACKET FD for polling
+#endif
         }
         
         // Get veth FD for polling (will be AF_PACKET FD if available)
         if (g_veth_fd < 0) {
             g_veth_fd = virt_if_get_fd();
             if (g_veth_fd < 0) {
-                fprintf(stderr, "[Shim] WARNING: virt_if_get_fd() returned %d\\n", g_veth_fd);
+                fprintf(stderr, "[Shim] WARNING: virt_if_get_fd() returned %d\n", g_veth_fd);
             }
         }
     }
@@ -573,17 +682,25 @@ static void shim_cleanup(void)
 static void* stack_thread_func(void* arg)
 {
     struct pollfd pfds[2];
-    pfds[0].fd = g_veth_fd;
-    pfds[0].events = POLLIN;
-    pfds[1].fd = g_timer_fd;
-    pfds[1].events = POLLIN;
+    int nfds = 0;
+    
+    if (g_veth_fd >= 0) {
+        pfds[nfds].fd = g_veth_fd;
+        pfds[nfds].events = POLLIN;
+        nfds++;
+    }
+    
+    pfds[nfds].fd = g_timer_fd;
+    pfds[nfds].events = POLLIN;
+    nfds++;
     
     SHIM_LOG("Background thread started\n");
     
     while (g_running) {
-        // Wait for network/timer events
-        // Timer fires every 10ms (NetBSD stack requirement for TCP timers)
-        int ret = real_poll(pfds, 2, -1);  // Block until event
+        // For DPDK backend, use non-blocking poll since dpdk_read must spin
+        int timeout = (g_backend == BACKEND_DPDK) ? 0 : -1;
+        
+        int ret = real_poll(pfds, nfds, timeout);
         
         if (ret < 0) {
             if (errno == EINTR) continue;
@@ -603,14 +720,21 @@ static void* stack_thread_func(void* arg)
 // Drive the NetBSD stack (must be called with g_lock held)
 static void drive_stack(void)
 {
-    static int log_cnt = 0;
-    if (g_debug && log_cnt++ % 100 == 0) fprintf(stderr, "[Shim] drive_stack: enter\n");
-    
-    // Read timer to clear expiration
-    uint64_t expirations;
+    // Read timer to clear expiration (non-blocking check)
     if (g_timer_fd >= 0) {
-        real_read(g_timer_fd, &expirations, sizeof(expirations));
+        struct pollfd pfd = { .fd = g_timer_fd, .events = POLLIN };
+        if (real_poll(&pfd, 1, 0) > 0) {
+            uint64_t expirations;
+            real_read(g_timer_fd, &expirations, sizeof(expirations));
+        }
     }
+
+#ifdef USE_DPDK
+    if (g_backend == BACKEND_DPDK) {
+        extern void dpdk_read(void);
+        dpdk_read();
+    }
+#endif
     
     // Process ALL incoming packets from AF_PACKET socket using recvmmsg
     // (MMAP RX not working - reverting to syscall-based approach)
@@ -662,7 +786,6 @@ static void drive_stack(void)
     softint_run();
     netbsd_process_event();
     flush_tx_queue(); // Flush any pending TX packets
-    if (g_debug && log_cnt % 100 == 1) fprintf(stderr, "[Shim] drive_stack: exit\n");
 }
 
 // Inline driving (opportunistic, non-blocking)
