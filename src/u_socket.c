@@ -307,8 +307,12 @@ int netbsd_connect(struct netbsd_handle *nh, struct sockaddr *addr)
     }
 
     int ret = soconnect(nh->so, (struct sockaddr *)&sa, curlwp);
-    if (ret != 0) {
+    if (ret != 0 && ret != 56 && ret != EISCONN) {  // 56 = EISCONN = already connected = success
         printf("soconnect failed with error: %d\n", ret);
+    }
+    // EISCONN (56) means socket is already connected - treat as success
+    if (ret == 56 || ret == EISCONN) {
+        ret = 0;
     }
     /* enable debug */
     //nh->so->so_options |= SO_DEBUG;
@@ -721,9 +725,10 @@ void netbsd_force_connected(struct netbsd_handle *nh)
     if (nh && nh->so) {
         // If stuck in CONNECTING state (0x4) or DISCONNECTED (0x0) but buffer is empty (likely established), force CONNECTED
         if (((nh->so->so_state & SS_ISCONNECTING) || nh->so->so_state == 0) && !(nh->so->so_state & SS_ISCONNECTED)) {
-             printf("[Shim] Workaround: Forcing state 0x%x -> CONNECTED (fd=%d)\n", nh->so->so_state, nh->fd);
+             printf("[Shim] Workaround: Forcing state 0x%x -> CONNECTED (fd=%d), clearing so_error=%d\n", nh->so->so_state, nh->fd, nh->so->so_error);
              nh->so->so_state &= ~SS_ISCONNECTING;
              nh->so->so_state |= SS_ISCONNECTED;
+             nh->so->so_error = 0; // Clear error to prevent POLLERR
         }
         // Force unlock send buffer if locked (SB_LOCK usually 0x01)
         if (nh->so->so_snd.sb_flags & 0x01) { // SB_LOCK

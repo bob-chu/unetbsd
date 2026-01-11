@@ -3,6 +3,8 @@
 #include "u_softint.h"
 #include "u_fd.h"
 
+#include <sys/socketvar.h>
+
 typedef struct kauth_cred *kauth_cred_t;
 kauth_cred_t cred0 = NULL;
 static struct proc dummy_proc = {0};
@@ -10,8 +12,11 @@ extern volatile struct	timeval my_time;
 extern struct cpu_info cpu0;
 
 struct lwp dummy_lwp;
-extern lwp_t *gl_lwp;
 extern struct ifnet *lo0ifp;
+extern int tcp_sendspace;
+extern int tcp_recvspace;
+extern int tcp_msl_remote;
+extern int tcbhashsize;
 
 static int
 loop_create(int unit)
@@ -108,9 +113,14 @@ void netbsd_init()
     //splx(s);
     loop_create(0);
     loopinit();
-    setipaddr("lo0", 0x7f000001);
+    // (void)setipaddr("lo0", 0x7f000001); // Removed to reduce noise and following user suggestion
     updatetime();
     softint_levels_init();
+    
+    // Auto-tune performance
+    sb_max_set(2 * 1024 * 1024);
+    tcp_sendspace = 1024 * 1024;
+    tcp_recvspace = 1024 * 1024;
 }
 
 
@@ -120,8 +130,6 @@ extern int somaxconn;
 extern int tcp_msl_enable;
 extern int tcp_msl_loop;
 extern int tcp_msl_local;
-extern int tcp_msl_remote;
-extern int tcbhashsize;
 
 void sysctl_tun(char *name, int val)
 {
@@ -139,6 +147,12 @@ void sysctl_tun(char *name, int val)
         somaxconn = val;
     } else if (strcmp(name, "tcbhashsize") == 0) {
         tcbhashsize = val;
+    } else if (strcmp(name, "sb_max") == 0) {
+        sb_max = val;
+    } else if (strcmp(name, "tcp_sendspace") == 0) {
+        tcp_sendspace = val;
+    } else if (strcmp(name, "tcp_recvspace") == 0) {
+        tcp_recvspace = val;
     }
 }
 

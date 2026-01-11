@@ -4,6 +4,7 @@
 #include <sys/select.h>
 #include <pthread.h>
 #include <sys/timerfd.h>
+#include <sys/mman.h>
 #include <sys/socket.h>
 #include <sys/ioctl.h>
 #include <netinet/in.h>
@@ -175,21 +176,56 @@ static inline int trylock_robust(void)
     return ret;
 }
 
-// Packet output callback (NetBSD → external network)
+// Batch I/O using sendmmsg/recvmmsg (PACKET_MMAP not supported in WSL2)
+extern void netbsd_freembuf(void *mbuf);
+extern long netbsd_mbufvec(void *mp, struct iovec *iov, int *n_iov);
+
+// Batch TX queue for sendmmsg
+#define BATCH_SIZE 32
+static void *g_tx_queue[BATCH_SIZE];
+static int g_tx_count = 0;
+
+static void flush_tx_queue(void)
+{
+    if (g_tx_count == 0) return;
+    if (g_af_packet_fd < 0) {
+        for (int i = 0; i < g_tx_count; i++) {
+            netbsd_freembuf(g_tx_queue[i]);
+        }
+        g_tx_count = 0;
+        return;
+    }
+
+    struct mmsghdr msgs[BATCH_SIZE];
+    struct iovec iovs[BATCH_SIZE][16];
+    memset(msgs, 0, sizeof(msgs));
+
+    for (int i = 0; i < g_tx_count; i++) {
+        int iov_cnt = 16;
+        netbsd_mbufvec(g_tx_queue[i], iovs[i], &iov_cnt);
+        msgs[i].msg_hdr.msg_iov = iovs[i];
+        msgs[i].msg_hdr.msg_iovlen = iov_cnt;
+    }
+
+    int ret = sendmmsg(g_af_packet_fd, msgs, g_tx_count, 0);
+    if (ret < 0 && errno != EAGAIN && errno != EWOULDBLOCK && g_debug) {
+        fprintf(stderr, "[Shim] sendmmsg failed: %s\n", strerror(errno));
+    }
+
+    for (int i = 0; i < g_tx_count; i++) {
+        netbsd_freembuf(g_tx_queue[i]);
+    }
+    g_tx_count = 0;
+}
+
+// Packet output callback (NetBSD -> external network)
 static int shim_packet_output(void *mbuf, size_t len, void *arg)
 {
-    if (g_af_packet_fd < 0) return -1;
-    
-    // Convert mbuf to iovec - use writev to avoid extra copy
-    struct iovec iov[16];
-    int count = sizeof(iov) / sizeof(iov[0]);
-    int total_len = netbsd_mbufvec(mbuf, iov, &count);
-    if (total_len <= 0) return -1;
-    
-    // Use writev for scatter-gather I/O (zero-copy from mbuf)
-    ssize_t sent = writev(g_af_packet_fd, iov, count);
-    
-    return (sent > 0) ? 0 : -1;
+    if (g_tx_count >= BATCH_SIZE) {
+        flush_tx_queue();
+    }
+    g_tx_queue[g_tx_count++] = mbuf;
+    return 1; // Tell u_if.c we took ownership
 }
 
 // Setup AF_PACKET socket for external network
@@ -205,30 +241,35 @@ static int setup_af_packet(const char *if_name)
         return -1;
     }
     
-    // Set non-blocking (use real_fcntl to avoid interception)
+    // Set non-blocking
     int flags = fcntl(fd, F_GETFL, 0);
     if (flags >= 0) {
         fcntl(fd, F_SETFL, flags | O_NONBLOCK);
     }
-    
+
+    // Increase socket buffers to 8MB for better batch performance
+    int buf_size = 8 * 1024 * 1024;
+    real_setsockopt(fd, SOL_SOCKET, SO_SNDBUF, &buf_size, sizeof(buf_size));
+    real_setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &buf_size, sizeof(buf_size));
+
     // Get interface index
     memset(&ifr, 0, sizeof(ifr));
     strncpy(ifr.ifr_name, if_name, IFNAMSIZ - 1);
     if (ioctl(fd, SIOCGIFINDEX, &ifr) < 0) {
         fprintf(stderr, "[Shim] ERROR: Interface %s not found: %s\n", if_name, strerror(errno));
-        close(fd);
+        real_close(fd);
         return -1;
     }
     int if_index = ifr.ifr_ifindex;
     
-    // Bind to interface (use real_bind to avoid interception)
+    // Bind to interface
     memset(&sll, 0, sizeof(sll));
     sll.sll_family = AF_PACKET;
     sll.sll_ifindex = if_index;
     sll.sll_protocol = htons(ETH_P_ALL);
     if (real_bind(fd, (struct sockaddr *)&sll, sizeof(sll)) < 0) {
         fprintf(stderr, "[Shim] ERROR: Failed to bind to %s: %s\n", if_name, strerror(errno));
-        close(fd);
+        real_close(fd);
         return -1;
     }
     
@@ -522,6 +563,9 @@ static void shim_cleanup(void)
         real_close(g_timer_fd);
     }
     
+    // Flush any pending TX packets
+    flush_tx_queue();
+    
     fprintf(stderr, "[Shim] Cleanup complete\n");
 }
 
@@ -568,34 +612,56 @@ static void drive_stack(void)
         real_read(g_timer_fd, &expirations, sizeof(expirations));
     }
     
-    // Process ALL incoming packets from AF_PACKET socket (drain the queue)
+    // Process ALL incoming packets from AF_PACKET socket using recvmmsg
+    // (MMAP RX not working - reverting to syscall-based approach)
     if (g_af_packet_fd >= 0 && g_vif) {
-        char pkt_buf[2048];
-        ssize_t len;
-        int pkts_processed = 0;
+        #define RX_BATCH 64
+        static struct mmsghdr msgs[RX_BATCH];
+        static struct iovec iovs[RX_BATCH];
+        static char bufs[RX_BATCH][2048];
+        static struct sockaddr_ll sas[RX_BATCH];
+        static int initialized = 0;
         
-        while (1) {
-            struct sockaddr_ll sll;
-            socklen_t sll_len = sizeof(sll);
-            len = real_recvfrom(g_af_packet_fd, pkt_buf, sizeof(pkt_buf), MSG_DONTWAIT, (struct sockaddr*)&sll, &sll_len);
-            
-            if (len <= 0) break; // No more packets
-            
-            if (sll.sll_pkttype != PACKET_OUTGOING) {
-                static int pkt_log_cnt = 0;
-                if (g_debug && pkt_log_cnt++ % 100 == 0) {
-                    fprintf(stderr, "[Shim] drive_stack: RX packet len=%zd type=%d\n", len, sll.sll_pkttype);
-                }
-                virt_if_input(g_vif, pkt_buf, len);
-                pkts_processed++;
+        if (!initialized) {
+            memset(msgs, 0, sizeof(msgs));
+            for (int i = 0; i < RX_BATCH; i++) {
+                iovs[i].iov_base = bufs[i];
+                iovs[i].iov_len = 2048;
+                msgs[i].msg_hdr.msg_iov = &iovs[i];
+                msgs[i].msg_hdr.msg_iovlen = 1;
+                msgs[i].msg_hdr.msg_name = &sas[i];
+                msgs[i].msg_hdr.msg_namelen = sizeof(struct sockaddr_ll);
             }
+            initialized = 1;
+        }
+
+        int pkts_processed = 0;
+        while (pkts_processed < 256) {
+            for (int i = 0; i < RX_BATCH; i++) {
+                msgs[i].msg_hdr.msg_namelen = sizeof(struct sockaddr_ll);
+            }
+
+            int n = recvmmsg(g_af_packet_fd, msgs, RX_BATCH, MSG_DONTWAIT, NULL);
+            if (n <= 0) break;
             
-            if (pkts_processed > 100) break; // Safety limit
+            for (int i = 0; i < n; i++) {
+                struct sockaddr_ll *sll = (struct sockaddr_ll *)&sas[i];
+                if (sll->sll_pkttype == PACKET_OUTGOING) continue;
+                
+                if (g_debug) {
+                    fprintf(stderr, "[Shim] RX: len=%u pkt_type=%u\n", 
+                            msgs[i].msg_len, sll->sll_pkttype);
+                }
+                virt_if_input(g_vif, bufs[i], msgs[i].msg_len);
+            }
+            pkts_processed += n;
         }
     }
     
     softint_run();
+    softint_run();
     netbsd_process_event();
+    flush_tx_queue(); // Flush any pending TX packets
     if (g_debug && log_cnt % 100 == 1) fprintf(stderr, "[Shim] drive_stack: exit\n");
 }
 
