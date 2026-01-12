@@ -117,7 +117,8 @@ port_init(uint16_t port, struct rte_mempool *mbuf_pool)
     uint16_t mtu = JUMBO_FRAME_MAX_SIZE - RTE_ETHER_HDR_LEN - RTE_ETHER_CRC_LEN;
     retval = rte_eth_dev_set_mtu(port, mtu);
     if (retval != 0) {
-        LOG_INFO("Port %u: Failed to set MTU to %u: %s\n", port, mtu, strerror(-retval));
+        LOG_INFO("Port %u: Failed to set MTU to %u: %s (Continuing with default MTU)\n", port, mtu, strerror(-retval));
+        // Do not return error, proceed with default MTU
     }
 
     /* Configure the Ethernet device. */

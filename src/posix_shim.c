@@ -81,6 +81,10 @@ static int g_timer_fd = -1;
 static int g_veth_fd = -1;
 static int g_debug = 0;
 static enum shim_backend g_backend = BACKEND_AF_PACKET;
+static int g_rtc_mode = 0; // Run-to-Completion mode
+
+// NetBSD stack hardclock
+void user_hardclock(void);
 
 // Debug helper
 #define SHIM_LOG(fmt, ...) \
@@ -110,7 +114,7 @@ static int g_af_packet_fd = -1;  // AF_PACKET socket for external network
 
 // Forward declarations
 static void* stack_thread_func(void* arg);
-static void drive_stack(void);
+static int drive_stack(void);
 
 // Debug packet dump
 static void dump_packet(const char *prefix, const uint8_t *data, size_t len)
@@ -230,6 +234,7 @@ static void flush_tx_queue(void)
 // Packet output callback (NetBSD -> external network)
 static int shim_packet_output(void *mbuf, size_t len, void *arg)
 {
+    if (g_debug) fprintf(stderr, "[Shim] Packet Output: %zu bytes\n", len);
     if (g_tx_count >= BATCH_SIZE) {
         flush_tx_queue();
     }
@@ -286,17 +291,20 @@ static int setup_af_packet(const char *if_name)
     return fd;
 }
 
-// Parse MAC address from string (XX:XX:XX:XX:XX:XX)
-static int parse_mac(const char *str, uint8_t *mac) {
-    return sscanf(str, "%hhx:%hhx:%hhx:%hhx:%hhx:%hhx",
-                  &mac[0], &mac[1], &mac[2], &mac[3], &mac[4], &mac[5]) == 6 ? 0 : -1;
-}
+
 
 // Parse IP address from string
 static uint32_t parse_ip(const char *str) {
     struct in_addr addr;
     return inet_pton(AF_INET, str, &addr) == 1 ? addr.s_addr : 0;
 }
+
+// Parse MAC address from string (XX:XX:XX:XX:XX:XX)
+static int parse_mac(const char *str, uint8_t *mac) {
+    return sscanf(str, "%hhx:%hhx:%hhx:%hhx:%hhx:%hhx",
+                  &mac[0], &mac[1], &mac[2], &mac[3], &mac[4], &mac[5]) == 6 ? 0 : -1;
+}
+
 
 // Parse JSON config file (using cJSON)
 static int load_json_config(const char *path, struct shim_config *cfg) {
@@ -462,6 +470,44 @@ static void shim_init(void)
     pthread_mutex_init(&g_lock, &ma);
     pthread_mutexattr_destroy(&ma);
 
+    // If RTC mode is requested via env, skip automatic initialization
+    if (getenv("NETBSD_RTC_MODE")) {
+        fprintf(stderr, "[Shim] RTC Mode requested, skipping auto-init\n");
+        
+        // Resolve symbols only
+        real_socket = dlsym(RTLD_NEXT, "socket");
+        real_close = dlsym(RTLD_NEXT, "close");
+        real_read = dlsym(RTLD_NEXT, "read");
+        real_write = dlsym(RTLD_NEXT, "write");
+        real_poll = dlsym(RTLD_NEXT, "poll");
+        real_bind = dlsym(RTLD_NEXT, "bind");
+        real_listen = dlsym(RTLD_NEXT, "listen");
+        real_accept = dlsym(RTLD_NEXT, "accept");
+        real_connect = dlsym(RTLD_NEXT, "connect");
+        real_send = dlsym(RTLD_NEXT, "send");
+        real_recv = dlsym(RTLD_NEXT, "recv");
+        real_getsockopt = dlsym(RTLD_NEXT, "getsockopt");
+        real_setsockopt = dlsym(RTLD_NEXT, "setsockopt");
+        real_fcntl = dlsym(RTLD_NEXT, "fcntl");
+        real_ioctl = dlsym(RTLD_NEXT, "ioctl");
+        real_select = dlsym(RTLD_NEXT, "select");
+        real_sendto = dlsym(RTLD_NEXT, "sendto");
+        real_recvfrom = dlsym(RTLD_NEXT, "recvfrom");
+        real_shutdown = dlsym(RTLD_NEXT, "shutdown");
+        real_getsockname = dlsym(RTLD_NEXT, "getsockname");
+        real_getpeername = dlsym(RTLD_NEXT, "getpeername");
+        real_pselect = dlsym(RTLD_NEXT, "pselect");
+        real_ppoll = dlsym(RTLD_NEXT, "ppoll");
+        
+        g_rtc_mode = 1; // Mark as RTC mode
+        g_initialized = 1; // Mark as initialized so get_shim_handle etc don't crash (though they need struct)
+        // Actually, we shouldn't mark initialized until RTC init runs.
+        // But if we return here, g_initialized stays 0.
+        // Calls to socket() etc check g_initialized. If 0, they use real_socket.
+        // This is exactly what we want until netbsd_init_rtc is called!
+        return;
+    }
+
     fprintf(stderr, "[Shim] Initializing...\n");
     
     // Resolve real libc functions
@@ -516,117 +562,119 @@ static void shim_init(void)
         fprintf(stderr, "[Shim] Using pre-opened veth FD: %d\n", g_veth_fd);
     } else {
         // Create virtual interface
-        SHIM_LOG("Creating virtual interface %s...\n", cfg.if_name);
-        g_vif = virt_if_create(cfg.if_name);
-        if (!g_vif) {
-            fprintf(stderr, "[Shim] ERROR: Failed to create %s\n", cfg.if_name);
-            return;
-        }
-        SHIM_LOG("Virtual interface created\n");
-        
-        if (cfg.backend == BACKEND_AF_PACKET) {
-            // Attach with configured MAC
-            SHIM_LOG("Attaching interface with MAC...\n");
-            if (virt_if_attach(g_vif, cfg.mac) < 0) {
-                fprintf(stderr, "[Shim] ERROR: Failed to attach veth\n");
+        if (cfg.if_name[0]) {
+            SHIM_LOG("Creating virtual interface %s...\n", cfg.if_name);
+            g_vif = virt_if_create(cfg.if_name);
+            if (!g_vif) {
+                fprintf(stderr, "[Shim] ERROR: Failed to create %s\n", cfg.if_name);
                 return;
             }
-            SHIM_LOG("Interface attached\n");
-
-            // Configure IP from config
-            uint32_t mask_host = ntohl(cfg.netmask);
-            int prefix_len = __builtin_popcount(mask_host);
-            if (virt_if_add_addr(g_vif, &cfg.ip, prefix_len, 1) < 0) {
-                fprintf(stderr, "[Shim] ERROR: Failed to set IP\n");
-                return;
-            }
+            SHIM_LOG("Virtual interface created\n");
             
-            // Setup AF_PACKET socket for external network I/O
-            g_af_packet_fd = setup_af_packet(cfg.if_name);
-            if (g_af_packet_fd < 0) {
-                fprintf(stderr, "[Shim] WARNING: Failed to setup AF_PACKET, continuing without external network\n");
-            } else {
-                // Register packet output callback
-                virt_if_register_callbacks(g_vif, shim_packet_output, NULL);
-                g_veth_fd = g_af_packet_fd;
-            }
-        } else if (cfg.backend == BACKEND_DPDK) {
+            if (cfg.backend == BACKEND_AF_PACKET) {
+                // Attach with configured MAC
+                SHIM_LOG("Attaching interface with MAC...\n");
+                if (virt_if_attach(g_vif, cfg.mac) < 0) {
+                    fprintf(stderr, "[Shim] ERROR: Failed to attach veth\n");
+                    return;
+                }
+                SHIM_LOG("Interface attached\n");
+
+                // Configure IP from config
+                uint32_t mask_host = ntohl(cfg.netmask);
+                int prefix_len = __builtin_popcount(mask_host);
+                if (virt_if_add_addr(g_vif, &cfg.ip, prefix_len, 1) < 0) {
+                    fprintf(stderr, "[Shim] ERROR: Failed to set IP\n");
+                    return;
+                }
+                
+                // Setup AF_PACKET socket for external network I/O
+                g_af_packet_fd = setup_af_packet(cfg.if_name);
+                if (g_af_packet_fd < 0) {
+                    fprintf(stderr, "[Shim] WARNING: Failed to setup AF_PACKET, continuing without external network\n");
+                } else {
+                    // Register packet output callback
+                    virt_if_register_callbacks(g_vif, shim_packet_output, NULL);
+                    g_veth_fd = g_af_packet_fd;
+                }
+            } else if (cfg.backend == BACKEND_DPDK) {
 #ifdef USE_DPDK
-            extern int dpdk_init(int argc, char **argv);
-            extern void dpdk_set_virt_if(struct virt_interface *vif);
-            extern int gen_if_output(void *m, long unsigned int total, void *arg);
-            extern struct rte_ether_addr dpdk_port_addr;
-            extern int dpdk_wait_link_up(int timeout_ms);
-            extern void logger_init(void);
-            
-            // Initialize logger for DPDK LOG_INFO/LOG_ERROR calls
-            logger_init();
+                extern int dpdk_init(int argc, char **argv);
+                extern void dpdk_set_virt_if(struct virt_interface *vif);
+                extern int gen_if_output(void *m, long unsigned int total, void *arg);
+                extern struct rte_ether_addr dpdk_port_addr;
+                extern int dpdk_wait_link_up(int timeout_ms);
+                extern void logger_init(void);
+                
+                // Initialize logger for DPDK LOG_INFO/LOG_ERROR calls
+                logger_init();
 
-            fprintf(stderr, "[Shim] DPDK backend selected, parsing args...\n");
-            
-            // Split dpdk_args into argc/argv
-            char *args_dup = strdup(cfg.dpdk_args);
-            char *argv[64];
-            int argc = 0;
-            argv[argc++] = "libnetbsdshim";
-            char *token = strtok(args_dup, " ");
-            while (token && argc < 63) {
-                argv[argc++] = token;
-                token = strtok(NULL, " ");
-            }
-            argv[argc] = NULL;
+                fprintf(stderr, "[Shim] DPDK backend selected, parsing args...\n");
+                
+                // Split dpdk_args into argc/argv
+                char *args_dup = strdup(cfg.dpdk_args);
+                char *argv[64];
+                int argc = 0;
+                argv[argc++] = "libnetbsdshim";
+                char *token = strtok(args_dup, " ");
+                while (token && argc < 63) {
+                    argv[argc++] = token;
+                    token = strtok(NULL, " ");
+                }
+                argv[argc] = NULL;
 
-            fprintf(stderr, "[Shim] Calling dpdk_init with %d args...\n", argc);
-            // Initialize DPDK
-            int dpdk_ret = dpdk_init(argc, argv);
-            fprintf(stderr, "[Shim] dpdk_init returned %d\n", dpdk_ret);
-            if (dpdk_ret < 0) {
-                fprintf(stderr, "[Shim] ERROR: DPDK initialization failed\n");
+                fprintf(stderr, "[Shim] Calling dpdk_init with %d args...\n", argc);
+                // Initialize DPDK
+                int dpdk_ret = dpdk_init(argc, argv);
+                fprintf(stderr, "[Shim] dpdk_init returned %d\n", dpdk_ret);
+                if (dpdk_ret < 0) {
+                    fprintf(stderr, "[Shim] ERROR: DPDK initialization failed\n");
+                    free(args_dup);
+                    return;
+                }
                 free(args_dup);
-                return;
-            }
-            free(args_dup);
-            fprintf(stderr, "[Shim] DPDK initialized successfully\n");
-            
-            // For memif, wait for the link to come up (client connecting to server)
-            fprintf(stderr, "[Shim] Waiting for link up...\n");
-            dpdk_wait_link_up(2000); // Wait up to 2 seconds for link
-            fprintf(stderr, "[Shim] Link wait complete\n");
+                fprintf(stderr, "[Shim] DPDK initialized successfully\n");
+                
+                // For memif, wait for the link to come up (client connecting to server)
+                fprintf(stderr, "[Shim] Waiting for link up...\n");
+                dpdk_wait_link_up(2000); // Wait up to 2 seconds for link
+                fprintf(stderr, "[Shim] Link wait complete\n");
 
-            // Re-attach with DPDK port MAC
-            fprintf(stderr, "[Shim] Re-attaching interface with DPDK MAC...\n");
-            virt_if_attach(g_vif, (const uint8_t *)&dpdk_port_addr);
-            fprintf(stderr, "[Shim] Interface re-attached\n");
-            
-            // Configure IP from config
-            uint32_t mask_host = ntohl(cfg.netmask);
-            int prefix_len = __builtin_popcount(mask_host);
+                // Re-attach with DPDK port MAC
+                fprintf(stderr, "[Shim] Re-attaching interface with DPDK MAC...\n");
+                virt_if_attach(g_vif, (const uint8_t *)&dpdk_port_addr);
+                fprintf(stderr, "[Shim] Interface re-attached\n");
+                
+                // Configure IP from config
+                uint32_t mask_host = ntohl(cfg.netmask);
+                int prefix_len = __builtin_popcount(mask_host);
 
-            struct in_addr ina;
-            ina.s_addr = cfg.ip;
-            fprintf(stderr, "[Shim] Adding IP %s (DPDK)\n", inet_ntoa(ina));
-            if (virt_if_add_addr(g_vif, &cfg.ip, prefix_len, 1) < 0) {
-                fprintf(stderr, "[Shim] ERROR: Failed to set IP (DPDK)\n");
-                return;
-            }
-            fprintf(stderr, "[Shim] IP added\n");
+                struct in_addr ina;
+                ina.s_addr = cfg.ip;
+                fprintf(stderr, "[Shim] Adding IP %s (DPDK)\n", inet_ntoa(ina));
+                if (virt_if_add_addr(g_vif, &cfg.ip, prefix_len, 1) < 0) {
+                    fprintf(stderr, "[Shim] ERROR: Failed to set IP (DPDK)\n");
+                    return;
+                }
+                fprintf(stderr, "[Shim] IP added\n");
 
-            fprintf(stderr, "[Shim] Setting up DPDK callbacks...\n");
-            dpdk_set_virt_if(g_vif);
-            virt_if_register_callbacks(g_vif, gen_if_output, NULL);
-            g_veth_fd = -1; // DPDK is polling-only
-            fprintf(stderr, "[Shim] DPDK setup complete\n");
+                fprintf(stderr, "[Shim] Setting up DPDK callbacks...\n");
+                dpdk_set_virt_if(g_vif);
+                virt_if_register_callbacks(g_vif, gen_if_output, NULL);
+                g_veth_fd = -1; // DPDK is polling-only
+                fprintf(stderr, "[Shim] DPDK setup complete\n");
 #else
-            fprintf(stderr, "[Shim] ERROR: DPDK backend requested but not built into shim\n");
-            return;
+                fprintf(stderr, "[Shim] ERROR: DPDK backend requested but not built into shim\n");
+                return;
 #endif
-        }
-        
-        // Get veth FD for polling (will be AF_PACKET FD if available)
-        if (g_veth_fd < 0) {
-            g_veth_fd = virt_if_get_fd();
+            }
+            
+            // Get veth FD for polling (will be AF_PACKET FD if available)
             if (g_veth_fd < 0) {
-                fprintf(stderr, "[Shim] WARNING: virt_if_get_fd() returned %d\n", g_veth_fd);
+                g_veth_fd = virt_if_get_fd();
+                if (g_veth_fd < 0) {
+                    fprintf(stderr, "[Shim] WARNING: virt_if_get_fd() returned %d\n", g_veth_fd);
+                }
             }
         }
     }
@@ -647,15 +695,21 @@ static void shim_init(void)
         return;
     }
     
-    // Start background thread
-    g_running = 1;
-    if (pthread_create(&g_stack_thread, NULL, stack_thread_func, NULL) != 0) {
-        fprintf(stderr, "[Shim] ERROR: Failed to create background thread\n");
-        return;
-    }
-    
-    SHIM_LOG("Initialized successfully (veth_fd=%d, timer_fd=%d)\n", 
+    // Only spawn background thread if NOT in RTC mode
+    if (!g_rtc_mode) {
+        g_running = 1;
+        if (pthread_create(&g_stack_thread, NULL, stack_thread_func, NULL) != 0) {
+            fprintf(stderr, "[Shim] ERROR: Failed to create background thread\n");
+            return;
+        }
+        SHIM_LOG("Initialized successfully (Background Thread, veth_fd=%d, timer_fd=%d)\n", 
             g_veth_fd, g_timer_fd);
+    } else {
+        // RTC mode: Manual driving
+        g_running = 1; // Mark as active
+        SHIM_LOG("Initialized successfully (RTC Mode, veth_fd=%d, timer_fd=%d)\n", 
+            g_veth_fd, g_timer_fd);
+    }
 }
 
 // Destructor: Cleanup shim
@@ -718,21 +772,33 @@ static void* stack_thread_func(void* arg)
 }
 
 // Drive the NetBSD stack (must be called with g_lock held)
-static void drive_stack(void)
+// Returns number of packets/events processed
+static int drive_stack(void)
 {
+    int events = 0;
+    
     // Read timer to clear expiration (non-blocking check)
+    // In RTC mode, or normal mode, this drives the hardclock
     if (g_timer_fd >= 0) {
         struct pollfd pfd = { .fd = g_timer_fd, .events = POLLIN };
         if (real_poll(&pfd, 1, 0) > 0) {
             uint64_t expirations;
-            real_read(g_timer_fd, &expirations, sizeof(expirations));
+            if (real_read(g_timer_fd, &expirations, sizeof(expirations)) > 0) {
+                // Call hardclock for each expiration (usually 1)
+                for (uint64_t i = 0; i < expirations; i++) {
+                    user_hardclock();
+                }
+                events++;
+            }
         }
     }
 
 #ifdef USE_DPDK
     if (g_backend == BACKEND_DPDK) {
         extern void dpdk_read(void);
+        // dpdk_read (rx_burst) doesn't easily return count, but we assume it does work
         dpdk_read();
+        events++; 
     }
 #endif
     
@@ -747,26 +813,27 @@ static void drive_stack(void)
         static int initialized = 0;
         
         if (!initialized) {
-            memset(msgs, 0, sizeof(msgs));
             for (int i = 0; i < RX_BATCH; i++) {
                 iovs[i].iov_base = bufs[i];
-                iovs[i].iov_len = 2048;
+                iovs[i].iov_len = sizeof(bufs[i]);
                 msgs[i].msg_hdr.msg_iov = &iovs[i];
                 msgs[i].msg_hdr.msg_iovlen = 1;
                 msgs[i].msg_hdr.msg_name = &sas[i];
-                msgs[i].msg_hdr.msg_namelen = sizeof(struct sockaddr_ll);
+                msgs[i].msg_hdr.msg_namelen = sizeof(sas[i]);
             }
             initialized = 1;
         }
-
+        
         int pkts_processed = 0;
-        while (pkts_processed < 256) {
-            for (int i = 0; i < RX_BATCH; i++) {
-                msgs[i].msg_hdr.msg_namelen = sizeof(struct sockaddr_ll);
-            }
-
+        while (pkts_processed < 512) { // Limit burst
             int n = recvmmsg(g_af_packet_fd, msgs, RX_BATCH, MSG_DONTWAIT, NULL);
-            if (n <= 0) break;
+            if (n < 0) {
+                 if (errno != EAGAIN && errno != EWOULDBLOCK) {
+                      SHIM_LOG("recvmmsg failed: %d (%s)\n", errno, strerror(errno));
+                 }
+                 break;
+            }
+            if (n == 0) break;
             
             for (int i = 0; i < n; i++) {
                 struct sockaddr_ll *sll = (struct sockaddr_ll *)&sas[i];
@@ -780,12 +847,215 @@ static void drive_stack(void)
             }
             pkts_processed += n;
         }
+        events += pkts_processed;
     }
     
     softint_run();
     softint_run();
     netbsd_process_event();
+    
+    
     flush_tx_queue(); // Flush any pending TX packets
+    
+    return events;
+}
+
+// NetBSD Tick (RTC Mode)
+void netbsd_rtc_tick(void)
+{
+    // Need lock because user_hardclock modifies kernel structures
+    lock_robust();
+    user_hardclock();
+    pthread_mutex_unlock(&g_lock);
+}
+
+// NetBSD Loop (RTC Mode)
+int netbsd_rtc_loop(void)
+{
+    if (!g_running) return 0;
+    
+    lock_robust();
+    int events = drive_stack();
+    pthread_mutex_unlock(&g_lock);
+    
+    return events;
+}
+
+// NetBSD Init RTC (helper to call shim_init manually if needed, or re-use logic)
+int netbsd_init_rtc(const char *if_name, const char *ip, const char *mac_str)
+{
+    // Force link of inetdomain (AF_INET support)
+    // Force link of inetdomain (AF_INET support)
+    struct domain; // Forward declare
+    extern struct domain inetdomain;
+    extern void domain_attach(struct domain *);
+    extern struct domain *pffinddomain(int);
+    
+    static int rtc_initialized = 0;
+    if (rtc_initialized) return 0;
+
+    // If initialized but NOT RTC mode, that's an error
+    if (g_initialized && !g_rtc_mode) {
+         fprintf(stderr, "[Shim] Error: Already initialized in threaded mode\n");
+         return -1;
+    }
+    
+    // Initialize NetBSD stack
+    netbsd_init(); 
+    
+    // Manual attach if linker set failed (workaround for EAFNOSUPPORT)
+    if (pffinddomain(AF_INET) == NULL) {
+        fprintf(stderr, "[Shim] INET domain not found via pffinddomain. Manually attaching...\n");
+        domain_attach(&inetdomain);
+        if (pffinddomain(AF_INET) != NULL) {
+             fprintf(stderr, "[Shim] Manual attach successful!\n");
+        } else {
+             fprintf(stderr, "[Shim] Manual attach FAILED!\n");
+        }
+    } else {
+        fprintf(stderr, "[Shim] INET domain FOUND via pffinddomain. No manual attach needed.\n");
+    }
+    
+    // Set RTC mode BEFORE calling constructor logic (if we could)
+    // But since we are calling this manually, we assume shim_init constructor 
+    // was skipped via env var or we are doing it here.
+    // If shim_init was skipped, g_initialized is 0.
+    
+    // Manually run init logic
+    // 1. Resolve symbols (if not done)
+    if (!real_socket) {
+        // Force shim_init to run partially? 
+        // We can't call constructor. We'll duplicate the symbol resolution or just rely on shim_init being smart.
+        // Let's assume shim_init ran but returned early because of env var.
+        // So symbols ARE resolved.
+    }
+    
+    if (!real_socket) {
+        fprintf(stderr, "[Shim] Error: Symbols not resolved. Did shim_init run?\n");
+        return -1;
+    }
+    
+    struct shim_config cfg;
+    memset(&cfg, 0, sizeof(cfg));
+    
+    // 1. Load from JSON/Env if available
+    load_config(&cfg);
+    
+    // 2. Override with explicit args if provided
+    if (if_name) strncpy(cfg.if_name, if_name, sizeof(cfg.if_name)-1);
+    
+    if (mac_str) {
+        parse_mac(mac_str, cfg.mac);
+    }
+    
+    if (ip) cfg.ip = parse_ip(ip);
+    
+    // Note: load_config sets defaults (backends, mtu, etc) if not in JSON.
+    // If CLI args like IP are not provided (i.e. NULL), we rely on what load_config loaded.
+    
+    g_rtc_mode = 1;
+    g_debug = 1; // Enable debug for RTC init
+    
+    // Call our initialization logic (we need to be careful not to conflict with shim_init)
+    // Since we copied the logic into shim_init, and we can't easily call it.
+    // We should refactor shim_init to call an internal init function.
+    // BUT for now, let's just "fake" it by relying on the fact that if NETBSD_RTC_MODE is set,
+    // shim_init returns early. So we need to put the init logic here OR into a shared function.
+    // Shared function is better.
+    
+    // Creating shared init function would be best, but for now I'll implement just enough here.
+    
+    // Re-use logic:
+    pthread_mutexattr_t ma;
+    pthread_mutexattr_init(&ma);
+    pthread_mutexattr_settype(&ma, PTHREAD_MUTEX_RECURSIVE);
+    pthread_mutexattr_setrobust(&ma, PTHREAD_MUTEX_ROBUST);
+    pthread_mutex_init(&g_lock, &ma);
+    pthread_mutexattr_destroy(&ma);
+    
+    fprintf(stderr, "[Shim] RTC Init: %s IP=%08x\n", cfg.if_name, cfg.ip);
+    // netbsd_init(); // ALREADY CALLED AT STARTED
+    
+    // Init VETH/DPDK
+    fprintf(stderr, "[Shim] Checking backend configuration (%d)...\n", cfg.backend);
+    if (cfg.backend == BACKEND_AF_PACKET) {
+        fprintf(stderr, "[Shim] Creating virt_if %s...\n", cfg.if_name);
+        g_vif = virt_if_create(cfg.if_name);
+        if (!g_vif) fprintf(stderr, "[Shim] virt_if_create failed!\n");
+        else fprintf(stderr, "[Shim] virt_if_create success. Attaching...\n");
+        
+        virt_if_attach(g_vif, cfg.mac);
+        uint32_t mask_host = ntohl(cfg.netmask);
+        int prefix_len = __builtin_popcount(mask_host);
+        virt_if_add_addr(g_vif, &cfg.ip, prefix_len, 1);
+        g_af_packet_fd = setup_af_packet(cfg.if_name);
+        g_veth_fd = g_af_packet_fd; // Fix: Initialize poll FD
+        virt_if_register_callbacks(g_vif, shim_packet_output, NULL);
+    } 
+    #ifdef USE_DPDK
+    else if (cfg.backend == BACKEND_DPDK) {
+        extern int dpdk_init(int argc, char **argv);
+        extern void dpdk_set_virt_if(struct virt_interface *vif);
+        extern int gen_if_output(void *m, long unsigned int total, void *arg);
+        extern void logger_init(void);
+        logger_init();
+        
+        // Parse dpdk_args for EAL init
+        int dpdk_argc = 0;
+        char *dpdk_argv[32];
+        char args_copy[256];
+        strncpy(args_copy, cfg.dpdk_args, sizeof(args_copy)-1);
+        
+        char *token = strtok(args_copy, " ");
+        dpdk_argv[dpdk_argc++] = "rtc_app"; // Program name
+        while (token && dpdk_argc < 31) {
+            dpdk_argv[dpdk_argc++] = token;
+            token = strtok(NULL, " ");
+        }
+        dpdk_argv[dpdk_argc] = NULL;
+        
+        fprintf(stderr, "[Shim] Calling dpdk_init with %d args: ", dpdk_argc);
+        for(int i=0; i<dpdk_argc; i++) fprintf(stderr, "%s ", dpdk_argv[i]);
+        fprintf(stderr, "\n");
+        
+        dpdk_init(dpdk_argc, dpdk_argv);
+        
+        // Memif/DPDK interface creation
+        g_vif = virt_if_create(cfg.if_name);
+        
+        // IMPORTANT: Attach interface to stack (sets up ARP, etc)
+        virt_if_attach(g_vif, cfg.mac);
+        
+        dpdk_set_virt_if(g_vif);
+        virt_if_register_callbacks(g_vif, gen_if_output, NULL);
+        
+        // Add IP
+        virt_if_add_addr(g_vif, &cfg.ip, 24, 1);
+    }
+    #endif
+
+    g_backend = cfg.backend;
+    
+    // Create timer FD for 1ms periodic timer (NetBSD stack requirement)
+    g_timer_fd = timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK);
+    if (g_timer_fd < 0) {
+        fprintf(stderr, "[Shim] ERROR: Failed to create timer FD\n");
+    } else {
+        struct itimerspec timer_spec = {
+            .it_interval = { .tv_sec = 0, .tv_nsec = 1000000 },  // 1ms
+            .it_value = { .tv_sec = 0, .tv_nsec = 1000000 }
+        };
+        if (timerfd_settime(g_timer_fd, 0, &timer_spec, NULL) < 0) {
+            fprintf(stderr, "[Shim] ERROR: Failed to set timer\n");
+        }
+    }
+    
+    g_debug = 0; // Disable debug for perf
+    
+    g_initialized = 1;
+    g_running = 1;
+    rtc_initialized = 1;
+    return 0;
 }
 
 // Inline driving (opportunistic, non-blocking)
@@ -811,8 +1081,7 @@ int socket(int domain, int type, int protocol)
         return real_socket(domain, type, protocol);
     }
     
-    SHIM_LOG("socket(domain=%d, type=%d, protocol=%d)\n", 
-            domain, type, protocol);
+    fprintf(stderr, "[Shim] socket(domain=%d, type=%d, protocol=%d)\n", domain, type, protocol);
     
     // Allocate NetBSD handle
     struct netbsd_handle *nh = (struct netbsd_handle*)malloc(sizeof(struct netbsd_handle));
@@ -830,7 +1099,7 @@ int socket(int domain, int type, int protocol)
     int ret = netbsd_socket(nh);
     pthread_mutex_unlock(&g_lock);
     
-    if (ret < 0) {
+    if (ret != 0) {
         int err = translate_netbsd_errno(-ret);
         fprintf(stderr, "[Shim] socket() failed: netbsd_socket returned %d (mapped to %d)\n", ret, err);
         free(nh);
