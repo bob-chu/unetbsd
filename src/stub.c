@@ -1,4 +1,6 @@
 #include <sys/param.h>
+#include <sys/module.h>
+#include <sys/cprng.h>
 #include <sys/systm.h>
 #include <sys/percpu.h>
 #include <sys/once.h>
@@ -36,7 +38,8 @@
 struct cpu_info cpu0 = {0};
 struct lwp	*curlwp;
 
-#if 1
+// DISABLED: This macro prevents curlwp initialization, causing NULL pointer crash in sobind()
+#if 0
 #ifdef curlwp
 #undef curlwp
 #endif
@@ -47,7 +50,7 @@ struct lwp	*curlwp;
  */
 
 const int msize = 512*8;    // Reduced from 512 to allow more mbufs with less memory per mbuf
-const int mclbytes = 2048; // Increased from 2048 to allow larger clusters for better performance
+const int mclbytes = 4096; // Increased from 2048 to allow larger clusters for better performance
 
 //#define PHYSMEM 1048576*2048 // Increased from 256MB to 1GB
 #define PHYSMEM (1048576UL * 2048UL) // Increased from 256MB to 4GB, using unsigned long to prevent overflow
@@ -275,16 +278,20 @@ lwp_t *gl_lwp;
 struct proc dummy_proc = {0};
 extern struct proc *curproc;
 
+// Thread-local storage for curlwp (used by x86_curlwp in cpu.h)
+__thread struct lwp *__curlwp_tls = &lwp0;
+
 __attribute__((constructor)) void init_dummy_lwp() {
     gl_lwp = &lwp0;
+    __curlwp_tls = &lwp0;  // Initialize TLS curlwp for all threads
 }
 
 static inline lwp_t * __attribute__ ((const)) stub_curlwp(void) { return &lwp0; }
 /////////////////////////////////////////////////////////////////////////////
 // sys/i386/i386/machdep.c
 //////////////////////////////////////////////////////////////////////////////
-int cpu_intr_p(void) {
-    return 0;  /* Not in interrupt context */
+bool cpu_intr_p(void) {
+    return false;  /* Not in interrupt context */
 }
 
 //////////////////////////////////////////////////////////////////////////////
@@ -876,13 +883,13 @@ void rw_destroy(krwlock_t *lock) {
 #include "u_softint.h"
 void sleepq_init(void *sq) {}
 
-void sleepq_wake(void *sq) {
+void sleepq_wake(void *sq, void *wchan, u_int expected, kmutex_t *mtx) {
     /* No-op */
 }
-void sleepq_enter(void *sq, struct lwp *l, kmutex_t mtx) {}
-void sleepq_enqueue(void *sq, const void *wchan, const char *msg) {}
-int sleepq_block(int timo, bool catch) { return 0; }  /* Return success */
-void sleepq_unsleep(struct lwp *l) {}
+int sleepq_enter(void *sq, struct lwp *l, kmutex_t *mtx) { return 0; }
+void sleepq_enqueue(void *sq, const void *wchan, const char *msg, struct syncobj *sync, bool catch) {}
+int sleepq_block(int timo, bool catch, struct syncobj *sync, int sig) { return 0; }  /* Return success */
+void sleepq_unsleep(struct lwp *l, bool cleanup) {}
 void sleepq_changepri(struct lwp *l, int pri) {}
 void sleepq_lendpri(struct lwp *l, int pri) {}
 
@@ -1028,8 +1035,8 @@ vaddr_t uvm_km_alloc(struct vm_map *map, vsize_t size, vsize_t align, uvm_flag_t
     return (vaddr_t)ptr;
 }
 void uvm_km_free(struct vm_map *map, vaddr_t addr, vsize_t size, uvm_flag_t flags) { free((void *)addr); }
-void uvm_unloan(vaddr_t va, int npages) {}
-int uvm_loan(struct vm_map *map, vaddr_t vaddr, vsize_t size, void *loan) { return 0; }  /* No loans needed */
+void uvm_unloan(void *v, int npages, int flags) {}
+int uvm_loan(struct vm_map *map, vaddr_t vaddr, vsize_t size, void *loan, int flags) { return 0; }  /* No loans needed */
 unsigned long uvm_vm_page_to_phys(void *page) { return 0; }  /* Dummy physical address */
 
 int proc_uidmatch(kauth_cred_t p1, kauth_cred_t p2) { return 1; }  /* Always match */
@@ -1042,7 +1049,7 @@ void pmap_kremove(vaddr_t va, vsize_t size) {}
 void pmap_update(pmap_t pmap) {}
 
 /* kthread to function */
-int kthread_create(int pri, int flags, void *cpu, void (*func)(void *), void *arg, struct lwp **lwp, const char *fmt) {
+int kthread_create(pri_t pri, int flags, struct cpu_info *cpu, void (*func)(void *), void *arg, struct lwp **lwp, const char *fmt, ...) {
     func(arg);  /* Call directly, no thread */
     if (lwp) *lwp = NULL;  /* No lwp created */
     return 0;
@@ -1051,8 +1058,6 @@ int kthread_create(int pri, int flags, void *cpu, void (*func)(void *), void *ar
 /*
  * socket related
  */
-struct socket;
-
 /* Minimal fileops stub for socketops - defined in sys_socket.c, so commented out here */
 /*
 int soo_read(struct file *fp, off_t *off, struct uio *uio, kauth_cred_t cred, int flags) { return 0; }
@@ -1090,6 +1095,7 @@ static int ifioctl_stub(struct socket *so, u_long cmd, void *data, struct lwp *l
     return 0; // Simulate success for now
 }
 
+/* Define the ifioctl pointer - commented out to avoid multiple definition */
 /* Define the ifioctl pointer - commented out to avoid multiple definition */
 // int (*ifioctl)(struct socket *, u_long, void *, struct lwp *) = ifioctl_stub;
 
@@ -1224,7 +1230,7 @@ void seldestroy(struct selinfo *sip) {}
 void selrecord_knote(struct selinfo *sip, struct knote *kn) {}
 void knote_set_eof(struct knote *kn, uint32_t flags) {}
 int seltrue(dev_t dev, int events, lwp_t *l) { return 1; }
-int seltrue_kqfilter(struct file *fp, void *kn) { return 1; }
+int seltrue_kqfilter(dev_t dev, struct knote *kn) { return 1; }
 
 /*
  * pint and bpf filter
@@ -1259,7 +1265,7 @@ void pfil_run_addrhooks(pfil_head_t *ph, u_long cmd, struct ifaddr *ifa) {}
  * link layer
  */
 
-int carp_proto_input(struct mbuf *m, int *offp, int proto) { return 0; }
+void carp_proto_input(struct mbuf *m, int off, int proto) {}
 int carp6_proto_input(struct mbuf *m, int *offp, int proto) { return 0; }
 void carp_init(void) {}
 
@@ -1270,12 +1276,12 @@ void if_stats_init(ifnet_t * const ifp) {
 void carp_ifdetach(void *ifp) {}
 void if_stats_to_if_data(struct ifnet *ifp, struct if_data *ifd, bool zero_stats) {}
 void if_stats_fini(ifnet_t * const ifp) {}
-int module_autoload(const char *name, const char *class) { return ENOENT; }
+int module_autoload(const char *name, modclass_t class) { return ENOENT; }
 void carp_carpdev_state(void *ifp) {}
-int carp_ourether(void *ifp, struct mbuf **mp, const uint8_t *dest) { return 0; }
-void carp_input(struct ifnet *ifp, struct mbuf **mp) {};
-int carp_iamatch(struct ifnet *ifp, const struct in_addr *addr) { return 0; }
-int carp_iamatch6(struct ifnet *ifp, const struct in_addr *addr) { return 0; }
+struct ifnet *carp_ourether(void *ifp, struct ether_header *eh, u_char type, int flags) { return NULL; }
+int carp_input(struct mbuf *m, u_int8_t *iphlen, u_int8_t *ttl, u_int16_t loop_code) { return 0; }
+int carp_iamatch(struct in_ifaddr *ia, u_int8_t *mac, u_int32_t *count) { return 0; }
+struct ifaddr *carp_iamatch6(void *ifp, struct in6_addr *addr) { return NULL; }
 
 /* Removed duplicate softint_disestablish definition */
 
@@ -1291,7 +1297,7 @@ int ether_sw_offload_tx(struct ifnet *ifp, struct mbuf *m) { return 0; }
 
 /* kern/subr_entropy.c */
 uint32_t entropy_epoch(void) { return 0; }
-void rnd_add_data(void *ctx, const void *buf, size_t len, uint32_t entropy) {}
+void rnd_add_data(void *ctx, const void *buf, uint32_t len, uint32_t entropy) {}
 
 /*sys/net/agr/if_agr.c */
 void agr_input(struct ifnet *ifp, struct mbuf **mp) {}
@@ -1334,7 +1340,7 @@ int ifmedia_ioctl(struct ifnet *ifp, struct ifreq *ifr, void *ifm, u_long cmd) {
 void kern_assert(const char *fmt, ...) {}
 
 /* sys/net/raw_cb.c */
-void raw_attach(struct socket *so, int proto) {}
+int raw_attach(struct socket *so, int proto, struct rawcbhead *rcb) { return 0; }
 void raw_detach(struct socket *so) {}
 void raw_disconnect(struct socket *so) {}
 
@@ -1343,8 +1349,8 @@ int do_sys_peeloff(struct socket *so, void *arg) { return 0; }
 int eopnotsupp(void) { return EOPNOTSUPP; }
 
 /* sys/net/rtsock_shared */
-vec_sctp_add_ip_address = NULL;
-vec_sctp_delete_ip_address = NULL;
+void (*vec_sctp_add_ip_address)(struct ifaddr *) = NULL;
+void (*vec_sctp_delete_ip_address)(struct ifaddr *) = NULL;
 
 /* sys/net/net_stats.c */
 int netstat_sysctl(percpu_t *stat, u_int ncounters, SYSCTLFN_ARGS) { return 0; }
@@ -1383,8 +1389,12 @@ void atomic_and_uint(volatile unsigned int *ptr, unsigned int val) { *ptr &= val
 void atomic_or_uint(volatile unsigned int *ptr, unsigned int val) { *ptr |= val; }
 
 
-void *kern_cprng = NULL;
-void *cprng_strong = NULL;
+cprng_strong_t *kern_cprng = NULL;
+size_t cprng_strong(cprng_strong_t *c, void *buf, size_t len, int flags) {
+    memset(buf, 0, len); // Dummy implementation
+    return len;
+}
+
 
 /* ipv6 related */
 //int sin6_print(char *buf, size_t len, const void *v) { return 0; }
@@ -1394,9 +1404,9 @@ uint32_t cprng_fast32(void) {
     //return 0;
     return (uint32_t)rand();
 }
-uint32_t cprng_fast(void) {
+size_t cprng_fast(void *buf, size_t len) {
     //return 0;
-    return (uint32_t)rand();
+    return (size_t)rand();
 }
 uint32_t cprng_strong32(void) {
     //return 0;
@@ -1406,13 +1416,13 @@ uint32_t cprng_strong32(void) {
 
 /* crypto */
 void MD5Init(void *ctx) {}
-void MD5Update(void *ctx, const void *data, size_t len) {}
+void MD5Update(void *ctx, const unsigned char *data, unsigned int len) {}
 void MD5Final(unsigned char *digest, void *ctx) {}
 
 /* sys/kern/kern_ktrace.c */
 int ktrace_on = 0;
-void ktr_mibio(int a, int b, int c) {}
-void ktr_mib(int a, int b) {}
+void ktr_mibio(int a, enum uio_rw b, const void *c, size_t d, int e) {}
+void ktr_mib(const int *a, u_int b) {}
 
 /* sys/kern/subr_asan.c */
 int
@@ -1446,7 +1456,7 @@ void knote_fdclose(int fd) {}
 
 /* sys/kern/kern_synch.c */
 int kpause(const char *reason, bool intr, int ticks, kmutex_t *mtx) { return 0; }
-uintptr_t syncobj_noowner(wchan_t wchan) { return 0; }
+struct lwp *syncobj_noowner(wchan_t wchan) { return NULL; }
 
 u_int maxfiles = 1024*1024; /* 1M fd */
 
@@ -1460,11 +1470,11 @@ int pgid_in_session(struct proc *p, pid_t pgid) { return 0; }
 void kpsignal(struct proc *p, ksiginfo_t *ksi, void *data) {}
 void kpgsignal(struct pgrp *pg, ksiginfo_t *ksi, void *data, int checkctty) {}
 
-int (*devenodev)(struct file *, void *) = NULL;
-int (*ttyvenodev)(struct file *, void *) = NULL;
+int devenodev(dev_t dev, ...) { return ENODEV; }
+void ttyvenodev(struct tty *tp, ...) {}
 
 /* sys/kern/subr_devsw.c */
-int nommap(struct file *fp, void *addr, size_t len) { return ENODEV; }
+paddr_t nommap(dev_t dev, off_t off, int prot) { return (paddr_t)-1; }
 
 /* sys/kern/subr_evcnt.c */
 void evcnt_attach_dynamic(struct evcnt *ev, int type, const struct evcnt *parent,
@@ -1492,7 +1502,7 @@ void percpu_cleanup(void)
 
 long lwp_pctr(void) { return 0; }
 
-kmutex_t exec_lock;
+krwlock_t exec_lock;
 
 
 /* sysctl base related */
@@ -1515,3 +1525,4 @@ devhandle_t	device_handle(device_t dev) { return dummy_devhandle;}
 ssize_t
 device_getprop_data(device_t dev, const char *prop, void *buf, size_t buflen)
 { return 0; }
+

@@ -12,7 +12,7 @@
 #include "tcp_layer.h"
 #include "ssl_layer.h"
 
-#define BUFFER_SIZE 7000
+#define BUFFER_SIZE 16384
 
 typedef struct client_data {
     tcp_conn_t *tcp_conn;

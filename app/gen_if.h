@@ -16,6 +16,13 @@ void set_mtu(int mtu);
 void dpdk_read();
 void dump_mbuf_hex(struct rte_mbuf *mbuf, char *msg);
 
+// DPDK exports for shim integration
+extern struct virt_interface *v_f_dpdk;
+extern struct rte_ether_addr dpdk_port_addr;
+void dpdk_set_virt_if(struct virt_interface *vif);
+int dpdk_wait_link_up(int timeout_ms);
+int gen_if_output(void *m, long unsigned int total, void *arg);
+
 struct client_ring {
 	struct rte_ring *rx_q;
 	unsigned client_id;

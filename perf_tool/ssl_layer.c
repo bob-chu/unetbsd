@@ -2,6 +2,7 @@
 #include "common.h"
 #include <openssl/err.h>
 #include "logger.h"
+#include "metrics.h"
 #include <stdio.h>
 #include <stdlib.h> // For malloc/free
 #include <string.h>
@@ -167,11 +168,13 @@ ssl_layer_create(int is_server,
         SSL_set_connect_state(layer->ssl);
     }
 
+    STATS_INC(ssl_connections_active);
     return layer;
 }
 
 void ssl_layer_destroy(ssl_layer_t *layer) {
     if (layer) {
+        STATS_DEC(ssl_connections_active);
         SSL_free(layer->ssl);
         // BIOs are freed by SSL_free
         return_ssl_layer_to_pool(layer);
@@ -196,6 +199,7 @@ ssl_handshake_status_t ssl_layer_handshake(ssl_layer_t *layer) {
         case SSL_ERROR_WANT_WRITE:
             len = BIO_read(layer->wbio, buf, sizeof(buf));
             if (len > 0) {
+                STATS_ADD(ssl_bytes_encrypted, len);
                 if (layer->on_encrypted_data_cb) {
                     layer->on_encrypted_data_cb(layer, buf, len);
                 }
@@ -209,6 +213,7 @@ ssl_handshake_status_t ssl_layer_handshake(ssl_layer_t *layer) {
         default:
             LOG_DEBUG("SSL_do_handshake failed with unhandled error");
             //ERR_print_errors_fp(stderr);
+            STATS_INC(ssl_handshake_errors);
             return SSL_HANDSHAKE_ERROR;
     }
 }
@@ -248,6 +253,7 @@ int ssl_layer_read_net_data(ssl_layer_t *layer, const void *data, int len) {
         nbytes = SSL_read(layer->ssl, buf, sizeof(buf));
         if (nbytes > 0) {
             total_decrypted_bytes += nbytes;
+            STATS_ADD(ssl_bytes_decrypted, nbytes);
             if (layer->on_decrypted_data_cb) {
                 LOG_DEBUG("ssl data, call on_decrypted_data_cb");
                 layer->on_decrypted_data_cb(layer, buf, nbytes);
@@ -293,6 +299,7 @@ int ssl_layer_write_app_data(ssl_layer_t *layer, const void *data, int len) {
     char buf[4096];
     int nbytes;
     while ((nbytes = BIO_read(layer->wbio, buf, sizeof(buf))) > 0) {
+        STATS_ADD(ssl_bytes_encrypted, nbytes);
         if (layer->on_encrypted_data_cb) {
             layer->on_encrypted_data_cb(layer, buf, nbytes);
         }

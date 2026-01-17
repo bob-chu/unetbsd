@@ -88,6 +88,23 @@ extern metrics_t g_metrics;
     X(udp_bytes_sent) \
     X(udp_bytes_received)
 
+#define STATS_DPDK_FIELDS \
+    X(dpdk_ipackets) \
+    X(dpdk_opackets) \
+    X(dpdk_ibytes) \
+    X(dpdk_obytes) \
+    X(dpdk_ierrors) \
+    X(dpdk_oerrors) \
+    X(dpdk_rx_nombuf)
+
+#define STATS_SSL_FIELDS \
+    X(ssl_handshakes_completed_client) \
+    X(ssl_handshakes_completed_server) \
+    X(ssl_handshake_errors) \
+    X(ssl_bytes_encrypted) \
+    X(ssl_bytes_decrypted) \
+    X(ssl_connections_active)
+
 #define STATS_PHASE_FIELD \
     X(client_role) \
     X(server_role) \
@@ -100,6 +117,8 @@ typedef struct {
     STATS_HTTP_FIELDS
     STATS_TCP_FIELDS
     STATS_UDP_FIELDS
+    STATS_DPDK_FIELDS
+    STATS_SSL_FIELDS
     STATS_PHASE_FIELD
 #undef X
 } stats_t;

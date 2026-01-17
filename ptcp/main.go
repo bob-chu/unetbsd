@@ -17,8 +17,16 @@ var (
 )
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "web" {
+		config = make(map[string]interface{}) // Initialize empty config
+		initStaticCommands()
+		rebuildCommands()
+		startWebServer()
+		return
+	}
+
 	if len(os.Args) < 2 {
-		fmt.Println("Usage: ./ptcp <config.json>")
+		fmt.Println("Usage: ./ptcp <config.json> | web")
 		return
 	}
 

@@ -57,8 +57,8 @@ static void tcp_layer_conn_pool_init() {
 }
 
 
-#define MAX_RECV_SZ 7000
-#define RECV_BUFFER_SZ 8192
+#define MAX_RECV_SZ 16384
+#define RECV_BUFFER_SZ 16384
 
 int g_current_server_ip_index = 0;
 int g_current_server_port_index = 0;

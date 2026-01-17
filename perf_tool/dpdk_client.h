@@ -14,6 +14,7 @@ int dpdk_client_init(dpdk_config_t *dpdk_config);
 uint16_t dpdk_client_read(void);
 int dpdk_client_send_packet(struct rte_mbuf *m);
 void open_dpdk_client_interface(char *if_name);
+struct lb_shared_info* get_lb_shared_info(void);
 
 // External declarations for rings and mempool
 extern struct rte_ring *lb_rx_ring;

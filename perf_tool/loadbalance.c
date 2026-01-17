@@ -63,6 +63,7 @@ ip_addr_hash_func(const void *key, uint32_t key_len, uint32_t init_val)
 #define RING_SIZE (1024)
 #define IP_HASH_ENTRIES (1024*2)
 #define MAX_EAL_ARGS 64 // Max number of DPDK EAL arguments
+#define NUMBER_CLIENT_PER_CORE 32
 
 
 #define RX_RING_SIZE 1024
@@ -71,15 +72,16 @@ ip_addr_hash_func(const void *key, uint32_t key_len, uint32_t init_val)
 #define NUM_MBUFS (8191 * 8)
 #define MBUF_CACHE_SIZE 250
 #define BURST_SIZE 64 
-#define JUMBO_FRAME_MAX_SIZE 9600
+#define JUMBO_FRAME_MAX_SIZE 9200
 
-#define NB_RX_QUEUES 1
-#define NB_TX_QUEUES 1
+#define NB_RX_QUEUES 2
+#define NB_TX_QUEUES 2
 
 #define LINK_CHECK_INTERVAL_MS 100
 #define MAX_LINK_CHECKS 100 /* 100 * 100ms = 10s */
 
 static volatile sig_atomic_t quit_signal = 0;
+static volatile bool dump_hex_enabled = false;
 
 static uint32_t num_clients = 0;
 struct rte_ring *rx_rings[MAX_CLIENTS];
@@ -91,6 +93,9 @@ static int lb_core_id = 0; // Global variable for core_id
 static char *eal_args_array[MAX_EAL_ARGS]; // Array to hold parsed EAL arguments
 static int eal_args_count = 0; // Count of parsed EAL arguments
 static cJSON *global_clients_json = NULL; // Global cJSON object to hold clients array
+static struct lb_shared_info *shared_info; // Make shared_info global
+
+
 // Forward declaration for cleanup
 static void cleanup_dpdk_config(void);
 static int parse_full_config(const char *path); // Forward declaration
@@ -147,18 +152,34 @@ static inline int port_init(uint16_t port, struct rte_mempool *mbuf_pool, struct
     rte_eth_dev_stop(port);
 
     memset(&port_conf, 0, sizeof(struct rte_eth_conf));
-    port_conf.rxmode.mq_mode = RTE_ETH_MQ_RX_RSS; // Enable RSS
-    port_conf.rx_adv_conf.rss_conf.rss_hf =
-        RTE_ETH_RSS_IP | RTE_ETH_RSS_UDP | RTE_ETH_RSS_TCP; // Enable RSS for IP, UDP, TCP
-
+    // Determine supported RSS hash functions
     retval = rte_eth_dev_info_get(port, &dev_info);
     if (retval != 0) {
         RTE_LOG(ERR, LB, "Error getting device (port %u) info: %s\n", port,
                 strerror(-retval));
         return retval;
     }
+
+    uint64_t rss_hf_temp = RTE_ETH_RSS_IP | RTE_ETH_RSS_UDP | RTE_ETH_RSS_TCP;
+    port_conf.rx_adv_conf.rss_conf.rss_hf = rss_hf_temp & dev_info.flow_type_rss_offloads;
+
+    if (port_conf.rx_adv_conf.rss_conf.rss_hf != 0) {
+        port_conf.rxmode.mq_mode = RTE_ETH_MQ_RX_RSS; // Enable RSS only if hash functions are supported
+        RTE_LOG(INFO, LB, "Port %u: Enabled RSS with hash functions: 0x%" PRIx64 "\n", port, port_conf.rx_adv_conf.rss_conf.rss_hf);
+    } else {
+        port_conf.rxmode.mq_mode = RTE_ETH_MQ_RX_NONE; // No RSS if no hash functions are supported
+        RTE_LOG(WARNING, LB, "Port %u: No supported RSS hash functions found. Disabling RSS.\n", port);
+    }
+
     if (dev_info.tx_offload_capa & RTE_ETH_TX_OFFLOAD_MBUF_FAST_FREE)
         port_conf.txmode.offloads |= RTE_ETH_TX_OFFLOAD_MBUF_FAST_FREE;
+
+    // Set MTU for jumbo frames
+    uint16_t mtu = JUMBO_FRAME_MAX_SIZE - RTE_ETHER_HDR_LEN - RTE_ETHER_CRC_LEN;
+    retval = rte_eth_dev_set_mtu(port, mtu);
+    if (retval != 0) {
+        RTE_LOG(WARNING, LB, "Port %u: Failed to set MTU to %u: %s\n", port, mtu, strerror(-retval));
+    }
 
     retval =
         rte_eth_dev_configure(port, NB_RX_QUEUES, NB_TX_QUEUES, &port_conf);
@@ -212,22 +233,30 @@ static void signal_handler(int signum) {
     if (signum == SIGINT || signum == SIGTERM) {
         RTE_LOG(INFO, LB, "Signal %d received, preparing to exit...\n", signum);
         quit_signal = 1;
+    } else if (signum == SIGUSR2) {
+        dump_hex_enabled = !dump_hex_enabled;
+        RTE_LOG(INFO, LB, "SIGUSR2 received: dump_mbuf_hex toggled to %s.\n", dump_hex_enabled ? "ENABLED" : "DISABLED");
     }
 }
 
 void dump_mbuf_hex(struct rte_mbuf *mbuf, char *msg)
 {
-    return;
+    if (!dump_hex_enabled) {
+        return;
+    }
     if (!mbuf) {
         printf("Invalid mbuf\n");
         return;
     }
-
+    static pid_t cur_pid;
+    if (cur_pid == 0) {
+        cur_pid = getpid();
+    }
     // Get the pointer to the data and the data length
     const uint8_t *data = rte_pktmbuf_mtod(mbuf, const uint8_t *);
     uint16_t data_len = rte_pktmbuf_data_len(mbuf);
 
-    printf("Mbuf data dump: %s (length=%u):\n", msg, data_len);
+    printf("[%d]: Mbuf data dump: %s (length=%u):\n", cur_pid, msg, data_len);
 
     for (uint16_t i = 0; i < data_len; i++) {
         if (i % 16 == 0) { // Start a new line every 16 bytes
@@ -246,6 +275,183 @@ void dump_mbuf_hex(struct rte_mbuf *mbuf, char *msg)
 struct lcore_arg {
 	uint16_t queue_id;
 };
+
+static int lcore_rxtx(void *arg) {
+    struct lcore_arg *l_arg = (struct lcore_arg *)arg;
+    const uint16_t queue_id = l_arg->queue_id;
+    const unsigned lcore_id = rte_lcore_id();
+    struct rte_mbuf *bufs[BURST_SIZE];
+    struct rte_mbuf *client_bufs[MAX_CLIENTS][BURST_SIZE];
+    uint16_t client_buf_counts[MAX_CLIENTS] = {0};
+	struct rte_mbuf *tx_burst_buffer[BURST_SIZE];
+
+    // Add for stats collection
+    uint64_t last_stats_time = 0;
+    const uint64_t tsc_hz = rte_get_tsc_hz();
+    const uint64_t stats_interval = tsc_hz; // 1 second
+
+    RTE_LOG(INFO, LB, "Starting RX/TX loop on lcore %u, queue %u for %u clients\n",
+            lcore_id, queue_id, num_clients);
+
+    while (!quit_signal) {
+        // Stats collection logic - only on main lcore
+        if (lcore_id == rte_get_main_lcore()) {
+            uint64_t cur_tsc = rte_rdtsc();
+            if (cur_tsc - last_stats_time > stats_interval) {
+                rte_eth_stats_get(0, &shared_info->stats);
+                last_stats_time = cur_tsc;
+            }
+        }
+        /* RX path: Receive from NIC and distribute to clients */
+        uint16_t nb_rx = rte_eth_rx_burst(0, queue_id, bufs, BURST_SIZE);
+        if (nb_rx > 0) {
+            for (uint16_t i = 0; i < nb_rx; i++) {
+                rte_prefetch0(rte_pktmbuf_mtod(bufs[i], void *));
+                dump_mbuf_hex(bufs[i], "IN");
+                struct rte_ether_hdr *eth_hdr = rte_pktmbuf_mtod(bufs[i], struct rte_ether_hdr *);
+                ip_addr_t dst_ip;
+                int32_t *client_id_ptr;
+                int ret_hash;
+                uint16_t eth_type = rte_be_to_cpu_16(eth_hdr->ether_type);
+
+                //memset(&dst_ip, 0, sizeof(ip_addr_t));
+
+                if (eth_type == RTE_ETHER_TYPE_IPV4) {
+                    struct rte_ipv4_hdr *ipv4_hdr =
+                        rte_pktmbuf_mtod_offset(bufs[i], struct rte_ipv4_hdr *,
+                                                sizeof(struct rte_ether_hdr));
+                    dst_ip.family = AF_INET;
+                    dst_ip.addr.ipv4 = ipv4_hdr->dst_addr;
+                } else if (eth_type == RTE_ETHER_TYPE_IPV6) {
+                    struct rte_ipv6_hdr *ipv6_hdr =
+                        rte_pktmbuf_mtod_offset(bufs[i], struct rte_ipv6_hdr *,
+                                                sizeof(struct rte_ether_hdr));
+                    dst_ip.family = AF_INET6;
+                    memcpy(dst_ip.addr.ipv6, ipv6_hdr->dst_addr.a, sizeof(ipv6_hdr->dst_addr.a));
+                } else if (eth_type == RTE_ETHER_TYPE_ARP) {
+                    struct rte_arp_hdr *arp_hdr = rte_pktmbuf_mtod_offset(
+                        bufs[i], struct rte_arp_hdr *,
+                        sizeof(struct rte_ether_hdr));
+
+                    if (rte_be_to_cpu_16(arp_hdr->arp_hardware) ==
+                            RTE_ARP_HRD_ETHER &&
+                        rte_be_to_cpu_16(arp_hdr->arp_protocol) ==
+                            RTE_ETHER_TYPE_IPV4) {
+                        dst_ip.family = AF_INET;
+                        dst_ip.addr.ipv4 = arp_hdr->arp_data.arp_tip;
+                    } else {
+                        RTE_LOG(DEBUG, LB,
+                                "Unsupported ARP packet type, dropping.\n");
+                        rte_pktmbuf_free(bufs[i]);
+                        continue;
+                    }
+                } else {
+                    RTE_LOG(DEBUG, LB,
+                            "Received non-IP/ARP packet. Dropping packet.\n");
+                    rte_pktmbuf_free(bufs[i]);
+                    continue;
+                }
+
+                ret_hash = rte_hash_lookup_data(
+                    ip_to_client_table, &dst_ip, (void **)&client_id_ptr);
+                if (ret_hash < 0) {
+                    rte_pktmbuf_free(bufs[i]);
+                    continue;
+                }
+                int client_id = *client_id_ptr;
+
+                uint16_t count = client_buf_counts[client_id];
+                client_bufs[client_id][count] = bufs[i];
+                client_buf_counts[client_id]++;
+
+                if (client_buf_counts[client_id] == BURST_SIZE) {
+                    uint16_t nb_enqueued = rte_ring_enqueue_burst(
+                        rx_rings[client_id],
+                        (void *const *)client_bufs[client_id], BURST_SIZE,
+                        NULL);
+                    if (nb_enqueued < BURST_SIZE) {
+                        for (uint16_t j = nb_enqueued; j < BURST_SIZE; j++) {
+                            rte_pktmbuf_free(client_bufs[client_id][j]);
+                        }
+                    }
+                    client_buf_counts[client_id] = 0;
+                }
+            }
+        }
+
+        /* Flush remaining packets in client buffers */
+        for (unsigned i = 0; i < num_clients; i++) {
+            if (client_buf_counts[i] > 0) {
+                uint16_t nb_enqueued = rte_ring_enqueue_burst(
+                    rx_rings[i], (void *const *)client_bufs[i],
+                    client_buf_counts[i], NULL);
+                if (nb_enqueued < client_buf_counts[i]) {
+                    for (uint16_t j = nb_enqueued; j < client_buf_counts[i];
+                         j++) {
+                        rte_pktmbuf_free(client_bufs[i][j]);
+                    }
+                }
+                client_buf_counts[i] = 0;
+            }
+        }
+		
+		/* TX path: Dequeue from rings and send */
+        uint16_t nb_to_tx = 0;
+        for (unsigned i = 0; i < num_clients; i++) {
+            for (;;) {
+                uint16_t space_left = BURST_SIZE - nb_to_tx;
+                if (space_left == 0) {
+                    // Buffer full, send it
+                    uint16_t nb_tx = rte_eth_tx_burst(0, queue_id, tx_burst_buffer, nb_to_tx);
+                    if (nb_tx < nb_to_tx) {
+						RTE_LOG(
+							WARNING, LB,
+							"Failed to send all packets to NIC. Dropping %u packets.\n",
+							nb_to_tx - nb_tx);
+                        for (uint16_t j = nb_tx; j < nb_to_tx; j++) {
+                            rte_pktmbuf_free(tx_burst_buffer[j]);
+                        }
+                    }
+                    nb_to_tx = 0;
+                    continue; // Try to dequeue from the same ring again
+                }
+
+                uint16_t nb_dequeued = rte_ring_dequeue_burst(
+                    tx_rings[i], (void **)&tx_burst_buffer[nb_to_tx], space_left, NULL);
+                
+                if (nb_dequeued == 0) {
+                    // Ring i is empty, move to next ring
+                    break; 
+                }
+                if (dump_hex_enabled) {
+                    for (int i = 0; i < nb_dequeued; i++) {
+                        dump_mbuf_hex(tx_burst_buffer[nb_to_tx+i], "OUT");
+                    }
+                } 
+                nb_to_tx += nb_dequeued;
+            }
+        }
+
+        // Send any remaining packets
+        if (nb_to_tx > 0) {
+            uint16_t nb_tx = rte_eth_tx_burst(0, queue_id, tx_burst_buffer, nb_to_tx);
+            if (nb_tx < nb_to_tx) {
+				RTE_LOG(
+					WARNING, LB,
+					"Failed to send all packets to NIC. Dropping %u packets.\n",
+					nb_to_tx - nb_tx);
+                for (uint16_t j = nb_tx; j < nb_to_tx; j++) {
+                    rte_pktmbuf_free(tx_burst_buffer[j]);
+                }
+            }
+        }
+    }
+    RTE_LOG(INFO, LB, "Lcore %u (RX/TX, queue %u) exiting.\n", lcore_id, queue_id);
+	if (l_arg) {
+		free(l_arg);
+	}
+    return 0;
+}
 
 static int lcore_rx(void *arg) {
     struct lcore_arg *l_arg = (struct lcore_arg *)arg;
@@ -517,6 +723,7 @@ int main(int argc, char *argv[]) {
     /* Register signal handler for graceful shutdown */
     signal(SIGINT, signal_handler);
     signal(SIGTERM, signal_handler);
+    signal(SIGUSR2, signal_handler);
 
     atexit(cleanup_dpdk_config); // Register cleanup function
 
@@ -550,16 +757,14 @@ int main(int argc, char *argv[]) {
         rte_panic("Cannot init EAL\n");
     }
     
-	const struct rte_memzone *mz;
-    struct lb_shared_info *shared_info;
-
-    mz = rte_memzone_reserve(LB_SHARED_MEMZONE, sizeof(struct lb_shared_info),
+    const struct rte_memzone *mz = rte_memzone_reserve(LB_SHARED_MEMZONE, sizeof(struct lb_shared_info),
                              rte_socket_id(), 0);
     if (mz == NULL) {
         rte_panic("Cannot reserve memzone for shared info\n");
     }
     shared_info = (struct lb_shared_info *)mz->addr;
-
+    // Initialize shared memory to zero
+    memset(shared_info, 0, sizeof(struct lb_shared_info));
 
     if (init_client_hash_table() < 0)
         rte_panic("Failed to initialize client hash table");
@@ -588,12 +793,12 @@ int main(int argc, char *argv[]) {
         char ring_name[64];
         snprintf(ring_name, sizeof(ring_name), RX_RING_NAME_TEMPLATE, i);
         rx_rings[i] = rte_ring_create(ring_name, RING_SIZE, rte_socket_id(),
-                                      RING_F_SP_ENQ | RING_F_SC_DEQ);
+                                      RING_F_SC_DEQ);
         if (rx_rings[i] == NULL)
             rte_panic("Cannot create RX ring %u\n", i);
         snprintf(ring_name, sizeof(ring_name), TX_RING_NAME_TEMPLATE, i);
         tx_rings[i] = rte_ring_create(ring_name, RING_SIZE, rte_socket_id(),
-                                      RING_F_SP_ENQ | RING_F_SC_DEQ);
+                                      RING_F_SP_ENQ);
         if (tx_rings[i] == NULL)
             rte_panic("Cannot create TX ring %u\n", i);
     }
@@ -603,39 +808,50 @@ int main(int argc, char *argv[]) {
     RTE_LOG(INFO, LB, "Finished EAL and port initialization\n");
 
     unsigned core1_id = lb_core_id;
-    unsigned core2_id = lb_core_id + 1;
 
     // The main lcore from EAL should be our first core.
     if (rte_lcore_id() != core1_id) {
         rte_panic("Main lcore (%u) is not the configured core_id (%u).\n", rte_lcore_id(), core1_id);
     }
     
-    // Check if the second core is enabled and is a worker core.
-    if (!rte_lcore_is_enabled(core2_id) || core2_id == rte_get_main_lcore()) {
-        rte_panic("Second core %u is not an enabled worker lcore.\n", core2_id);
+    if (num_clients < NUMBER_CLIENT_PER_CORE) {
+        struct lcore_arg *arg_rxtx = malloc(sizeof(struct lcore_arg));
+        if (!arg_rxtx) {
+            rte_panic("cannot allocate memory for lcore arg\n");
+        }
+        arg_rxtx->queue_id = 0;
+        RTE_LOG(INFO, LB, "Starting RX/TX on main lcore %u (queue 0)...\n", core1_id);
+        lcore_rxtx(arg_rxtx); // This will block until quit_signal
+    } else {
+        unsigned core2_id = lb_core_id + 1;
+        // Check if the second core is enabled and is a worker core.
+        if (!rte_lcore_is_enabled(core2_id) || core2_id == rte_get_main_lcore()) {
+            rte_panic("Second core %u is not an enabled worker lcore.\n", core2_id);
+        }
+
+        struct lcore_arg *arg_rxtx2 = malloc(sizeof(struct lcore_arg));
+        if (!arg_rxtx2) {
+            rte_panic("cannot allocate memory for lcore arg2\n");
+        }
+        arg_rxtx2->queue_id = 1;
+
+        RTE_LOG(INFO, LB, "Launching RX/TX on worker lcore %u (queue 1)...\n", core2_id);
+        if (rte_eal_remote_launch(lcore_rxtx, arg_rxtx2, core2_id) != 0) {
+            free(arg_rxtx2);
+            rte_panic("Failed to launch RX/TX on lcore %u.", core2_id);
+        }
+
+        struct lcore_arg *arg_rxtx1 = malloc(sizeof(struct lcore_arg));
+        if (!arg_rxtx1) {
+            rte_panic("cannot allocate memory for lcore arg1\n");
+        }
+        arg_rxtx1->queue_id = 0;
+        RTE_LOG(INFO, LB, "Starting RX/TX on main lcore %u (queue 0)...\n", core1_id);
+        lcore_rxtx(arg_rxtx1); // This will block until quit_signal
+
+        rte_eal_wait_lcore(core2_id);
     }
 
-    struct lcore_arg *arg_tx = malloc(sizeof(struct lcore_arg));
-	if (!arg_tx) {
-		rte_panic("cannot allocate memory for lcore arg2\n");
-	}
-    arg_tx->queue_id = 0;
-
-    RTE_LOG(INFO, LB, "Launching TX on worker lcore %u (queue 1)...\n", core2_id);
-    if (rte_eal_remote_launch(lcore_tx, arg_tx, core2_id) != 0) {
-		free(arg_tx);
-        rte_panic("Failed to launch TX on lcore %u.", core2_id);
-    }
-
-    struct lcore_arg *arg_rx = malloc(sizeof(struct lcore_arg));
-	if (!arg_rx) {
-		rte_panic("cannot allocate memory for lcore arg1\n");
-	}
-    arg_rx->queue_id = 0;
-    RTE_LOG(INFO, LB, "Starting RX on main lcore %u (queue 0)...\n", core1_id);
-    lcore_rx(arg_rx); // This will block until quit_signal
-
-    rte_eal_wait_lcore(core2_id);
 
     RTE_LOG(INFO, LB, "All lcores have finished. Exiting.\n");
 
@@ -698,6 +914,18 @@ static int parse_full_config(const char *path) {
         lb_core_id = 0; // Default value
     }
 
+    // Parse num_clients
+    cJSON *num_clients_item =
+        cJSON_GetObjectItemCaseSensitive(json, "num_clients");
+    if (!cJSON_IsNumber(num_clients_item) || num_clients_item->valueint <= 0 ||
+        num_clients_item->valueint > MAX_CLIENTS) {
+        RTE_LOG(ERR, LB, "Invalid 'num_clients' in config\n");
+        cJSON_Delete(json);
+        free(buffer);
+        return -1;
+    }
+    num_clients = num_clients_item->valueint;
+
     cJSON *dpdk_args_item = cJSON_GetObjectItemCaseSensitive(json, "dpdk_args");
     char *raw_dpdk_args = NULL;
     if (cJSON_IsString(dpdk_args_item) && (dpdk_args_item->valuestring != NULL)) {
@@ -708,9 +936,13 @@ static int parse_full_config(const char *path) {
     }
 
     // Construct the full DPDK args string
-    // Allocate enough memory for "-l<core_id>-<core_id+1> " + raw_dpdk_args + null terminator
     int tx_core_id = lb_core_id + 1;
-    int needed_len = snprintf(NULL, 0, "-l%d-%d %s", lb_core_id, tx_core_id, raw_dpdk_args) + 1;
+	int needed_len;
+    if (num_clients < NUMBER_CLIENT_PER_CORE) {
+        needed_len = snprintf(NULL, 0, "-l%d %s", lb_core_id, raw_dpdk_args) + 1;
+    } else {
+        needed_len = snprintf(NULL, 0, "-l%d-%d %s", lb_core_id, tx_core_id, raw_dpdk_args) + 1;
+    }
     dpdk_config_args = malloc(needed_len);
     if (dpdk_config_args == NULL) {
         RTE_LOG(ERR, LB, "Failed to allocate memory for dpdk_config_args\n");
@@ -718,7 +950,11 @@ static int parse_full_config(const char *path) {
         free(buffer);
         return -1;
     }
-    snprintf(dpdk_config_args, needed_len, "-l%d-%d %s", lb_core_id, tx_core_id, raw_dpdk_args);
+    if (num_clients < NUMBER_CLIENT_PER_CORE) {
+        snprintf(dpdk_config_args, needed_len, "-l%d %s", lb_core_id, raw_dpdk_args);
+    } else {
+        snprintf(dpdk_config_args, needed_len, "-l%d-%d %s", lb_core_id, tx_core_id, raw_dpdk_args);
+    }
 
     // Now tokenize dpdk_config_args
     char *s = strdup(dpdk_config_args); // strdup because strtok_r modifies the string
@@ -751,18 +987,6 @@ static int parse_full_config(const char *path) {
         RTE_LOG(WARNING, LB, "Truncated DPDK EAL arguments due to MAX_EAL_ARGS limit.\n");
     }
 
-    // Parse num_clients
-    cJSON *num_clients_item =
-        cJSON_GetObjectItemCaseSensitive(json, "num_clients");
-    if (!cJSON_IsNumber(num_clients_item) || num_clients_item->valueint <= 0 ||
-        num_clients_item->valueint > MAX_CLIENTS) {
-        RTE_LOG(ERR, LB, "Invalid 'num_clients' in config\n");
-        cJSON_Delete(json);
-        free(buffer);
-        return -1;
-    }
-    num_clients = num_clients_item->valueint;
-
     // Store clients array for later processing
     cJSON *clients_array_item = cJSON_GetObjectItemCaseSensitive(json, "clients");
     if (!cJSON_IsArray(clients_array_item)) {
@@ -786,5 +1010,3 @@ static int parse_full_config(const char *path) {
     free(buffer);
     return 0;
 }
-
-

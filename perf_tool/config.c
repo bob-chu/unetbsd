@@ -182,6 +182,8 @@ int parse_config(const char *file_path, perf_config_t *config) {
 
                 path_config->path = get_string_from_json(path_item_json, "path");
                 path_config->response_body_size = get_int_from_json(path_item_json, "response_body_size");
+                path_config->response_code = get_int_from_json(path_item_json, "response_code");
+                path_config->response_body = get_string_from_json(path_item_json, "response_body");
                 path_config->request_headers = parse_string_array(path_item_json, "request_headers", &path_config->request_headers_count);
                 path_config->response_headers = parse_string_array(path_item_json, "response_headers", &path_config->response_headers_count);
             }
@@ -227,6 +229,7 @@ void free_config(perf_config_t *config) {
             for (int i = 0; i < config->http_config.paths_count; i++) {
                 http_path_config_t *path_config = &config->http_config.paths[i];
                 free(path_config->path);
+                free(path_config->response_body);
                 if (path_config->request_headers) {
                     for (int j = 0; j < path_config->request_headers_count; j++) {
                         free(path_config->request_headers[j]);

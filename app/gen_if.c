@@ -15,6 +15,7 @@
 #include "gen_if.h"
 #include "logger.h"
 
+
 #define MAX_PKT_BURST 64
 #define RX_RING_SIZE 128
 #define TX_RING_SIZE 128
@@ -27,7 +28,9 @@
 #define PORT_QUEUE_SZ 1
 #define JUMBO_FRAME_MAX_SIZE 9600 // Support for jumbo frames up to 9600 bytes
 
-static struct virt_interface *v_if;
+// Exported for shim integration
+struct virt_interface *v_f_dpdk;
+struct rte_ether_addr dpdk_port_addr;
 // Define symmetric RSS key - exactly 40 bytes for MLX5
 static uint8_t symmetric_rsskey[40] = {
     0x6d, 0x5a, 0x6d, 0x5a, 0x6d, 0x5a, 0x6d, 0x5a,
@@ -42,7 +45,6 @@ unsigned nb_ports;
 uint16_t portid;
 static uint16_t tx_pkts;
 static struct rte_eth_dev_tx_buffer *tx_buffer;
-static struct rte_ether_addr addr;
 static uint8_t num_queue;
 static struct client_ring *client_rings;
 static struct client_ring curr_client_ring;
@@ -81,37 +83,43 @@ port_init(uint16_t port, struct rte_mempool *mbuf_pool)
     uint16_t q;
     struct rte_eth_dev_info dev_info;
     struct rte_eth_txconf txconf;
+    struct rte_eth_conf port_conf;
 
     if (!rte_eth_dev_is_valid_port(port))
         return -1;
 
-    struct rte_eth_conf port_conf = {
-        .rxmode = {
-            .mq_mode = RTE_ETH_MQ_RX_RSS,
-            .max_lro_pkt_size = JUMBO_FRAME_MAX_SIZE, // Enable jumbo frames
-            .mtu = JUMBO_FRAME_MAX_SIZE - RTE_ETHER_HDR_LEN - RTE_ETHER_CRC_LEN, // Set MTU for jumbo frames
-        },
-        .rx_adv_conf = {
-            .rss_conf = {
-                .rss_key = symmetric_rsskey,
-                .rss_key_len = sizeof(symmetric_rsskey),
-                .rss_hf = RTE_ETH_RSS_IP | RTE_ETH_RSS_TCP | RTE_ETH_RSS_UDP,
-            }
-        }
-    };
+    memset(&port_conf, 0, sizeof(struct rte_eth_conf));
 
-    memset(&port_conf, 0, sizeof(port_conf));
-
+    // Determine supported RSS hash functions
     retval = rte_eth_dev_info_get(port, &dev_info);
     if (retval != 0) {
-        LOG_INFO("Error during getting device (port %u) info: %s\n",
-                port, strerror(-retval));
+        LOG_INFO("Error getting device (port %u) info: %s\n", port,
+                strerror(-retval));
         return retval;
+    }
+
+    uint64_t rss_hf_temp = RTE_ETH_RSS_IP | RTE_ETH_RSS_UDP | RTE_ETH_RSS_TCP;
+    port_conf.rx_adv_conf.rss_conf.rss_hf = rss_hf_temp & dev_info.flow_type_rss_offloads;
+
+    if (port_conf.rx_adv_conf.rss_conf.rss_hf != 0) {
+        port_conf.rxmode.mq_mode = RTE_ETH_MQ_RX_RSS; // Enable RSS only if hash functions are supported
+        LOG_INFO("Port %u: Enabled RSS with hash functions: 0x%" PRIx64 "\n", port, port_conf.rx_adv_conf.rss_conf.rss_hf);
+    } else {
+        port_conf.rxmode.mq_mode = RTE_ETH_MQ_RX_NONE; // No RSS if no hash functions are supported
+        LOG_INFO("Port %u: No supported RSS hash functions found. Disabling RSS.\n", port);
     }
 
     if (dev_info.tx_offload_capa & RTE_ETH_TX_OFFLOAD_MBUF_FAST_FREE)
         port_conf.txmode.offloads |=
             RTE_ETH_TX_OFFLOAD_MBUF_FAST_FREE;
+
+    // Set MTU for jumbo frames
+    uint16_t mtu = JUMBO_FRAME_MAX_SIZE - RTE_ETHER_HDR_LEN - RTE_ETHER_CRC_LEN;
+    retval = rte_eth_dev_set_mtu(port, mtu);
+    if (retval != 0) {
+        LOG_INFO("Port %u: Failed to set MTU to %u: %s (Continuing with default MTU)\n", port, mtu, strerror(-retval));
+        // Do not return error, proceed with default MTU
+    }
 
     /* Configure the Ethernet device. */
     retval = rte_eth_dev_configure(port, rx_rings, tx_rings, &port_conf);
@@ -147,13 +155,13 @@ port_init(uint16_t port, struct rte_mempool *mbuf_pool)
         return retval;
 
     /* Display the port MAC address. */
-    retval = rte_eth_macaddr_get(0, &addr);
+    retval = rte_eth_macaddr_get(0, &dpdk_port_addr);
     if (retval != 0)
         return retval;
 
     LOG_INFO("Port %u MAC: %02" PRIx8 " %02" PRIx8 " %02" PRIx8
             " %02" PRIx8 " %02" PRIx8 " %02" PRIx8 "\n",
-            port, RTE_ETHER_ADDR_BYTES(&addr));
+            port, RTE_ETHER_ADDR_BYTES(&dpdk_port_addr));
 
     /* Enable RX in promiscuous mode for the Ethernet device. */
     retval = rte_eth_promiscuous_enable(port);
@@ -190,6 +198,26 @@ void dump_mbuf_hex(struct rte_mbuf *mbuf, char *msg)
             printf("\n");
         }
     }
+}
+
+// Wait for link to come up (important for memif where handshake happens asynchronously)
+int dpdk_wait_link_up(int timeout_ms)
+{
+    struct rte_eth_link link;
+    int elapsed = 0;
+    const int poll_interval = 10; // ms
+    
+    while (elapsed < timeout_ms) {
+        rte_eth_link_get_nowait(0, &link);
+        if (link.link_status == RTE_ETH_LINK_UP) {
+            LOG_INFO("Link UP after %d ms, speed=%u Mbps", elapsed, link.link_speed);
+            return 0;
+        }
+        rte_delay_ms(poll_interval);
+        elapsed += poll_interval;
+    }
+    LOG_INFO("Link UP timeout after %d ms (link_status=%d)", timeout_ms, link.link_status);
+    return -1; // timeout, but we can still proceed
 }
 
 /* Enqueue a single packet, and send burst if queue is filled */
@@ -240,6 +268,7 @@ out:
 void single_mbuf_input(struct rte_mbuf *pkt)
 {
     dump_mbuf_hex(pkt, "IN");
+    /* Original copy path */
     void *data = rte_pktmbuf_mtod(pkt, void*);
     uint16_t len = rte_pktmbuf_data_len(pkt);
     void *hdr = netbsd_mget_hdr(data, len);
@@ -257,25 +286,21 @@ void single_mbuf_input(struct rte_mbuf *pkt)
         void *mb = netbsd_mget_data(prev, data, len);
         if (mb == NULL) {
             netbsd_freembuf(hdr);
-            rte_pktmbuf_free(pkt);
             flag = false;
-            return;
+            break;
         }
-        pn = pn->next;
+
         prev = mb;
+        pn = pn->next;
     }
+
     if (flag) {
-        virt_if_mbuf_input(v_if, hdr);
-        // Always free the DPDK mbuf to prevent leaks. The NetBSD mbuf is now owned by ether_input,
-        // and we must not touch it to avoid double-free issues if NetBSD frees it.
-        rte_pktmbuf_free(pkt);
-    } else {
-        // If we didn't pass the NetBSD mbuf to ether_input (due to an error in processing),
-        // free it here to prevent a memory leak.
-        netbsd_freembuf(hdr);
-        rte_pktmbuf_free(pkt);
+        virt_if_mbuf_input(v_f_dpdk, hdr);
     }
+
+    rte_pktmbuf_free(pkt);
 }
+
 
 static int is_arp_packet(struct rte_mbuf *pkt)
 {
@@ -521,12 +546,12 @@ int dpdk_init(int argc, char **argv)
     /* only have 1 port: 0 */
     uint8_t port = 0;
     if (proc_type != RTE_PROC_PRIMARY) {
-        ret = rte_eth_macaddr_get(port, &addr);
+        ret = rte_eth_macaddr_get(port, &dpdk_port_addr);
         if (ret != 0)
             return ret;
         LOG_INFO("Port %u MAC: %02" PRIx8 " %02" PRIx8 " %02" PRIx8
                 " %02" PRIx8 " %02" PRIx8 " %02" PRIx8 "\n",
-                port, RTE_ETHER_ADDR_BYTES(&addr));
+                port, RTE_ETHER_ADDR_BYTES(&dpdk_port_addr));
     }
     /* >8 End of initializing all ports. */
 
@@ -543,18 +568,28 @@ void dpdk_cleanup()
  */
 void open_interface(char *if_name)
 {
-    v_if = virt_if_create(if_name);
-    virt_if_attach(v_if, (const uint8_t *)&addr);
+    v_f_dpdk = virt_if_create(if_name);
+    virt_if_attach(v_f_dpdk, (const uint8_t *)&dpdk_port_addr);
 
-    virt_if_register_callbacks(v_if, gen_if_output, NULL);
+    virt_if_register_callbacks(v_f_dpdk, gen_if_output, NULL);
+}
+
+void dpdk_set_virt_if(struct virt_interface *vif)
+{
+    v_f_dpdk = vif;
 }
 
 void set_mtu(int mtu)
 {
-    if (v_if && v_if->ifp) {
-        // Use ioctl or another method if direct access to if_mtu is not allowed
-        // For now, we'll log the intent to set MTU
-        LOG_INFO("Setting MTU to %d for interface (method TBD)", mtu);
+    if (v_f_dpdk) {
+        LOG_INFO("Setting MTU to %d", mtu);
+        if (virt_if_set_mtu(v_f_dpdk, mtu) != 0) {
+            LOG_ERROR("Failed to set MTU to %d", mtu);
+        }
+        // Also update DPDK port MTU
+        if (rte_eth_dev_set_mtu(0, mtu) != 0) {
+            LOG_ERROR("Failed to set DPDK port MTU to %d", mtu);
+        }
     } else {
         LOG_ERROR("Failed to set MTU: Interface not initialized");
     }
@@ -566,8 +601,8 @@ void configure_interface(char *ip_addr, char *gateway_addr)
     inet_pton(AF_INET, ip_addr, &addr);
     inet_pton(AF_INET, gateway_addr, &gw);
     unsigned netmask = 24; // Assuming /24 netmask
-    virt_if_add_addr(v_if, &addr, netmask, 1);
-    virt_if_add_gateway(v_if, &gw);
+    virt_if_add_addr(v_f_dpdk, &addr, netmask, 1);
+    virt_if_add_gateway(v_f_dpdk, &gw);
 }
 
 void add_interface_ip(char *ip_addr)
@@ -575,5 +610,5 @@ void add_interface_ip(char *ip_addr)
     struct in_addr addr;
     inet_pton(AF_INET, ip_addr, &addr);
     unsigned netmask = 24; // Assuming /24 netmask
-    virt_if_add_addr(v_if, &addr, netmask, 1);
+    virt_if_add_addr(v_f_dpdk, &addr, netmask, 1);
 }

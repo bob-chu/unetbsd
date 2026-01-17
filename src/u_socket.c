@@ -10,6 +10,8 @@
 #include <sys/poll.h>
 #include <sys/types.h>
 #include <sys/uio.h>
+#include <sys/socketvar.h>
+#include <sys/protosw.h>
 
 
 extern struct lwp *curlwp;
@@ -83,7 +85,7 @@ static void soupcall_cb(struct socket *so, void *arg, int events, int waitflag)
 void netbsd_process_event()
 {
     struct netbsd_event *ev;
-    int count = 16;
+    int count = 128; // Increased from 16
     while ((ev = TAILQ_FIRST(&event_queue)) != NULL && count-- > 0) {
         struct netbsd_handle *nh = ev->nh;
         int events;
@@ -163,6 +165,11 @@ int netbsd_socket(struct netbsd_handle *nh)
 {
     int error;
     int type, proto;
+    static int printed_ss = 0;
+    if (!printed_ss) {
+        printf("SS_ISCONNECTED=0x%x, SS_ISCONNECTING=0x%x\n", SS_ISCONNECTED, SS_ISCONNECTING);
+        printed_ss = 1;
+    }
 
     if (nh->proto == PROTO_TCP) {
         proto = IPPROTO_TCP;
@@ -257,11 +264,31 @@ int netbsd_accept(struct netbsd_handle *nh_server,
         return error;
     }
     nh_client->so = so2;
+    nh_client->type = nh_server->type;
+    nh_client->proto = nh_server->proto;
+    nh_client->is_ipv4 = nh_server->is_ipv4;
+    
     netbsd_io_start(nh_client);
     if (so2->so_rcv.sb_cc > 0) {
         soupcall_cb(so2, nh_client, POLLIN | POLLRDNORM, 0);
     }
     return 0;
+}
+
+int netbsd_getpeername(struct netbsd_handle *nh, struct sockaddr *sa, socklen_t *alen)
+{
+    struct socket *so = nh->so;
+    if (so == NULL) return EINVAL;
+    
+    solock(so);
+    int error = (*so->so_proto->pr_usrreqs->pr_peeraddr)(so, sa);
+    sounlock(so);
+    if (error == 0 && alen) {
+       // NetBSD's pru_peeraddr updates sa->sa_len (uint8_t). 
+       // We should return it in *alen.
+       *alen = sa->sa_len;
+    }
+    return error;
 }
 
 int netbsd_connect(struct netbsd_handle *nh, struct sockaddr *addr)
@@ -280,8 +307,12 @@ int netbsd_connect(struct netbsd_handle *nh, struct sockaddr *addr)
     }
 
     int ret = soconnect(nh->so, (struct sockaddr *)&sa, curlwp);
-    if (ret != 0) {
+    if (ret != 0 && ret != 56 && ret != EISCONN) {  // 56 = EISCONN = already connected = success
         printf("soconnect failed with error: %d\n", ret);
+    }
+    // EISCONN (56) means socket is already connected - treat as success
+    if (ret == 56 || ret == EISCONN) {
+        ret = 0;
     }
     /* enable debug */
     //nh->so->so_options |= SO_DEBUG;
@@ -369,10 +400,9 @@ static int so_read(struct netbsd_handle *nh, struct iovec *iov, int iovcnt,
         //printf("soreceiver return %d\n", error);
         return -error; /* return error, like -EAGAIN */
     }
-    if (so->so_state & SS_CANTRCVMORE) {
-        /* EOF notify*/
-        return -EPIPE;
-    }
+    /* if (so->so_state & SS_CANTRCVMORE) {
+        return 0; // EOF
+    } */
     total -= uio.uio_resid;
     if (from && addr_mbuf) {
         int len = MIN(addr_mbuf->m_len, sizeof(struct sockaddr_storage));
@@ -381,6 +411,11 @@ static int so_read(struct netbsd_handle *nh, struct iovec *iov, int iovcnt,
         m_freem(addr_mbuf);
     } else if (addr_mbuf) {
         m_freem(addr_mbuf);
+    }
+
+    // Fix: If 0 bytes read and not EOF/Error, return -EAGAIN
+    if (total == 0 && !(so->so_state & SS_CANTRCVMORE) && so->so_error == 0) {
+        return -EAGAIN;
     }
 
     return total;
@@ -446,10 +481,15 @@ static ssize_t so_send(struct netbsd_handle *nh, const struct iovec *iov,
 
     error = sosend(so, to ? (struct sockaddr *)to : NULL, &uio, NULL, NULL, flags,
             curlwp);
+    
     if (error) {
-        if (error == EWOULDBLOCK) {
-            return 0;
-        }
+        // Debug: log send buffer state on error
+        //static int send_err_cnt = 0;
+        //if (send_err_cnt++ % 1000 == 0) {
+        //    printf("[so_send] error=%d sb_cc=%ld sb_hiwat=%ld sb_lowat=%ld flags=0x%x state=0x%x\n",
+        //           error, so->so_snd.sb_cc, so->so_snd.sb_hiwat, so->so_snd.sb_lowat,
+        //           so->so_snd.sb_flags, so->so_state);
+        //}
         return -error;
     }
 
@@ -519,4 +559,181 @@ int netbsd_nodelay(struct netbsd_handle *nh, const void *optval, socklen_t optle
     }
 
     return error;
+}
+
+int netbsd_setsockopt(struct netbsd_handle *nh, int level, int optname, 
+                     const void *optval, socklen_t optlen)
+{
+    struct socket *so = nh->so;
+    if (so == NULL) return EINVAL;
+
+    struct sockopt sopt;
+    bzero(&sopt, sizeof(sopt));
+    sopt.sopt_level = level;
+    sopt.sopt_name = optname;
+    sopt.sopt_data = (void *)optval;
+    sopt.sopt_size = optlen;
+
+    return sosetopt(so, &sopt);
+}
+
+int netbsd_getsockopt(struct netbsd_handle *nh, int level, int optname, 
+                     void *optval, socklen_t *optlen)
+{
+    struct socket *so = nh->so;
+    if (so == NULL) return EINVAL;
+
+    struct sockopt sopt;
+    bzero(&sopt, sizeof(sopt));
+    sopt.sopt_level = level;
+    sopt.sopt_name = optname;
+    sopt.sopt_data = optval;
+    sopt.sopt_size = *optlen;
+
+    int error = sogetopt(so, &sopt);
+    if (error == 0) {
+        *optlen = sopt.sopt_size;
+    }
+    return error;
+}
+
+int netbsd_shutdown(struct netbsd_handle *nh, int how)
+{
+    struct socket *so = nh->so;
+    if (so == NULL) return EINVAL;
+    
+    // soshutdown expects how (SHUT_RD, SHUT_WR, SHUT_RDWR)
+    return soshutdown(so, how);
+}
+
+int netbsd_getsockname(struct netbsd_handle *nh, struct sockaddr *sa, socklen_t *alen)
+{
+    struct socket *so = nh->so;
+    if (so == NULL) return EINVAL;
+    
+    solock(so);
+    int error = (*so->so_proto->pr_usrreqs->pr_sockaddr)(so, sa);
+    sounlock(so);
+    if (error == 0 && alen) {
+        *alen = sa->sa_len;
+    }
+    return error;
+}
+
+
+
+int netbsd_set_nonblocking(struct netbsd_handle *nh, int nonblocking)
+{
+    struct socket *so = nh->so;
+    if (so == NULL) return EINVAL;
+
+    if (nonblocking) {
+        so->so_state |= SS_NBIO;
+    } else {
+        so->so_state &= ~SS_NBIO;
+    }
+    return 0;
+}
+
+int netbsd_is_nonblocking(struct netbsd_handle *nh)
+{
+    struct socket *so = nh->so;
+    if (so == NULL) return 0;
+    return (so->so_state & SS_NBIO) ? 1 : 0;
+}
+
+int netbsd_is_connecting(struct netbsd_handle *nh)
+{
+    struct socket *so = nh->so;
+    if (so == NULL) return 0;
+    return (so->so_state & SS_ISCONNECTING) ? 1 : 0;
+}
+
+int netbsd_is_connected(struct netbsd_handle *nh)
+{
+    struct socket *so = nh->so;
+    if (so == NULL) return 0;
+    return (so->so_state & SS_ISCONNECTED) ? 1 : 0;
+}
+
+int netbsd_poll_check(struct netbsd_handle *nh, int events)
+{
+    struct socket *so = nh->so;
+    int revents = 0;
+
+    if (so == NULL) return POLLERR | POLLHUP | POLLNVAL;
+
+    if (events & (POLLIN | POLLRDNORM)) {
+        if (so->so_rcv.sb_cc > 0 || (so->so_state & SS_CANTRCVMORE) || so->so_error) {
+            revents |= (events & (POLLIN | POLLRDNORM));
+        }
+        // Listener handling: if connection queue is not empty
+        if ((so->so_options & SO_ACCEPTCONN) && !TAILQ_EMPTY(&so->so_q)) {
+             revents |= (events & (POLLIN | POLLRDNORM));
+        }
+    }
+
+    if (events & (POLLOUT | POLLWRNORM)) {
+        if ((so->so_snd.sb_cc < so->so_snd.sb_hiwat) || (so->so_state & SS_CANTSENDMORE) || so->so_error) {
+            revents |= (events & (POLLOUT | POLLWRNORM));
+        }
+
+        if (so->so_state & SS_ISCONNECTED) {
+            // Already connected
+        } else if (so->so_state & SS_ISCONNECTING) {
+             // Still connecting, not writable yet unless error
+             if (so->so_error) {
+                 revents |= (events & (POLLOUT | POLLWRNORM));
+                 printf("[Shim] Poll: ISCONNECTING but error=%d, returning POLLOUT\n", so->so_error);
+             } else {
+                 if (revents & (POLLOUT | POLLWRNORM)) {
+                     // printf("[Shim] Poll: Clearing POLLOUT (ISCONNECTING)\n");
+                     revents &= ~(events & (POLLOUT | POLLWRNORM));
+                 }
+             }
+        } else {
+            // Neither connected nor connecting?
+            // If we just created socket and called connect, ISCONNECTING should be set.
+            // If it's not set, maybe soconnect failed or hasn't updated yet?
+            // printf("[Shim] Poll: Warning - Not connected or connecting (state=0x%x)\n", so->so_state);
+        }
+    }
+    
+    if (so->so_error) {
+        revents |= POLLERR;
+        printf("[Shim] Poll: Error state %d, returning POLLERR\n", so->so_error);
+    }
+    
+    // TODO: Handle POLLHUP, POLLPRI properly
+
+    return revents;
+}
+
+void netbsd_get_debug_info(struct netbsd_handle *nh, long *sb_cc, long *sb_hiwat, int *state, int *error, short *sb_flags)
+{
+    if (nh && nh->so) {
+        if (sb_cc) *sb_cc = nh->so->so_snd.sb_cc;
+        if (sb_hiwat) *sb_hiwat = nh->so->so_snd.sb_hiwat;
+        if (state) *state = nh->so->so_state;
+        if (error) *error = nh->so->so_error;
+        if (sb_flags) *sb_flags = nh->so->so_snd.sb_flags;
+    }
+}
+
+void netbsd_force_connected(struct netbsd_handle *nh)
+{
+    if (nh && nh->so) {
+        // If stuck in CONNECTING state (0x4) or DISCONNECTED (0x0) but buffer is empty (likely established), force CONNECTED
+        if (((nh->so->so_state & SS_ISCONNECTING) || nh->so->so_state == 0) && !(nh->so->so_state & SS_ISCONNECTED)) {
+             printf("[Shim] Workaround: Forcing state 0x%x -> CONNECTED (fd=%d), clearing so_error=%d\n", nh->so->so_state, nh->fd, nh->so->so_error);
+             nh->so->so_state &= ~SS_ISCONNECTING;
+             nh->so->so_state |= SS_ISCONNECTED;
+             nh->so->so_error = 0; // Clear error to prevent POLLERR
+        }
+        // Force unlock send buffer if locked (SB_LOCK usually 0x01)
+        if (nh->so->so_snd.sb_flags & 0x01) { // SB_LOCK
+             printf("[Shim] Workaround: Forcing unlock of send buffer (fd=%d)\n", nh->fd);
+             nh->so->so_snd.sb_flags &= ~0x01; 
+        }
+    }
 }

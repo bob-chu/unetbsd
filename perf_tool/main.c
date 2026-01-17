@@ -19,8 +19,15 @@
 #include "metrics.h"
 #include "scheduler.h"
 #include "pipe_client.h"
+#include "common.h" // Include common.h for lb_shared_info
 
 struct ev_loop *g_main_loop;
+
+// Global definition of idle_watcher_data
+struct idle_watcher_data {
+    dpdk_config_t *dpdk_config;
+    const char *mode;
+};
 
 static void sig_cb(EV_P_ ev_signal *w, int revents) {
     printf("Received signal %d, cleaning up and exiting.\n", w->signum);
@@ -33,14 +40,23 @@ static void timer_10ms_cb(EV_P_ ev_timer *w, int revents)
 }
 
 static void timer_1s_cb(EV_P_ ev_timer *w, int revents) {
-    const char *mode = (const char *)w->data;
+    struct idle_watcher_data *data = (struct idle_watcher_data *)w->data;
+    const char *mode = data->mode;
     scheduler_check_phase_transition(mode);
-}
 
-struct idle_watcher_data {
-    dpdk_config_t *dpdk_config;
-    const char *mode;
-};
+    if (data->dpdk_config && data->dpdk_config->is_dpdk_client && data->dpdk_config->client_ring_idx == 0) {
+        struct lb_shared_info* shared_info = get_lb_shared_info();
+        if (shared_info != NULL) {
+            STATS_SET(dpdk_ipackets, shared_info->stats.ipackets);
+            STATS_SET(dpdk_opackets, shared_info->stats.opackets);
+            STATS_SET(dpdk_ibytes, shared_info->stats.ibytes);
+            STATS_SET(dpdk_obytes, shared_info->stats.obytes);
+            STATS_SET(dpdk_ierrors, shared_info->stats.ierrors);
+            STATS_SET(dpdk_oerrors, shared_info->stats.oerrors);
+            STATS_SET(dpdk_rx_nombuf, shared_info->stats.rx_nombuf);
+        }
+    }
+}
 
 static void idle_cb(EV_P_ ev_idle *w, int revents) {
     struct idle_watcher_data *data = (struct idle_watcher_data *)w->data;
@@ -237,11 +253,12 @@ int main(int argc, char *argv[]) {
     ev_timer_init(&timer_10ms_watcher, timer_10ms_cb, 0.01, 0.01);
     ev_timer_start(g_main_loop, &timer_10ms_watcher);
 
+    struct idle_watcher_data idle_data = {dpdk_config, (const char *)mode};
+
     ev_timer_init(&timer_1s_watcher, timer_1s_cb, 1.0, 1.0);
-    timer_1s_watcher.data = (void *)mode; // Pass mode to the watcher
+    timer_1s_watcher.data = (void *)&idle_data; // Pass idle_data to the watcher
     ev_timer_start(g_main_loop, &timer_1s_watcher);
 
-    struct idle_watcher_data idle_data = {dpdk_config, (const char *)mode};
     ev_idle_init(&idle_watcher, idle_cb);
     idle_watcher.data = (void *)&idle_data; // Pass both config and mode
     ev_idle_start(g_main_loop, &idle_watcher);

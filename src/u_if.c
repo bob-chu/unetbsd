@@ -21,8 +21,12 @@ static void virt_if_start(struct ifnet *ifp)
 int virt_transmit(struct ifnet *ifp, struct mbuf *m)
 {
     int total = m->m_pkthdr.len;
-    gl_vif->output_cb((void *)m, total, gl_vif->sc_arg);
-    m_freem(m); // Free the mbuf after the callback
+    int ret = gl_vif->output_cb((void *)m, total, gl_vif->sc_arg);
+    if (ret == 1) {
+        // Callback took ownership of mbuf (e.g., for queuing)
+        return 0;
+    }
+    m_freem(m); // Free the mbuf after the callback if not taken
     return 0;
 }
 
@@ -33,8 +37,8 @@ ifioctl_virt(struct ifnet *ifp, u_long cmd, void *data)
     switch (cmd) {
         case SIOCSIFMTU:
             ifp->if_mtu = *(int *)data;
-            if (ifp->if_mtu > 9000) {
-                ifp->if_mtu = 9000; // Cap at 9000 for jumbo frame support
+            if (ifp->if_mtu > 9216) {
+                ifp->if_mtu = 9216; // Cap at 9216 for jumbo frame support
             }
             return 0;
         case SIOCGIFMTU:
@@ -62,8 +66,8 @@ struct virt_interface *virt_if_create(const char *name)
     memset(ifp, 0, sizeof(*ifp));
     strlcpy(ifp->if_xname, "virt0", IFNAMSIZ);
     ifp->if_softc = gl_vif;
-    ifp->if_mtu = ETHERMTU;
-    ifp->if_flags = IFF_MULTICAST | IFF_UP | IFF_RUNNING;
+    ifp->if_mtu = 1500; // Match standard Linux MTU
+    ifp->if_flags = IFF_BROADCAST | IFF_MULTICAST | IFF_UP | IFF_RUNNING;
     ifp->if_init = virt_if_init;
     ifp->if_start = virt_if_start;
     ifp->if_type = IFT_ETHER;
@@ -93,8 +97,20 @@ virt_if_attach(struct virt_interface *vif, const uint8_t *ether_addr)
         return -1;
     }
     */
+    printf("[u_if] virt_if_attach: attaching interface with MAC %02x:%02x:%02x:%02x:%02x:%02x\n",
+           ether_addr[0], ether_addr[1], ether_addr[2], ether_addr[3], ether_addr[4], ether_addr[5]);
+    printf("[u_if] Before ether_ifattach: flags=0x%x\n", gl_vif->ifp->if_flags);
+    
     ether_ifattach(gl_vif->ifp, ether_addr);
-    //gl_vif->ifp->if_mtu = 7000; // Support jumbo frames up to 9000 bytes
+    gl_vif->ifp->if_mtu = 1500; // Match standard Linux MTU (was 9000)
+    
+    // Disable hardware checksum offload (veth doesn't support it)
+    gl_vif->ifp->if_capabilities = 0;
+    gl_vif->ifp->if_capenable = 0;
+    
+    printf("[u_if] After ether_ifattach: flags=0x%x, if_output=%p, if_transmit=%p\n",
+           gl_vif->ifp->if_flags, gl_vif->ifp->if_output, gl_vif->ifp->if_transmit);
+    
     return 0;
 }
 
@@ -112,31 +128,47 @@ int virt_if_output(struct virt_interface *vif, void *data, size_t len) {
     return gl_vif->output_cb(data, len, gl_vif->sc_arg);
 }
 
-int virt_if_input(struct virt_interface *vif, void *data, size_t len) {
+int virt_if_input(struct virt_interface *vif, void *data, size_t len)
+{
     vif = gl_vif;
     struct mbuf *m;
-    if (len > MCLBYTES) {
-        printf("Input data size %zu exceeds maximum mbuf cluster size %d", len, MCLBYTES);
+
+    if (!gl_vif || !gl_vif->ifp) {
         return -1;
     }
-    m = m_getcl(M_NOWAIT, MT_DATA, M_PKTHDR);
-    if (!m) {
-        printf("Failed to allocate mbuf for input data");
-        return -1;
+
+    if (len >= 14) {
+        uint8_t *eb = (uint8_t *)data;
+        uint16_t et = (eb[12] << 8) | eb[13];
+        // printf("[u_if] virt_if_input: len=%zu, eth_type=0x%04x, dst=%02x:%02x:%02x:%02x:%02x:%02x\n", 
+        //        len, et, eb[0], eb[1], eb[2], eb[3], eb[4], eb[5]);
     }
-    /* Do we need this ? */
-    m->m_data += 32; // Reserve space for headers
-    if (len > M_TRAILINGSPACE(m)) {
-        m_free(m);
-        printf("Input data size %zu exceeds available space in mbuf", len);
-        return -1;
+
+    if (len <= MCLBYTES) {
+        m = m_getcl(M_NOWAIT, MT_DATA, M_PKTHDR);
+        if (!m) {
+            return -1;
+        }
+        m->m_data += 32; // Reserve space for headers
+        if (len > M_TRAILINGSPACE(m)) {
+            m_free(m);
+            return -1;
+        }
+        u_memcpy(m->m_data, data, len);
+        m->m_len = len;
+    } else {
+        // Handle jumbo frames by chaining mbufs
+        m = netbsd_mget_hdr(data, len);
+        if (!m) {
+            return -1;
+        }
     }
-    u_memcpy(m->m_data, data, len);
-    m->m_len = len;
+
     m->m_pkthdr.len = len;
     m->m_pkthdr._rcvif.index = vif->ifp->if_index;
 
     ether_input(gl_vif->ifp, m);
+    
     return 0;
 }
 
@@ -145,10 +177,15 @@ virt_if_add_addr4(struct virt_interface *vif, struct in_addr *addr, unsigned net
 {
     struct in_aliasreq ifra;
     struct sockaddr_in sin, mask;
-    vif = gl_vif;
+
     if (vif == NULL || vif->ifp == NULL) {
         return -1;
     }
+
+    printf("[u_if] virt_if_add_addr4: Adding IP %d.%d.%d.%d/%u to interface %s\n",
+           (addr->s_addr >> 0) & 0xff, (addr->s_addr >> 8) & 0xff,
+           (addr->s_addr >> 16) & 0xff, (addr->s_addr >> 24) & 0xff,
+           netmask, vif->ifp->if_xname);
 
     memset(&sin, 0, sizeof(sin));
     sin.sin_len = sizeof(sin);
@@ -298,56 +335,102 @@ void netbsd_freembuf(void *mbuf) {
 
 void *netbsd_mget_hdr(void *data, int len)
 {
-    struct mbuf *m;
-    if (len > MHLEN) {
+    struct mbuf *m, *m_curr;
+    int remaining = len;
+    int chunk;
+    char *p = (char *)data;
+
+    /* Allocate the header mbuf */
+    if (remaining > MHLEN) {
         m = m_getcl(M_NOWAIT, MT_DATA, M_PKTHDR);
-        if (m == NULL) {
-            return NULL;
-        }
-        if (m->m_ext.ext_buf == NULL) {
-            return NULL;
-        }
-        u_memcpy(m->m_data, data, len);
-        m->m_len = len;
     } else {
         m = m_gethdr(M_NOWAIT, MT_DATA);
-        if (m == NULL) {
+    }
+
+    if (m == NULL) return NULL;
+
+    chunk = M_TRAILINGSPACE(m);
+    if (chunk > remaining) chunk = remaining;
+
+    u_memcpy(m->m_data, p, chunk);
+    m->m_len = chunk;
+    p += chunk;
+    remaining -= chunk;
+
+    m_curr = m;
+    while (remaining > 0) {
+        struct mbuf *n;
+        if (remaining > MLEN) {
+            n = m_getcl(M_NOWAIT, MT_DATA, 0);
+        } else {
+            MGET(n, M_NOWAIT, MT_DATA);
+        }
+
+        if (n == NULL) {
+            m_freem(m);
             return NULL;
         }
 
-        u_memcpy(m->m_data, data, len);
-        m->m_len = len;
+        chunk = M_TRAILINGSPACE(n);
+        if (chunk > remaining) chunk = remaining;
+
+        u_memcpy(n->m_data, p, chunk);
+        n->m_len = chunk;
+        p += chunk;
+        remaining -= chunk;
+
+        m_curr->m_next = n;
+        m_curr = n;
     }
+
     m->m_pkthdr.len = len;
-    m->m_pkthdr._rcvif.index =gl_vif->ifp->if_index;
+    m->m_pkthdr._rcvif.index = gl_vif->ifp->if_index;
     return m;
 }
 
 void *netbsd_mget_data(void *pre, void *data, int len)
 {
-    struct mbuf *m_new = NULL;
     struct mbuf *m_prev = (struct mbuf *)pre;
+    struct mbuf *m_new_head = NULL;
+    struct mbuf *m_curr = NULL;
+    int remaining = len;
+    int chunk;
+    char *p = (char *)data;
 
-    if (len > MLEN) {
-        m_new = m_getcl(M_NOWAIT, MT_DATA, 0);
-        if (m_new == NULL) {
+    while (remaining > 0) {
+        struct mbuf *n;
+        if (remaining > MLEN) {
+            n = m_getcl(M_NOWAIT, MT_DATA, 0);
+        } else {
+            MGET(n, M_NOWAIT, MT_DATA);
+        }
+
+        if (n == NULL) {
+            if (m_new_head) m_freem(m_new_head);
             return NULL;
         }
-    } else {
-        MGET(m_new, M_NOWAIT, MT_DATA);
-        if (m_new == NULL) {
-            return NULL;
-        }
-    }
-    u_memcpy(m_new->m_data, data, len);
-    m_new->m_len = len;
-    m_new->m_next = NULL;  // Initialize to NULL
 
-    // Link this mbuf to the previous one
-    if (m_prev != NULL) {
-        m_prev->m_next = m_new;
+        chunk = M_TRAILINGSPACE(n);
+        if (chunk > remaining) chunk = remaining;
+
+        u_memcpy(n->m_data, p, chunk);
+        n->m_len = chunk;
+        p += chunk;
+        remaining -= chunk;
+
+        if (m_new_head == NULL) {
+            m_new_head = n;
+        } else {
+            m_curr->m_next = n;
+        }
+        m_curr = n;
     }
-    return m_new;
+
+    if (m_prev != NULL && m_new_head != NULL) {
+        m_prev->m_next = m_new_head;
+    }
+
+    return m_curr; // Return the LAST mbuf in the new chain
 }
 
 int virt_if_mbuf_input(struct virt_interface *vif, void *data)
@@ -358,3 +441,22 @@ int virt_if_mbuf_input(struct virt_interface *vif, void *data)
     ether_input(gl_vif->ifp, data);
     return 0;
 }
+
+int virt_if_set_mtu(struct virt_interface *vif, int mtu)
+{
+    if (!vif || !vif->ifp) return -1;
+    return ifioctl_virt(vif->ifp, SIOCSIFMTU, &mtu);
+}
+
+// Get veth file descriptor for polling (stub for now)
+int virt_if_get_fd(void)
+{
+    return -1;
+}
+
+// Wrapper to copy data out of mbuf chain
+void netbsd_mbuf_copydata(struct mbuf *m, int off, int len, void *out)
+{
+    m_copydata(m, off, len, out);
+}
+

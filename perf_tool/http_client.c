@@ -20,7 +20,7 @@
 #include "deps/picohttpparser/picohttpparser.h"
 #include <stdbool.h>
 
-#define MAX_RECV_SIZE 1024*10
+#define MAX_RECV_SIZE 16384
 #define MAX_STALLED_TO_CLOSE_PER_TICK 10
 
 extern struct ev_loop *g_main_loop;
@@ -81,6 +81,7 @@ static void on_handshake_complete_cb_client(ssl_layer_t *layer) {
     if (http_conn) {
         http_conn->last_activity_time = ev_now(g_main_loop);
         LOG_INFO("SSL handshake complete for client %p", http_conn);
+        STATS_INC(ssl_handshakes_completed_client);
         STATS_INC(connections_opened);
         STATS_INC(requests_sent);
         metrics_inc_success();

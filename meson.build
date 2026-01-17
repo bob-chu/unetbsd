@@ -5,7 +5,8 @@ cc = meson.get_compiler('c')
 
 add_project_arguments(
     '-g',
-    '-O2',
+    '-O3',
+    '-flto',
     '-march=native',
     '-Wall',
     '-Wno-builtin-declaration-mismatch',
@@ -20,7 +21,7 @@ add_project_arguments(
 
 cflags_user = [
     '-g',
-    '-O2',
+    '-O0',
     '-frename-registers',
     '-funswitch-loops',
     '-fweb',
@@ -173,8 +174,6 @@ netbsd_srcs = [
     'src/u_fd.c'
 ]
 
-# Apply patch for TCP output cache in userspace event-driven model
-patch_file = 'disable_cache_optimization.patch'
 
 libnetbsdstack_static = static_library(
     'netbsdstack',
@@ -196,6 +195,8 @@ libnetbsdstack_static = static_library(
     override_options : ['cpp_std=none']
 )
 
+
+
 libnetbsdstack_shared = shared_library(
     'netbsdstack',
     netbsd_srcs,
@@ -216,9 +217,9 @@ libnetbsdstack_shared = shared_library(
     override_options : ['cpp_std=none']
 )
 
-# Note: Applying patches directly in Meson might require a custom target or script
-# since Meson doesn't have built-in patch application like this.
-# For now, ensure the patch is applied manually or through a setup script.
+
+# Apply patch for TCP output cache in userspace event-driven model
+patch_file = 'disable_cache_optimization.patch'
 message('Make sure to apply the patch ' + patch_file + ' to the NetBSD source if needed.')
 
 app_srcs = [
@@ -275,7 +276,7 @@ perf_tool_srcs = [
     'perf_tool/ssl_layer.c',
     'perf_tool/deps/picohttpparser/picohttpparser.c',
     'perf_tool/dpdk_client.c',
-    'perf_tool/pipe_client.c'
+    'perf_tool/pipe_client.c',
 ]
 
 executable(
@@ -292,6 +293,7 @@ executable(
 test_ssl_layer_srcs = [
     'perf_tool/test/test_ssl_layer.c',
     'perf_tool/ssl_layer.c',
+    'perf_tool/metrics.c',
     'perf_tool/config.c',
     'perf_tool/deps/cjson/cJSON.c',
     'app/log.c',
@@ -318,17 +320,32 @@ executable(
 libnetbsd_shim_srcs = [
     'src/posix_shim.c',
     'src/u_cmdqueue.c',
+    'perf_tool/deps/cjson/cJSON.c',
 ]
+
+shim_deps = [cc.find_library('dl', required: true), dependency('threads')]
+shim_inc = [include_directories('include'), include_directories('src'), include_directories('perf_tool/deps/cjson'), include_directories('app')]
+shim_c_args = ['-D_FORTIFY_SOURCE=0']
+
+if get_option('use_dpdk')
+    libnetbsd_shim_srcs += [
+        'app/gen_if.c',
+        'app/log.c'
+    ]
+    shim_deps += [dpdk_dep_dynamic]
+    shim_c_args += ['-DUSE_DPDK']
+endif
 
 shared_library(
     'netbsdshim',
     libnetbsd_shim_srcs,
-    include_directories : [include_directories('include'), include_directories('src')],
-    link_with : libnetbsdstack_static,
-    dependencies : [cc.find_library('dl', required: true), dependency('threads')] + (get_option('use_dpdk') ? [dpdk_dep_dynamic] : []),
-    #c_args : ['-fPIC'],
+    include_directories : shim_inc,
+    link_with : libnetbsdstack_shared,
+    dependencies : shim_deps,
     link_args : ['-static-libgcc', '-Wl,--whole-archive', '-lpthread', '-lnuma', '-Wl,--no-whole-archive'],
-    install : true
+    c_args : shim_c_args,
+    install : true,
+    override_options : ['b_lto=false']
 )
 
 if get_option('use_dpdk')
@@ -374,6 +391,29 @@ ptcp_sources = files(
   'ptcp/tree.go',
   'ptcp/generate.go',
   'ptcp/run.go',
+  'ptcp/web.go',
+)
+
+# Build ptweb (Vue frontend)
+ptweb_sources = files(
+  'ptweb/package.json',
+  'ptweb/vite.config.js',
+  'ptweb/index.html',
+  'ptweb/src/App.vue',
+  'ptweb/src/main.js',
+  'ptweb/src/api.js',
+  'ptweb/src/components/MonitorPanel.vue',
+  'ptweb/src/components/ControlPanel.vue',
+  'ptweb/src/components/ConfigPanel.vue',
+  'ptweb/src/components/StatusPanel.vue',
+)
+
+ptweb_build = custom_target(
+    'ptweb',
+    input : ptweb_sources,
+    output : 'ptweb_build.stamp',
+    command : ['sh', '-c', 'cd ../ptweb && npm install && npm run build && touch ../build/@OUTPUT@'],
+    build_by_default: true
 )
 
 ptcp_exe = custom_target(
@@ -381,6 +421,7 @@ ptcp_exe = custom_target(
     input : ptcp_sources,
     output : 'ptcp',
     command : ['sh', '-c', 'cd ../ptcp && CGO_ENABLED=0 go build -o ../build/@OUTPUT@ -buildvcs=false .'],
+    depends : [ptweb_build],
     build_by_default: true,
     install : true,
     install_dir : get_option('bindir')
