@@ -379,7 +379,7 @@ test_rtc() {
     sleep 2
     
     echo "      Starting RTC Client..."
-    if ip netns exec $NS_C timeout -s KILL 30s bash -c "NETBSD_RTC_MODE=1 NETBSD_BACKEND=af_packet $PROJECT_ROOT/build/test_rtc_client $IF_C $IP_C $IP_S" > client_rtc.log 2>&1; then
+    if ip netns exec $NS_C timeout 10s bash -c "NETBSD_RTC_MODE=1 NETBSD_BACKEND=af_packet $PROJECT_ROOT/build/test_rtc_client $IF_C $IP_C $IP_S" > client_rtc.log 2>&1; then
         if grep -q "Gbps" client_rtc.log; then
              THROUGHPUT=$(grep "Gbps" client_rtc.log | tail -n 1)
              echo "✅ Test 9 Passed. Performance: $THROUGHPUT"
@@ -417,7 +417,7 @@ test_rtc_dpdk_af_packet() {
     
     echo "      Starting RTC Client..."
     # TARGET_IP env var needed for client to know where to connect
-    if ip netns exec $NS_C timeout -s KILL 30s bash -c "NETBSD_RTC_MODE=1 NETBSD_HIJACK_CONFIG_FILE=$(pwd)/rtc_client_af.json TARGET_IP=$IP_S $PROJECT_ROOT/build/test_rtc_client" > client_rtc_dpdk.log 2>&1; then
+    if ip netns exec $NS_C timeout 10s bash -c "NETBSD_RTC_MODE=1 NETBSD_HIJACK_CONFIG_FILE=$(pwd)/rtc_client_af.json TARGET_IP=$IP_S $PROJECT_ROOT/build/test_rtc_client" > client_rtc_dpdk.log 2>&1; then
         if grep -q "Gbps" client_rtc_dpdk.log; then
              THROUGHPUT=$(grep "Gbps" client_rtc_dpdk.log | tail -n 1)
              echo "✅ Test 10 Passed. Performance: $THROUGHPUT"
@@ -450,7 +450,7 @@ test_rtc_dpdk_memif() {
     sleep 3
     
     echo "      Starting RTC Client (Memif)..."
-    if timeout -s KILL 30s bash -c "NETBSD_RTC_MODE=1 NETBSD_HIJACK_CONFIG_FILE=$(pwd)/rtc_client_memif.json TARGET_IP=$IP_S $PROJECT_ROOT/build/test_rtc_client" > client_rtc_memif.log 2>&1; then
+    if timeout 10s bash -c "NETBSD_RTC_MODE=1 NETBSD_HIJACK_CONFIG_FILE=$(pwd)/rtc_client_memif.json TARGET_IP=$IP_S $PROJECT_ROOT/build/test_rtc_client" > client_rtc_memif.log 2>&1; then
         if grep -q "Gbps" client_rtc_memif.log; then
              THROUGHPUT=$(grep "Gbps" client_rtc_memif.log | tail -n 1)
              echo "✅ Test 11 Passed. Performance: $THROUGHPUT"

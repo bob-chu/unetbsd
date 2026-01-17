@@ -104,14 +104,35 @@ virt_if_attach(struct virt_interface *vif, const uint8_t *ether_addr)
     ether_ifattach(gl_vif->ifp, ether_addr);
     gl_vif->ifp->if_mtu = 1500; // Match standard Linux MTU (was 9000)
     
-    // Disable hardware checksum offload (veth doesn't support it)
+    // Disable hardware checksum offload by default
     gl_vif->ifp->if_capabilities = 0;
     gl_vif->ifp->if_capenable = 0;
     
     printf("[u_if] After ether_ifattach: flags=0x%x, if_output=%p, if_transmit=%p\n",
+
            gl_vif->ifp->if_flags, gl_vif->ifp->if_output, gl_vif->ifp->if_transmit);
     
     return 0;
+}
+
+void virt_if_enable_offload(struct virt_interface *vif)
+{
+    if (!vif || !vif->ifp) return;
+    
+    // Enable software-bypass checksum offload (we trust the virtual transport)
+    vif->ifp->if_capabilities = IFCAP_CSUM_IPv4_Tx | IFCAP_CSUM_IPv4_Rx |
+                                   IFCAP_CSUM_TCPv4_Tx | IFCAP_CSUM_TCPv4_Rx |
+                                   IFCAP_CSUM_UDPv4_Tx | IFCAP_CSUM_UDPv4_Rx |
+                                   IFCAP_CSUM_TCPv6_Tx | IFCAP_CSUM_TCPv6_Rx |
+                                   IFCAP_CSUM_UDPv6_Tx | IFCAP_CSUM_UDPv6_Rx;
+    vif->ifp->if_capenable = vif->ifp->if_capabilities;
+    
+    vif->ifp->if_csum_flags_tx = M_CSUM_IPv4 | M_CSUM_TCPv4 | M_CSUM_UDPv4 | 
+                                   M_CSUM_TCPv6 | M_CSUM_UDPv6;
+    vif->ifp->if_csum_flags_rx = M_CSUM_IPv4 | M_CSUM_TCPv4 | M_CSUM_UDPv4 | 
+                                   M_CSUM_TCPv6 | M_CSUM_UDPv6;
+    
+    printf("[u_if] Offload enabled: caps=0x%x\n", vif->ifp->if_capabilities);
 }
 
 int virt_if_register_callbacks(struct virt_interface *vif,

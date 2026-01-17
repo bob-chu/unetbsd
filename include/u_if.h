@@ -37,4 +37,10 @@ void netbsd_freembuf(void *mbuf);
 void *netbsd_mget_hdr(void *data, int len);
 void *netbsd_mget_data(void *pre, void *data, int len);
 int virt_if_get_fd(void);  // Get veth file descriptor for polling
+void virt_if_enable_offload(struct virt_interface *vif);
+void netbsd_mbuf_copydata(struct mbuf *m, int off, int len, void *out);
+
+typedef void (*netbsd_zc_free_cb)(void *arg);
+void *netbsd_mget_hdr_zc(void *data, size_t len, netbsd_zc_free_cb free_cb, void *arg);
+void *netbsd_mget_data_zc(void *pre, void *data, size_t len, netbsd_zc_free_cb free_cb, void *arg);
 #endif

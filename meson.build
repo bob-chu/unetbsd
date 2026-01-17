@@ -349,13 +349,31 @@ shared_library(
 )
 
 if get_option('use_dpdk')
+    rtc_test_srcs = [
+        'src/posix_shim.c',
+        'perf_tool/deps/cjson/cJSON.c',
+        'app/gen_if.c',
+        'app/log.c'
+    ]
+
     executable(
-        'lb',
-        ['perf_tool/loadbalance.c', 'perf_tool/deps/cjson/cJSON.c'],
-        c_args : cflags_user + ['-I/usr/local/include'],
+        'test_rtc_server',
+        ['app/test_rtc_server.c'] + rtc_test_srcs,
+        c_args : cflags_user + ['-I/usr/local/include', '-DUSE_DPDK'],
         include_directories : [include_directories('include'), include_directories('app'), include_directories('src'), include_directories('perf_tool/deps/cjson')],
         link_with : libnetbsdstack_static,
-        link_args : ['-static'],
+        link_args : ['-ldl', '-lnuma', '-Wl,--export-dynamic'],
+        dependencies : [dpdk_dep_static, libev_dep, pthread_dep],
+        install : true
+    )
+
+    executable(
+        'test_rtc_client',
+        ['app/test_rtc_client.c'] + rtc_test_srcs,
+        c_args : cflags_user + ['-I/usr/local/include', '-DUSE_DPDK'],
+        include_directories : [include_directories('include'), include_directories('app'), include_directories('src'), include_directories('perf_tool/deps/cjson')],
+        link_with : libnetbsdstack_static,
+        link_args : ['-ldl', '-lnuma', '-Wl,--export-dynamic'],
         dependencies : [dpdk_dep_static, libev_dep, pthread_dep],
         install : true
     )

@@ -570,6 +570,9 @@ void open_interface(char *if_name)
 {
     v_f_dpdk = virt_if_create(if_name);
     virt_if_attach(v_f_dpdk, (const uint8_t *)&dpdk_port_addr);
+    
+    // Explicitly enable checksum offload bypass for DPDK/Memif backend
+    virt_if_enable_offload(v_f_dpdk);
 
     virt_if_register_callbacks(v_f_dpdk, gen_if_output, NULL);
 }
