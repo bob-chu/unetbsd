@@ -18,6 +18,7 @@
 #include "metrics.h" // New
 #include "deps/cjson/cJSON.h" // New
 #include "common.h"
+#include "u_tcp_stat.h"
 
 // Forward declaration for the watcher callback
 static void pipe_io_cb(struct ev_loop *loop, ev_io *w, int revents);
@@ -165,7 +166,23 @@ void pipe_client_send_stats(pipe_client_t *client) {
     cJSON_AddNumberToObject(root, "stats_http_rsp_hdr_send_err", s_snapshot->http_rsp_hdr_send_err);
     cJSON_AddNumberToObject(root, "stats_tcp_bytes_sent", s_snapshot->tcp_bytes_sent);
     cJSON_AddNumberToObject(root, "stats_tcp_bytes_received", s_snapshot->tcp_bytes_received);
-    // Add other relevant stats as needed
+
+    uint64_t netbsd_stats[UNETBSD_TCP_NSTATS];
+    size_t netbsd_stats_len = UNETBSD_TCP_NSTATS;
+    if (unetbsd_get_tcp_stats(netbsd_stats, &netbsd_stats_len) == 0) {
+        for (int i = 0; i < UNETBSD_TCP_NSTATS; i++) {
+            const char *name = unetbsd_get_tcp_stat_name(i);
+            if (name) {
+                char full_name[128];
+                snprintf(full_name, sizeof(full_name), "netbsd_tcp_%s", name);
+                for (char *p = full_name; *p; p++) {
+                    if (*p == ' ') *p = '_';
+                    if (*p == '#') *p = 'n';
+                }
+                cJSON_AddNumberToObject(root, full_name, (double)netbsd_stats[i]);
+            }
+        }
+    }
 
     char *json_string = cJSON_PrintUnformatted(root);
     if (json_string == NULL) {
@@ -209,8 +226,12 @@ static void pipe_io_cb(struct ev_loop *loop, ev_io *w, int revents) {
             } else if (strcmp(buffer, "check") == 0) {
                 LOG_INFO("Received 'check' command. Reporting ready status.");
                 fflush(stdout);
-                const char *response = "ready"; // For now, always ready
-                send(client->fd, response, strlen(response), 0);
+                const char *response = "ready\n";
+                if (send(client->fd, response, strlen(response), 0) == -1) {
+                    LOG_ERROR("Failed to send 'ready' to master: %s", strerror(errno));
+                } else {
+                    LOG_INFO("Sent 'ready' to master.");
+                }
             } else if (strcmp(buffer, "get_stats") == 0) { // New: handle get_stats command
                 LOG_INFO("Received 'get_stats' command. Sending statistics.");
                 fflush(stdout);

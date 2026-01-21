@@ -16,6 +16,7 @@
 #include <sys/stat.h>
 #include <signal.h>
 #include "common.h"
+#include "u_tcp_stat.h"
 
 #define DEFAULT_MAX_CLIENTS 10
 
@@ -97,9 +98,21 @@ static cJSON* stats_to_cjson(const stats_t *stats) {
     STATS_TCP_FIELDS
     STATS_UDP_FIELDS
     STATS_DPDK_FIELDS
-    STATS_SSL_FIELDS
     STATS_PHASE_FIELD
 #undef X
+
+    for (int i = 0; i < UNETBSD_TCP_NSTATS; i++) {
+        const char *name = unetbsd_get_tcp_stat_name(i);
+        if (name) {
+            char full_name[128];
+            snprintf(full_name, sizeof(full_name), "netbsd_tcp_%s", name);
+            for (char *p = full_name; *p; p++) {
+                if (*p == ' ') *p = '_';
+                if (*p == '#') *p = 'n';
+            }
+            cJSON_AddNumberToObject(json, full_name, (double)stats->netbsd_tcp_stats[i]);
+        }
+    }
     return json;
 }
 #if 0
@@ -115,11 +128,13 @@ static CLIENT_TYPE get_client_type_from_string(const char *type_str) {
 }
 #endif
 static void aggregate_stats(stats_t *out_stats, int client_role_filter) {
+    if (!out_stats) return;
     memset(out_stats, 0, sizeof(stats_t));
     uint64_t max_time_index = 0;
     int first_found = 0;
 
     if (client_role_filter == 0) { // Aggregate client stats
+        if (!g_shm_client_stats) return;
         for (int i = 0; i < g_max_clients_clients; i++) {
             stats_t *client_stat = (stats_t *)((char *)g_shm_client_stats + (i * sizeof(stats_t)));
             if (client_stat->connections_opened == 0 && client_stat->connections_closed == 0 && client_stat->tcp_bytes_sent == 0) continue;
@@ -132,6 +147,11 @@ static void aggregate_stats(stats_t *out_stats, int client_role_filter) {
             STATS_DPDK_FIELDS
             STATS_SSL_FIELDS
 #undef X
+            for (int j = 0; j < UNETBSD_TCP_NSTATS; j++) {
+                out_stats->netbsd_tcp_stats[j] += client_stat->netbsd_tcp_stats[j];
+            }
+
+
             if (!first_found) {
                 out_stats->client_role = 1;
                 out_stats->current_phase = client_stat->current_phase;
@@ -142,6 +162,7 @@ static void aggregate_stats(stats_t *out_stats, int client_role_filter) {
             }
         }
     } else if (client_role_filter == 1) { // Aggregate server stats
+        if (!g_shm_server_stats) return;
         for (int i = 0; i < g_max_clients_servers; i++) {
             stats_t *server_stat = (stats_t *)((char *)g_shm_server_stats + (i * sizeof(stats_t)));
             if (server_stat->connections_opened == 0 && server_stat->connections_closed == 0 && server_stat->tcp_bytes_sent == 0) continue;
@@ -154,6 +175,9 @@ static void aggregate_stats(stats_t *out_stats, int client_role_filter) {
             STATS_DPDK_FIELDS
             STATS_SSL_FIELDS
 #undef X
+            for (int j = 0; j < UNETBSD_TCP_NSTATS; j++) {
+                out_stats->netbsd_tcp_stats[j] += server_stat->netbsd_tcp_stats[j];
+            }
             if (!first_found) {
                 out_stats->server_role = 1;
                 out_stats->current_phase = server_stat->current_phase;
@@ -408,7 +432,6 @@ int main(int argc, char *argv[]) {
     ev_io_start(g_ptm.loop, &g_ptm.listen_watcher);
 
     ev_timer_init(&g_ptm.stats_timer, stats_timer_cb, 1.0, 1.0);
-
     // Run event loop
     ev_run(g_ptm.loop, 0);
 
@@ -599,7 +622,8 @@ static void ptcp_io_cb(struct ev_loop *loop, ev_io *w, int revents) {
             if (strncmp(buffer, "get_stats", strlen("get_stats")) == 0) {
                 send_aggregated_stats_response(g_ptm.ptcp_fd);
                 return;
-            } else if (strncmp(buffer, "check", strlen("check")) == 0) { // Specific handling for "check"
+            }
+            if (strncmp(buffer, "check", strlen("check")) == 0) { // Specific handling for "check"
                 // Reset check_status_flag for all clients
                 for (int i = 0; i < g_ptm.num_clients; i++) {
                     if (g_ptm.client_info_array[i]) {
@@ -686,6 +710,7 @@ static void client_io_cb(struct ev_loop *loop, ev_io *w, int revents) {
             buffer[n] = '\0';
             printf("Received from client %d: %s\n", idx, buffer);
 
+            buffer[strcspn(buffer, "\n")] = '\0';
             if (strcmp(buffer, "ready") == 0) {
                 if (current_client_info) {
                     current_client_info->check_status_flag = 1;
@@ -706,14 +731,10 @@ static void client_io_cb(struct ev_loop *loop, ev_io *w, int revents) {
                 
                 if (all_ready && g_ptm.num_clients > 0) { // Ensure there's at least one client and all are ready
                     // All clients are ready, send a single "ready" message to ptcp
-                    const char *response = "ready";
+                    const char *response = "ready\n";
                     if (g_ptm.ptcp_fd != -1) {
                         if (send(g_ptm.ptcp_fd, response, strlen(response), 0) == -1) {
                             perror("Failed to send 'ready' to ptcp after all clients ready");
-                        } else {
-                            if (send(g_ptm.ptcp_fd, "\n", 1, 0) == -1) {
-                                perror("Failed to send newline after 'ready' to ptcp");
-                            }
                         }
                     }
                     printf("All clients ready. Sent 'ready' to ptcp.\n");

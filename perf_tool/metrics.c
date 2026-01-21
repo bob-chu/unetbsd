@@ -1,5 +1,6 @@
 #include "metrics.h"
 #include "logger.h"
+#include "u_tcp_stat.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -34,7 +35,18 @@ static void print_stats(const stats_t *m) {
     STATS_HTTP_FIELDS
     STATS_TCP_FIELDS
     STATS_UDP_FIELDS
+    STATS_DPDK_FIELDS
+    STATS_SSL_FIELDS
+    STATS_PHASE_FIELD
 #undef X
+
+    printf("\n--- NetBSD TCP Statistics ---\n");
+    for (int i = 0; i < UNETBSD_TCP_NSTATS; i++) {
+        const char *name = unetbsd_get_tcp_stat_name(i);
+        if (name && m->netbsd_tcp_stats[i] > 0) {
+            printf("  %s: %lu\n", name, (unsigned long)m->netbsd_tcp_stats[i]);
+        }
+    }
 }
 
 static void print_ms()

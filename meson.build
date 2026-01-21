@@ -6,7 +6,6 @@ cc = meson.get_compiler('c')
 add_project_arguments(
     '-g',
     '-O3',
-    '-flto',
     '-march=native',
     '-Wall',
     '-Wno-builtin-declaration-mismatch',
@@ -171,7 +170,8 @@ netbsd_srcs = [
     'src/u_pktqueue.c',
     'src/u_softint.c',
     'src/u_kstub.c',
-    'src/u_fd.c'
+    'src/u_fd.c',
+    'src/u_tcp_stat.c'
 ]
 
 
@@ -279,6 +279,17 @@ perf_tool_srcs = [
     'perf_tool/pipe_client.c',
 ]
 
+if get_option('use_dpdk')
+    executable(
+        'lb',
+        ['perf_tool/loadbalance.c', 'perf_tool/deps/cjson/cJSON.c', 'app/log.c'],
+        c_args : cflags_user + ['-I/usr/local/include'],
+        include_directories : [include_directories('perf_tool'), include_directories('perf_tool/deps/cjson'), include_directories('include'), include_directories('app')],
+        dependencies : [dpdk_dep_static, pthread_dep],
+        install : true
+    )
+endif
+
 executable(
     'perf_tool',
     perf_tool_srcs,
@@ -312,6 +323,15 @@ executable(
 executable(
     'test_simple',
     'perf_tool/test/test_simple.c',
+    link_with : libnetbsdstack_static,
+    dependencies : [dpdk_dep_static, libev_dep, pthread_dep, openssl_dep],
+    install : true
+)
+
+executable(
+    'test_tcp_stats_api',
+    'perf_tool/test/test_tcp_stats_api.c',
+    include_directories : [include_directories('include'), include_directories('src')],
     link_with : libnetbsdstack_static,
     dependencies : [dpdk_dep_static, libev_dep, pthread_dep, openssl_dep],
     install : true

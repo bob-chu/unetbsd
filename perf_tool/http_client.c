@@ -197,7 +197,7 @@ static void client_stall_check_cb(struct ev_loop *loop, ev_timer *w, int revents
 
 void create_http_connection(struct ev_loop *loop, perf_config_t *config) {
     //static int counter = 0;
-    //if (counter ++ > 1) return;
+    //if (counter ++ > 0) return;
 
     STATS_INC(http_alloc_pool);
     http_conn_t *http_conn = TAILQ_FIRST(&g_http_conn_pool);

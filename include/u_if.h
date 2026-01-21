@@ -40,6 +40,16 @@ int virt_if_get_fd(void);  // Get veth file descriptor for polling
 void virt_if_enable_offload(struct virt_interface *vif);
 void netbsd_mbuf_copydata(struct mbuf *m, int off, int len, void *out);
 
+/* Checksum offload flags for mbuf m_pkthdr.csum_flags */
+#define U_CSUM_TCPv4     0x00000001
+#define U_CSUM_UDPv4     0x00000002
+#define U_CSUM_TCPv6     0x00000010
+#define U_CSUM_UDPv6     0x00000020
+#define U_CSUM_IPv4      0x00000040
+
+int netbsd_mbuf_get_csum_flags(void *m);
+void netbsd_mbuf_set_csum_flags(void *m, int flags);
+
 typedef void (*netbsd_zc_free_cb)(void *arg);
 void *netbsd_mget_hdr_zc(void *data, size_t len, netbsd_zc_free_cb free_cb, void *arg);
 void *netbsd_mget_data_zc(void *pre, void *data, size_t len, netbsd_zc_free_cb free_cb, void *arg);

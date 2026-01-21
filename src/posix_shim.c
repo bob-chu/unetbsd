@@ -1026,6 +1026,8 @@ int netbsd_init_rtc(const char *if_name, const char *ip, const char *mac_str)
         // IMPORTANT: Attach interface to stack (sets up ARP, etc)
         virt_if_attach(g_vif, cfg.mac);
         
+        virt_if_enable_offload(g_vif); // Enable checksum bypass
+
         dpdk_set_virt_if(g_vif);
         virt_if_register_callbacks(g_vif, gen_if_output, NULL);
         

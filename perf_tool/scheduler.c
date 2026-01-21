@@ -1,10 +1,13 @@
-#include "scheduler.h"
-#include "logger.h"
-#include "metrics.h"
-
+#include <ev.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+#include "scheduler.h"
+#include "logger.h"
+#include "metrics.h"
+#include "u_tcp_stat.h"
+#include "client.h"
 
 static perf_config_t *g_config;
 static struct ev_loop *g_loop;
@@ -17,7 +20,7 @@ static double g_start_time;
 static double g_current_phase_start_time;
 
 static test_phase_t g_current_phase = PHASE_PREPARE;
-static bool g_scheduler_paused = false; // New: Scheduler paused state
+static bool g_scheduler_paused = false;
 
 static const char *phase_names[] = {
     "prepare",
@@ -52,7 +55,7 @@ void scheduler_init(struct ev_loop *loop, perf_config_t *config) {
     g_current_phase_start_time = g_start_time;
     g_current_phase = PHASE_PREPARE;
 
-    memset(&last_stats, 0, sizeof(scheduler_stats_t));
+    memset(&last_stats, 0, sizeof(stats_t));
     memset(&last_metrics, 0, sizeof(metrics_t));
     time_index = 0;
 
@@ -60,8 +63,6 @@ void scheduler_init(struct ev_loop *loop, perf_config_t *config) {
 }
 
 void scheduler_update_stats(void) {
-    // This function can be called periodically to update and log stats
-    // For now, we'll just log them at phase transitions.
 }
 
 void scheduler_inc_stat(int stat, int value) {
@@ -96,7 +97,7 @@ double scheduler_get_current_phase_start_time(void) {
 }
 
 void scheduler_check_phase_transition(const char *role) {
-    if (g_scheduler_paused) { // New: Check if scheduler is paused
+    if (g_scheduler_paused) {
         LOG_DEBUG("Scheduler is paused, skipping phase transition check.");
         return;
     }
@@ -104,7 +105,7 @@ void scheduler_check_phase_transition(const char *role) {
     double total_elapsed_time = now - g_start_time;
 
     metrics_t current_metrics = metrics_get_snapshot();
-    const scheduler_stats_t *current_stats = scheduler_get_stats();
+    const stats_t *current_stats = scheduler_get_stats();
 
     uint64_t connections_opened_per_second = (current_stats->connections_opened - last_stats.connections_opened);
     uint64_t connections_closed_per_second = (current_stats->connections_closed - last_stats.connections_closed);
@@ -114,7 +115,6 @@ void scheduler_check_phase_transition(const char *role) {
     uint64_t success_per_second = (current_metrics.success_count - last_metrics.success_count);
     uint64_t failure_per_second = (current_metrics.failure_count - last_metrics.failure_count);
 
-    // Update metrics for real-time display with per-second values
     metrics_update_cps(connections_opened_per_second);
     metrics_update_bytes_sent(bytes_sent_per_second);
     metrics_update_bytes_received(bytes_received_per_second);
@@ -134,7 +134,9 @@ void scheduler_check_phase_transition(const char *role) {
     STATS_SET(success_count, current_metrics.success_count);
     STATS_SET(failure_count, current_metrics.failure_count);
 
-    // Get the current accumulated byte counts from metrics for display
+    size_t netbsd_stats_len = UNETBSD_TCP_NSTATS;
+    unetbsd_get_tcp_stats(g_current_stats->netbsd_tcp_stats, &netbsd_stats_len);
+
 
     if (strcmp(role, "client") == 0) {
         printf("[%s] [ %ds], %s (Target: %d), ConConns: %lu, CPS: %lu, Closes/s: %lu, RPS: %lu, BpsS: %.2f Mbps, BpsR: %.2f Mbps, Succ: %lu, Fail: %lu\n",
@@ -170,22 +172,21 @@ void scheduler_check_phase_transition(const char *role) {
     last_metrics = current_metrics;
     time_index++;
     
-    // Reset per-second metrics after display, so next interval starts fresh
     metrics_reset_bytes_per_second();
 
     if (strcmp(g_config->objective.type, "TOTAL_CONNECTIONS") == 0) {
         if (g_current_stats->connections_opened >= g_config->objective.value) {
-            //LOG_INFO("TOTAL_CONNECTIONS objective reached. Test finished. Stopping event loop.");
-            //g_current_phase = PHASE_FINISHED;
-            //ev_break(g_loop, EVBREAK_ALL);
-            //return; // Exit early
+            LOG_INFO("TOTAL_CONNECTIONS objective reached. Test finished. Stopping event loop.");
+            g_current_phase = PHASE_FINISHED;
+            ev_break(g_loop, EVBREAK_ALL);
+            return;
         }
     } else if (strcmp(g_config->objective.type, "HTTP_REQUESTS") == 0) {
         if (g_current_stats->responses_received >= g_config->objective.value) {
-            //LOG_INFO("HTTP_REQUESTS objective reached. Test finished. Stopping event loop.");
+            // LOG_INFO("HTTP_REQUESTS objective reached. Test finished. Stopping event loop.");
             //g_current_phase = PHASE_FINISHED;
             //ev_break(g_loop, EVBREAK_ALL);
-            //return; // Exit early
+            // return;
         }
     }
 

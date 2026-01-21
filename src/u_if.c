@@ -118,21 +118,11 @@ virt_if_attach(struct virt_interface *vif, const uint8_t *ether_addr)
 void virt_if_enable_offload(struct virt_interface *vif)
 {
     if (!vif || !vif->ifp) return;
-    
-    // Enable software-bypass checksum offload (we trust the virtual transport)
-    vif->ifp->if_capabilities = IFCAP_CSUM_IPv4_Tx | IFCAP_CSUM_IPv4_Rx |
-                                   IFCAP_CSUM_TCPv4_Tx | IFCAP_CSUM_TCPv4_Rx |
-                                   IFCAP_CSUM_UDPv4_Tx | IFCAP_CSUM_UDPv4_Rx |
-                                   IFCAP_CSUM_TCPv6_Tx | IFCAP_CSUM_TCPv6_Rx |
-                                   IFCAP_CSUM_UDPv6_Tx | IFCAP_CSUM_UDPv6_Rx;
-    vif->ifp->if_capenable = vif->ifp->if_capabilities;
-    
-    vif->ifp->if_csum_flags_tx = M_CSUM_IPv4 | M_CSUM_TCPv4 | M_CSUM_UDPv4 | 
-                                   M_CSUM_TCPv6 | M_CSUM_UDPv6;
-    vif->ifp->if_csum_flags_rx = M_CSUM_IPv4 | M_CSUM_TCPv4 | M_CSUM_UDPv4 | 
-                                   M_CSUM_TCPv6 | M_CSUM_UDPv6;
-    
-    printf("[u_if] Offload enabled: caps=0x%x\n", vif->ifp->if_capabilities);
+    vif->ifp->if_capabilities = 0;
+    vif->ifp->if_capenable = 0;
+    vif->ifp->if_csum_flags_tx = 0;
+    vif->ifp->if_csum_flags_rx = 0;
+    printf("[u_if] Offload DISABLED (Software Checksum Enabled): caps=0x%lx\n", (unsigned long)vif->ifp->if_capabilities);
 }
 
 int virt_if_register_callbacks(struct virt_interface *vif,
@@ -456,10 +446,11 @@ void *netbsd_mget_data(void *pre, void *data, int len)
 
 int virt_if_mbuf_input(struct virt_interface *vif, void *data)
 {
-    if (data == NULL) {
+    struct mbuf *m = (struct mbuf *)data;
+    if (m == NULL) {
         return -1;
     }
-    ether_input(gl_vif->ifp, data);
+    ether_input(gl_vif->ifp, m);
     return 0;
 }
 
@@ -479,5 +470,30 @@ int virt_if_get_fd(void)
 void netbsd_mbuf_copydata(struct mbuf *m, int off, int len, void *out)
 {
     m_copydata(m, off, len, out);
+}
+
+int netbsd_mbuf_get_csum_flags(void *m)
+{
+    struct mbuf *mb = (struct mbuf *)m;
+    int flags = 0;
+    
+    if (mb->m_pkthdr.csum_flags & M_CSUM_IPv4)   flags |= U_CSUM_IPv4;
+    if (mb->m_pkthdr.csum_flags & M_CSUM_TCPv4)  flags |= U_CSUM_TCPv4;
+    if (mb->m_pkthdr.csum_flags & M_CSUM_UDPv4)  flags |= U_CSUM_UDPv4;
+    if (mb->m_pkthdr.csum_flags & M_CSUM_TCPv6)  flags |= U_CSUM_TCPv6;
+    if (mb->m_pkthdr.csum_flags & M_CSUM_UDPv6)  flags |= U_CSUM_UDPv6;
+    
+    return flags;
+}
+
+void netbsd_mbuf_set_csum_flags(void *m, int flags)
+{
+    struct mbuf *mb = (struct mbuf *)m;
+    
+    if (flags & U_CSUM_IPv4)   mb->m_pkthdr.csum_flags |= M_CSUM_IPv4;
+    if (flags & U_CSUM_TCPv4)  mb->m_pkthdr.csum_flags |= M_CSUM_TCPv4;
+    if (flags & U_CSUM_UDPv4)  mb->m_pkthdr.csum_flags |= M_CSUM_UDPv4;
+    if (flags & U_CSUM_TCPv6)  mb->m_pkthdr.csum_flags |= M_CSUM_TCPv6;
+    if (flags & U_CSUM_UDPv6)  mb->m_pkthdr.csum_flags |= M_CSUM_UDPv6;
 }
 

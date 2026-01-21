@@ -580,36 +580,30 @@ static void tcp_layer_read_cb(void *handle, int events) {
 
     while (1) {
         iov.iov_base = buffer;
-        iov.iov_len = MAX_RECV_SZ;
+        iov.iov_len = RECV_BUFFER_SZ;
         ssize_t bytes_read = netbsd_read(nh, &iov, 1);
         LOG_DEBUG("tcp_layer_read_cb : %zd", bytes_read);
+
         if (bytes_read > 0) {
             STATS_ADD(tcp_bytes_received, bytes_read);
-            // Null-terminate for safe logging
-            //buffer[bytes_read] = '\0';
-            //LOG_DEBUG("tcp_layer_read_cb : %s", buffer);
             if (conn->callbacks.on_read) {
                 conn->callbacks.on_read(conn, buffer, bytes_read);
             }
-            if (bytes_read == MAX_RECV_SZ) {
-                continue;
-            } else {
+            if (bytes_read < RECV_BUFFER_SZ) {
                 return;
             }
+            continue;
+        } else if (bytes_read == 0) {
+            LOG_DEBUG("tcp_layer_read_cb return : 0, close tcp");
+            tcp_layer_close(conn);
+            return;
         } else {
-            LOG_DEBUG("tcp_layer_read_cb return : %d", bytes_read);
             if (bytes_read == -35 /* EAGAIN */) {
                 return;
             }
-            if (bytes_read > 0 && conn->callbacks.on_read) {
-                conn->callbacks.on_read(conn, NULL, bytes_read);
-            }
-            // If read returns <= 0, it might indicate a connection closure or error
-            if (bytes_read < 0) {
-                LOG_DEBUG("tcp_layer_read_cb return : %d, close tcp", bytes_read);
-                tcp_layer_close(conn);
-                return;
-            }
+            LOG_DEBUG("tcp_layer_read_cb return : %zd, close tcp", bytes_read);
+            tcp_layer_close(conn);
+            return;
         }
     }
 }

@@ -202,6 +202,7 @@ const fetchData = async () => {
         }
     }
 
+
     if (newDiscovery) {
         availableMetrics.value = {
             client: Array.from(discoveredClient).sort(),

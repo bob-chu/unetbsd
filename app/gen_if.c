@@ -113,6 +113,21 @@ port_init(uint16_t port, struct rte_mempool *mbuf_pool)
         port_conf.txmode.offloads |=
             RTE_ETH_TX_OFFLOAD_MBUF_FAST_FREE;
 
+    if (dev_info.rx_offload_capa & RTE_ETH_RX_OFFLOAD_IPV4_CKSUM)
+        port_conf.rxmode.offloads |= RTE_ETH_RX_OFFLOAD_IPV4_CKSUM;
+    if (dev_info.rx_offload_capa & RTE_ETH_RX_OFFLOAD_UDP_CKSUM)
+        port_conf.rxmode.offloads |= RTE_ETH_RX_OFFLOAD_UDP_CKSUM;
+    if (dev_info.rx_offload_capa & RTE_ETH_RX_OFFLOAD_TCP_CKSUM)
+        port_conf.rxmode.offloads |= RTE_ETH_RX_OFFLOAD_TCP_CKSUM;
+
+    if (dev_info.tx_offload_capa & RTE_ETH_TX_OFFLOAD_IPV4_CKSUM)
+        port_conf.txmode.offloads |= RTE_ETH_TX_OFFLOAD_IPV4_CKSUM;
+    if (dev_info.tx_offload_capa & RTE_ETH_TX_OFFLOAD_UDP_CKSUM)
+        port_conf.txmode.offloads |= RTE_ETH_TX_OFFLOAD_UDP_CKSUM;
+
+    if (dev_info.tx_offload_capa & RTE_ETH_TX_OFFLOAD_TCP_CKSUM)
+        port_conf.txmode.offloads |= RTE_ETH_TX_OFFLOAD_TCP_CKSUM;
+
     // Set MTU for jumbo frames
     uint16_t mtu = JUMBO_FRAME_MAX_SIZE - RTE_ETHER_HDR_LEN - RTE_ETHER_CRC_LEN;
     retval = rte_eth_dev_set_mtu(port, mtu);
@@ -259,6 +274,8 @@ gen_if_output(void *m, long unsigned int total, void *arg)
         rte_memcpy(data, iov[i].iov_base, iov[i].iov_len);
     }
 
+    /* Handover to DPDK without offload flags (Checksum is now in payload) */
+    buf->ol_flags = 0;
     return send_single_packet(buf, 0);
 
 out:
@@ -295,6 +312,9 @@ void single_mbuf_input(struct rte_mbuf *pkt)
     }
 
     if (flag) {
+        /* NetBSD stack will verify checksums in software since if_csum_flags_rx is 0 */
+        netbsd_mbuf_set_csum_flags(hdr, 0);
+        
         virt_if_mbuf_input(v_f_dpdk, hdr);
     }
 

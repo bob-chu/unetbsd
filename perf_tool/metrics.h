@@ -111,6 +111,8 @@ extern metrics_t g_metrics;
     X(time_index) \
     X(current_phase)
 
+#define UNETBSD_TCP_NSTATS 76
+
 typedef struct {
 #define X(name) uint64_t name;
     STATS_FIELDS
@@ -121,6 +123,7 @@ typedef struct {
     STATS_SSL_FIELDS
     STATS_PHASE_FIELD
 #undef X
+    uint64_t netbsd_tcp_stats[UNETBSD_TCP_NSTATS];
 } stats_t;
 
 extern stats_t *g_current_stats;

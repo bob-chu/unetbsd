@@ -123,6 +123,7 @@ int main(int argc, char *argv[]) {
     printf("Starting in %s mode with config file: %s\n", mode, config_path);
 
     perf_config_t config;
+    memset(&config, 0, sizeof(config));
     if (parse_config(config_path, &config) != 0) {
         fprintf(stderr, "Failed to parse config file.\n");
         return 1;
