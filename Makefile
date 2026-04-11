@@ -135,6 +135,7 @@ NETBSD_SRCS = \
     	netbsd_src/sys/kern/subr_hash.c \
     	netbsd_src/sys/kern/subr_pserialize.c \
     	netbsd_src/sys/kern/uipc_mbuf.c \
+    	netbsd_src/sys/kern/sys_socket.c \
     	netbsd_src/sys/kern/uipc_socket.c \
     	netbsd_src/sys/kern/uipc_socket2.c \
         netbsd_src/sys/net/dl_print.c \
@@ -161,7 +162,11 @@ NETBSD_SRCS = \
     	src/u_socket.c \
     	src/u_clock.c \
     	src/u_mem.c \
-    	src/u_fd.c
+    	src/u_pktqueue.c \
+    	src/u_softint.c \
+    	src/u_kstub.c \
+    	src/u_fd.c \
+    	src/u_tcp_stat.c
 
 NETBSD_OBJS = $(NETBSD_SRCS:%.c=$(OBJDIR)/%.o)
 

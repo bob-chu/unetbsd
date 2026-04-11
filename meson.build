@@ -144,7 +144,6 @@ netbsd_srcs = [
     'netbsd_src/sys/kern/sys_socket.c',
     'netbsd_src/sys/kern/uipc_socket.c',
     'netbsd_src/sys/kern/uipc_socket2.c',
-    #'netbsd_src/sys/kern/subr_pcq.c',
     'netbsd_src/sys/net/dl_print.c',
     'netbsd_src/sys/net/if.c',
     'netbsd_src/sys/net/bpf_stub.c',
@@ -290,35 +289,37 @@ if get_option('use_dpdk')
     )
 endif
 
-executable(
-    'perf_tool',
-    perf_tool_srcs,
-    c_args : cflags_user + ['-I/usr/local/include'],
-    include_directories : [include_directories('perf_tool'), include_directories('perf_tool/deps/cjson'), include_directories('perf_tool/deps/picohttpparser'), include_directories('include'), include_directories('app'), include_directories('src')],
-    link_with : libnetbsdstack_static,
-    link_args : ['-static'],
-    dependencies : [dpdk_dep_static, libev_dep, pthread_dep, openssl_dep],
-    install : true
-)
+if get_option('use_dpdk')
+    executable(
+        'perf_tool',
+        perf_tool_srcs,
+        c_args : cflags_user + ['-I/usr/local/include'],
+        include_directories : [include_directories('perf_tool'), include_directories('perf_tool/deps/cjson'), include_directories('perf_tool/deps/picohttpparser'), include_directories('include'), include_directories('app'), include_directories('src')],
+        link_with : libnetbsdstack_static,
+        link_args : ['-static'],
+        dependencies : [dpdk_dep_static, libev_dep, pthread_dep, openssl_dep],
+        install : true
+    )
 
-test_ssl_layer_srcs = [
-    'perf_tool/test/test_ssl_layer.c',
-    'perf_tool/ssl_layer.c',
-    'perf_tool/metrics.c',
-    'perf_tool/config.c',
-    'perf_tool/deps/cjson/cJSON.c',
-    'app/log.c',
-]
+    test_ssl_layer_srcs = [
+        'perf_tool/test/test_ssl_layer.c',
+        'perf_tool/ssl_layer.c',
+        'perf_tool/metrics.c',
+        'perf_tool/config.c',
+        'perf_tool/deps/cjson/cJSON.c',
+        'app/log.c',
+    ]
 
-executable(
-    'test_ssl_layer',
-    test_ssl_layer_srcs,
-    c_args : cflags_user + ['-I/usr/local/include'],
-    include_directories : [include_directories('perf_tool'), include_directories('perf_tool/deps/cjson'), include_directories('perf_tool/deps/picohttpparser'), include_directories('include'), include_directories('app'), include_directories('src')],
-    link_with : libnetbsdstack_static,
-    dependencies : [dpdk_dep_static, libev_dep, pthread_dep, openssl_dep],
-    install : true
-)
+    executable(
+        'test_ssl_layer',
+        test_ssl_layer_srcs,
+        c_args : cflags_user + ['-I/usr/local/include'],
+        include_directories : [include_directories('perf_tool'), include_directories('perf_tool/deps/cjson'), include_directories('perf_tool/deps/picohttpparser'), include_directories('include'), include_directories('app'), include_directories('src')],
+        link_with : libnetbsdstack_static,
+        dependencies : [dpdk_dep_static, libev_dep, pthread_dep, openssl_dep],
+        install : true
+    )
+endif
 
 executable(
     'test_simple',
@@ -328,14 +329,16 @@ executable(
     install : true
 )
 
-executable(
-    'test_tcp_stats_api',
-    'perf_tool/test/test_tcp_stats_api.c',
-    include_directories : [include_directories('include'), include_directories('src')],
-    link_with : libnetbsdstack_static,
-    dependencies : [dpdk_dep_static, libev_dep, pthread_dep, openssl_dep],
-    install : true
-)
+if get_option('use_dpdk')
+    executable(
+        'test_tcp_stats_api',
+        'perf_tool/test/test_tcp_stats_api.c',
+        include_directories : [include_directories('include'), include_directories('src')],
+        link_with : libnetbsdstack_static,
+        dependencies : [dpdk_dep_static, libev_dep, pthread_dep, openssl_dep],
+        install : true
+    )
+endif
 
 libnetbsd_shim_srcs = [
     'src/posix_shim.c',
@@ -399,16 +402,18 @@ if get_option('use_dpdk')
     )
 endif
 
-executable(
-    'ptm',
-    ['perf_tool/perf_tool_master.c', 'perf_tool/deps/cjson/cJSON.c'],
-    c_args : cflags_user + ['-I/usr/local/include'],
-    include_directories : [include_directories('perf_tool'), include_directories('perf_tool/deps/cjson'), include_directories('perf_tool/deps/picohttpparser'), include_directories('include'), include_directories('app'), include_directories('src')],
-    link_with : libnetbsdstack_static,
-    link_args : ['-static'],
-    dependencies : [dpdk_dep_static, libev_dep, pthread_dep, openssl_dep],
-    install : true
-)
+if get_option('use_dpdk')
+    executable(
+        'ptm',
+        ['perf_tool/perf_tool_master.c', 'perf_tool/deps/cjson/cJSON.c'],
+        c_args : cflags_user + ['-I/usr/local/include'],
+        include_directories : [include_directories('perf_tool'), include_directories('perf_tool/deps/cjson'), include_directories('perf_tool/deps/picohttpparser'), include_directories('include'), include_directories('app'), include_directories('src')],
+        link_with : libnetbsdstack_static,
+        link_args : ['-static'],
+        dependencies : [dpdk_dep_static, libev_dep, pthread_dep, openssl_dep],
+        install : true
+    )
+endif
 
 # Build Go program
 go_compiler = find_program('go', required : true)
