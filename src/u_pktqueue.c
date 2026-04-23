@@ -62,15 +62,12 @@ pktq_enqueue(struct pktqueue *pq, struct mbuf *m, const u_int hash)
 	pq->pq_tail = next_tail;
 
 	/*
-	 * In user space, directly call the interrupt handler.
-	 * In the original NetBSD kernel code, this would schedule
-	 * a soft interrupt on a specific CPU using softint_schedule_cpu.
-	 * If user-space threading or CPU simulation is added, this
-	 * call may need to be adjusted to schedule the handler in a
-	 * different context.
+	 * Schedule a soft interrupt to be executed later by softint_run().
+	 * This prevents recursive stack processing and solves the race 
+	 * condition where response packets arrive before current entry 
+	 * is inserted into the cache.
 	 */
-	pq->pq_intrh(pq->pq_sc);
-	//softint_schedule_cpu(pq->pq_sih, NULL);
+	softint_schedule(pq->pq_sih);
 
 	return true;
 }

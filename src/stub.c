@@ -890,8 +890,12 @@ int sleepq_enter(void *sq, struct lwp *l, kmutex_t *mtx) { return 0; }
 void sleepq_enqueue(void *sq, const void *wchan, const char *msg, struct syncobj *sync, bool catch) {}
 int sleepq_block(int timo, bool catch, struct syncobj *sync, int sig) { return 0; }  /* Return success */
 void sleepq_unsleep(struct lwp *l, bool cleanup) {}
+void sleepq_remove(void *sq, struct lwp *l, bool cleanup) {}
 void sleepq_changepri(struct lwp *l, int pri) {}
 void sleepq_lendpri(struct lwp *l, int pri) {}
+
+void sigsuspendsetup(struct lwp *l, const sigset_t *mask) {}
+void sigsuspendteardown(struct lwp *l) {}
 
 
 struct wq {
@@ -1219,18 +1223,6 @@ void module_hook_set(bool *hooked, struct localcount *lc) {}
 void module_hook_unset(bool *hooked, struct localcount *lc) {}
 int enosys(void) { return ENOSYS; }
 
-/*
- *  avoid kqueue notify, etc
- */
-void selnotify(struct selinfo *sip, int events, long knhint) {}
-void selrecord(lwp_t *selector, struct selinfo *sip) {}
-bool selremove_knote(struct selinfo *sip, struct knote *kn) { return false; }
-void selinit(struct selinfo *sip) {}
-void seldestroy(struct selinfo *sip) {}
-void selrecord_knote(struct selinfo *sip, struct knote *kn) {}
-void knote_set_eof(struct knote *kn, uint32_t flags) {}
-int seltrue(dev_t dev, int events, lwp_t *l) { return 1; }
-int seltrue_kqfilter(dev_t dev, struct knote *kn) { return 1; }
 
 /*
  * pint and bpf filter
@@ -1451,11 +1443,11 @@ copyinstr(const void *uaddr, void *kaddr, size_t len, size_t *done)
 /* ?? */
 void blake2s(void *out, size_t outlen, const void *in, size_t inlen, const void *key, size_t keylen) {}
 
-/* sys/kern/kern_event.c */
-void knote_fdclose(int fd) {}
+/* kern_event.c - now using real implementation, removed knote_fdclose stub */
 
 /* sys/kern/kern_synch.c */
 int kpause(const char *reason, bool intr, int ticks, kmutex_t *mtx) { return 0; }
+void preempt_point(void) {}
 struct lwp *syncobj_noowner(wchan_t wchan) { return NULL; }
 
 u_int maxfiles = 1024*1024; /* 1M fd */
@@ -1525,4 +1517,53 @@ devhandle_t	device_handle(device_t dev) { return dummy_devhandle;}
 ssize_t
 device_getprop_data(device_t dev, const char *prop, void *buf, size_t buflen)
 { return 0; }
+
+/* kern_event.c dependencies */
+uid_t kauth_cred_getuid(kauth_cred_t cred) { return 0; }  /* Root UID */
+int copyoutstr(const void *from, void *to, size_t maxlen, size_t *done) {
+    size_t len = strnlen(from, maxlen) + 1;
+    if (len > maxlen) len = maxlen;
+    memcpy(to, from, len);
+    if (done) *done = len;
+    return 0;
+}
+int inittimeleft(struct timespec *ts, struct timespec *sleepts) {
+    if (ts) {
+        nanotime(sleepts);
+    }
+    return 0;
+}
+int gettimeleft(struct timespec *ts, struct timespec *sleepts) {
+    if (ts) {
+        struct timespec now;
+        nanotime(&now);
+        /* Simple: just check if time remaining */
+        if (now.tv_sec > sleepts->tv_sec + ts->tv_sec) {
+            ts->tv_sec = 0;
+            ts->tv_nsec = 0;
+        }
+    }
+    return 0;
+}
+
+/* kern_event.c: filterops for signal and fs filters (not used in userspace) */
+#include <sys/event.h>
+static int filt_stub_attach(struct knote *kn) { return ENOTSUP; }
+static void filt_stub_detach(struct knote *kn) {}
+static int filt_stub_event(struct knote *kn, long hint) { return 0; }
+const struct filterops sig_filtops = {
+    .f_flags = 0,
+    .f_attach = filt_stub_attach,
+    .f_detach = filt_stub_detach,
+    .f_event = filt_stub_event,
+};
+const struct filterops fs_filtops = {
+    .f_flags = 0,
+    .f_attach = filt_stub_attach,
+    .f_detach = filt_stub_detach,
+    .f_event = filt_stub_event,
+};
+
+/* kern_event.c: atomic_add_int */
+void atomic_add_int(volatile unsigned int *ptr, int val) { *ptr += val; }
 

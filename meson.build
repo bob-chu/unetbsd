@@ -170,7 +170,11 @@ netbsd_srcs = [
     'src/u_softint.c',
     'src/u_kstub.c',
     'src/u_fd.c',
-    'src/u_tcp_stat.c'
+    'src/u_tcp_stat.c',
+    'src/u_syscall.c',
+    'src/u_errno.c',
+    'netbsd_src/sys/kern/kern_event.c',
+    'netbsd_src/sys/kern/sys_select.c'
 ]
 
 
@@ -468,6 +472,17 @@ ptcp_exe = custom_target(
     build_by_default: true,
     install : true,
     install_dir : get_option('bindir')
+)
+
+# test_kqueue - Test application for u_* socket API with kqueue
+executable(
+    'test_kqueue',
+    'app/test_kqueue.c',
+    c_args : cflags_user,
+    include_directories : [include_directories('include'), include_directories('app')],
+    link_with : libnetbsdstack_static,
+    dependencies : [libev_dep, pthread_dep],
+    install : true
 )
 
 # SAM build target

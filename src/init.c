@@ -13,6 +13,8 @@ extern struct cpu_info cpu0;
 
 struct lwp dummy_lwp;
 extern struct ifnet *lo0ifp;
+extern int loioctl(struct ifnet *, u_long, void *);
+extern int looutput(struct ifnet *, struct mbuf *, const struct sockaddr *, const struct rtentry *);
 extern int tcp_sendspace;
 extern int tcp_recvspace;
 extern int tcp_msl_remote;
@@ -25,15 +27,15 @@ loop_create(int unit)
 
     ifp = if_alloc(IFT_LOOP);
 
-    if_initname(ifp, "lo0", unit);
+    if_initname(ifp, "lo", unit);
 
     ifp->if_mtu = (32768 + MHLEN + MLEN);
     ifp->if_flags = IFF_LOOPBACK | IFF_MULTICAST;
 #ifdef NET_MPSAFE
     ifp->if_extflags = IFEF_MPSAFE;
 #endif
-    //ifp->if_ioctl = loioctl;
-    //ifp->if_output = looutput;
+    ifp->if_ioctl = loioctl;
+    ifp->if_output = looutput;
     ifp->if_type = IFT_LOOP;
     ifp->if_hdrlen = 0;
     ifp->if_addrlen = 0;
@@ -113,7 +115,7 @@ void netbsd_init()
     //splx(s);
     loop_create(0);
     loopinit();
-    // (void)setipaddr("lo0", 0x7f000001); // Removed to reduce noise and following user suggestion
+    (void)setipaddr("lo0", 0x7f000001);
     updatetime();
     softint_levels_init();
     
