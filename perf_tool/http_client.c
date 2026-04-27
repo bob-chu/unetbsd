@@ -146,8 +146,6 @@ void http_client_init(perf_config_t *config) {
         sprintf(p, "\r\n");
     }
 
-    tcp_layer_init_local_port_pool(config);
-
     if (config->use_https) {
         if (ssl_layer_init_client() != 0) {
             LOG_ERROR("Failed to initialize client SSL layer");
@@ -260,13 +258,13 @@ static void http_on_connect(struct tcp_conn *conn, int status) {
         if (http_conn->config->use_https) {
             ssl_layer_handshake(http_conn->ssl_layer);
         } else {
-            LOG_INFO("HTTP connection established.");
+            LOG_DEBUG("HTTP connection established.");
             STATS_INC(connections_opened);
             STATS_INC(requests_sent);
             metrics_inc_success();
             metrics_update_cps(1); // Increment CPS for HTTP
             http_conn->request_send_time = ev_now(g_main_loop);
-            LOG_INFO("HTTP write data: %s.", http_conn->send_buffer);
+            LOG_DEBUG("HTTP write data: %s.", http_conn->send_buffer);
             tcp_layer_write(conn, http_conn->send_buffer, http_conn->send_buffer_size);
             http_conn->data_received = 0;
             http_conn->header_length = 0;

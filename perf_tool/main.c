@@ -116,7 +116,7 @@ int main(int argc, char *argv[]) {
     config_path = argv[optind + 1];
 
     logger_init();
-    logger_set_level(LOG_LEVEL_WARN);
+    logger_set_level(LOG_LEVEL_INFO);
     //logger_set_level(LOG_LEVEL_DEBUG);
     logger_enable_colors(1);
 
@@ -136,13 +136,18 @@ int main(int argc, char *argv[]) {
     netbsd_init();
 
 
-    sysctl_tun("tcp_msl_loop", 1);      // 0.5 seconds (PR_SLOWHZ=2)
-    sysctl_tun("tcp_msl_local", 1);     // 1 second
-    sysctl_tun("tcp_msl_remote", 2);    // 2 seconds
+    sysctl_tun("tcp_sendspace", 65536);
+    sysctl_tun("tcp_recvspace", 65536);
+    sysctl_tun("tcp_msl_loop", 1);      // 0.5 seconds
+    sysctl_tun("tcp_msl_local", 1);     // 0.5 seconds
+    sysctl_tun("tcp_msl_remote", 1);    // 0.5 seconds
 
-    sysctl_tun("tcp_delack_ticks", 1);
+    sysctl_tun("tcp_delack_ticks", 0);
+    sysctl_tun("tcp_do_sack", 0);
     sysctl_tun("somaxconn", 262144);
-    sysctl_tun("tcbhashsize", 8192*8);
+    sysctl_tun("tcbhashsize", 65536);
+    sysctl_tun("tcp_syn_cache_limit", 1048576);
+    sysctl_tun("tcp_syn_bucket_limit", 1024);
 
     char *ip_addr_start;
     char *ip_addr_end;
@@ -265,8 +270,10 @@ int main(int argc, char *argv[]) {
     ev_idle_start(g_main_loop, &idle_watcher);
 
     if (strcmp(mode, "client") == 0) {
+        fprintf(stderr, "DEBUG: Calling run_client\n");
         run_client(g_main_loop, &config);
     } else if (strcmp(mode, "server") == 0) {
+        fprintf(stderr, "DEBUG: Calling run_server\n");
         run_server(g_main_loop, &config);
     } else if (strcmp(mode, "standalone") == 0) {
         printf("Running in standalone mode.\n");

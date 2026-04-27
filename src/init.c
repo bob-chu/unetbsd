@@ -155,6 +155,15 @@ void sysctl_tun(char *name, int val)
         tcp_sendspace = val;
     } else if (strcmp(name, "tcp_recvspace") == 0) {
         tcp_recvspace = val;
+    } else if (strcmp(name, "tcp_do_sack") == 0) {
+        extern int tcp_do_sack;
+        tcp_do_sack = val;
+    } else if (strcmp(name, "tcp_syn_cache_limit") == 0) {
+        extern int tcp_syn_cache_limit;
+        tcp_syn_cache_limit = val;
+    } else if (strcmp(name, "tcp_syn_bucket_limit") == 0) {
+        extern int tcp_syn_bucket_limit;
+        tcp_syn_bucket_limit = val;
     }
 }
 

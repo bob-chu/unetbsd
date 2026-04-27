@@ -138,6 +138,7 @@ NETBSD_SRCS = \
     	netbsd_src/sys/kern/sys_socket.c \
     	netbsd_src/sys/kern/uipc_socket.c \
     	netbsd_src/sys/kern/uipc_socket2.c \
+    	netbsd_src/sys/kern/sys_select.c \
         netbsd_src/sys/net/dl_print.c \
         netbsd_src/sys/net/if.c \
         netbsd_src/sys/net/bpf_stub.c \

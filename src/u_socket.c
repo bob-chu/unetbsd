@@ -308,7 +308,7 @@ int netbsd_connect(struct netbsd_handle *nh, struct sockaddr *addr)
 
     int ret = soconnect(nh->so, (struct sockaddr *)&sa, curlwp);
     if (ret != 0 && ret != 56 && ret != EISCONN) {  // 56 = EISCONN = already connected = success
-        printf("soconnect failed with error: %d\n", ret);
+        
     }
     // EISCONN (56) means socket is already connected - treat as success
     if (ret == 56 || ret == EISCONN) {

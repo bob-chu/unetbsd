@@ -19,7 +19,7 @@
 #include "ssl_layer.h"
 
 
-#define CLIENT_DATA_POOL_SIZE 16384
+#define CLIENT_DATA_POOL_SIZE 65536
 #define MAX_SEND_BUFFER_SIZE 16384
 
 typedef struct {
@@ -299,7 +299,7 @@ static void process_http_request(client_data_t *data, const char *buf, int nbyte
             goto close_conn;
         }
         if (ret > 0) {
-            LOG_INFO("Request parsed: %.*s %.*s HTTP/1.%d", (int)method_len, method, (int)path_len, path, minor_version);
+            LOG_DEBUG("Request parsed: %.*s %.*s HTTP/1.%d", (int)method_len, method, (int)path_len, path, minor_version);
             STATS_INC(http_req_rcvd);
             data->method = method;
             data->method_len = method_len;

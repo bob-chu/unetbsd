@@ -20,7 +20,7 @@ add_project_arguments(
 
 cflags_user = [
     '-g',
-    '-O0',
+    '-O3',
     '-frename-registers',
     '-funswitch-loops',
     '-fweb',
@@ -186,9 +186,7 @@ libnetbsdstack_static = static_library(
         '-nostdinc',
         '-D_KERNEL',
         '-D__NetBSD__',
-        '-DNET_MPSAFE',
         '-DSOSEND_NO_LOAN',
-        '-DTCP_DEBUG',
         '-D_NETBSD_SOURCE',
         '-D_RUMPKERNEL',
         '-DINET',
@@ -208,9 +206,7 @@ libnetbsdstack_shared = shared_library(
         '-nostdinc',
         '-D_KERNEL',
         '-D__NetBSD__',
-        '-DNET_MPSAFE',
         '-DSOSEND_NO_LOAN',
-        '-DTCP_DEBUG',
         '-D_NETBSD_SOURCE',
         '-D_RUMPKERNEL',
         '-DINET',

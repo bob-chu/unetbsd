@@ -4,7 +4,7 @@
 #include <rte_ether.h>
 #include <rte_ethdev.h>
 
-#define MAX_CONN_SIZE 8192
+#define MAX_CONN_SIZE 65536
 #define CLIENT_SHM_PATH "/tmp/ptm_client_stats"
 #define SERVER_SHM_PATH "/tmp/ptm_server_stats"
 

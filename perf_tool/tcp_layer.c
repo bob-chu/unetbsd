@@ -95,7 +95,10 @@ static void tcp_layer_timeout_cb(EV_P_ ev_timer *w, int revents);
 static void tcp_layer_accept_cb(void *handle, int events);
 static void tcp_layer_close_cb(void *handle, int events);
 
+static bool g_port_pool_initialized = false;
+
 void tcp_layer_init_local_port_pool(perf_config_t *config) {
+    if (g_port_pool_initialized) return;
     int start_port = config->l4.src_port_start;
     int end_port = config->l4.src_port_end;
     g_local_port_count = end_port - start_port + 1;
@@ -167,6 +170,7 @@ void tcp_layer_init_local_port_pool(perf_config_t *config) {
     }
     g_current_server_ip_index = 0;
     g_current_server_port_index = 0;
+    g_port_pool_initialized = true;
 }
 
 static struct in_addr tcp_layer_get_local_ip(void) {

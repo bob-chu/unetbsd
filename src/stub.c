@@ -49,18 +49,17 @@ struct lwp	*curlwp;
  * sys/kern/uipc_mbuf.c global variable
  */
 
-const int msize = 512*8;    // Reduced from 512 to allow more mbufs with less memory per mbuf
-const int mclbytes = 4096; // Increased from 2048 to allow larger clusters for better performance
+const int msize = 512;
+const int mclbytes = 2048;
 
-//#define PHYSMEM 1048576*2048 // Increased from 256MB to 1GB
-#define PHYSMEM (1048576UL * 2048UL) // Increased from 256MB to 4GB, using unsigned long to prevent overflow
-unsigned long physmem = PHYSMEM;
-unsigned long nkmempages = PHYSMEM/2; /* from le chapeau */
-#undef PHYSMEM
+#define PHYSMEM_MB 4096
+#define PAGE_SIZE_VAL 4096
+unsigned long physmem = (PHYSMEM_MB * 1024 * 1024) / PAGE_SIZE_VAL;
+unsigned long nkmempages = (PHYSMEM_MB * 1024 * 1024 / 2) / PAGE_SIZE_VAL;
 
-int nmbclusters = 4096*128; // Increased from 4096 to allow more mbufs for network operations
-int mblowat = 256;       // Increased to maintain a higher watermark
-int mcllowat = 64;      // Increased to maintain a higher cluster watermark
+int nmbclusters = 524288;
+int mblowat = 256;
+int mcllowat = 64;
 
 
 /*
@@ -362,20 +361,20 @@ xmalloc(size, type, flags)
     if (type == M_MBUF || type == M_EXT_CLUSTER) {
         ptr = memalign(128, size);
         if (ptr == NULL) {
-            printf("xmalloc: Failed to allocate 128-byte aligned memory of size %lu for type %d\n", size, type);
+            
             return NULL;
         }
         memset(ptr, 0, size);
-        printf("xmalloc: Allocated 128-byte aligned memory at %p of size %lu for type %d\n", ptr, size, type);
+        
         return ptr;
     } else {
         ptr = malloc(size);
         if (ptr == NULL) {
-            printf("xmalloc: Failed to allocate memory of size %lu for type %d\n", size, type);
+            
             return NULL;
         }
         memset(ptr, 0, size);
-        printf("xmalloc: Allocated memory at %p of size %lu for type %d\n", ptr, size, type);
+        
         return ptr;
     }
 }
@@ -389,10 +388,10 @@ xfree(addr, type)
 	int type;
 {
     if (addr != NULL) {
-        printf("xfree: Freeing memory at %p for type %d\n", addr, type);
+        
         free(addr);
     } else {
-        printf("xfree: Attempt to free NULL pointer for type %d\n", type);
+        
     }
 }
 
@@ -669,7 +668,7 @@ percpu_alloc(size_t size)
         return NULL;
     }
     cur_percpu->pc_size = size;
-    printf("percpu_alloc: Allocated memory of size %zu at %p (data at %p)\n", size, cur_percpu, cur_percpu->pc_data);
+    
     return cur_percpu;
 }
 
@@ -787,7 +786,7 @@ vmem_xcreate(const char *name, vmem_addr_t base, vmem_size_t size,
 void *
 explicit_memset(void *ptr, int value, size_t len)
 {
-    printf("explicit_memset: clearing %zu bytes at %p\n", len, ptr);
+    
     return memset(ptr, value, len); // 使用标准 memset
 }
 
