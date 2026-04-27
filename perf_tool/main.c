@@ -145,7 +145,7 @@ int main(int argc, char *argv[]) {
     sysctl_tun("tcp_delack_ticks", 0);
     sysctl_tun("tcp_do_sack", 0);
     sysctl_tun("somaxconn", 262144);
-    sysctl_tun("tcbhashsize", 65536);
+    sysctl_tun("tcbhashsize", 131072);
     sysctl_tun("tcp_syn_cache_limit", 1048576);
     sysctl_tun("tcp_syn_bucket_limit", 1024);
 
@@ -256,7 +256,7 @@ int main(int argc, char *argv[]) {
     ev_timer timer_1s_watcher;
     ev_idle idle_watcher;
 
-    ev_timer_init(&timer_10ms_watcher, timer_10ms_cb, 0.01, 0.01);
+    ev_timer_init(&timer_10ms_watcher, timer_10ms_cb, 0.005, 0.005);
     ev_timer_start(g_main_loop, &timer_10ms_watcher);
 
     struct idle_watcher_data idle_data = {dpdk_config, (const char *)mode};

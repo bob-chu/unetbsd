@@ -109,6 +109,15 @@ void netbsd_init()
     callout_startup();
     callout_init_cpu(&cpu0);
     pool_cache_cpu_init(&cpu0);
+    
+    extern int tcbhashsize;
+    tcbhashsize = 131072;
+    
+    extern int tcp_msl_loop, tcp_msl_local, tcp_msl_remote;
+    tcp_msl_loop = 1;   // 0.5s
+    tcp_msl_local = 1;  // 0.5s
+    tcp_msl_remote = 1; // 0.5s
+
     domaininit(true);
     //int s = splimp();
     ifinit();
