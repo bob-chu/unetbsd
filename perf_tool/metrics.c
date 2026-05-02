@@ -103,7 +103,7 @@ metrics_t metrics_get_snapshot(void) {
 void metrics_update_port_usage(uint64_t ports_used, uint64_t total_ports) {
     g_metrics.ports_used = ports_used;
     g_metrics.total_ports = total_ports;
-    LOG_INFO("Updated port usage: %lu/%lu", ports_used, total_ports);
+    //LOG_INFO("Updated port usage: %lu/%lu", ports_used, total_ports);
 }
 
 void metrics_update_cps(uint64_t cps) {

@@ -133,7 +133,7 @@ uint16_t dpdk_client_read(void) {
 
     for (i = 0; i < rx_pkts; i++) {
         struct rte_mbuf *buf = bufs_local[i];
-        dump_mbuf_hex(buf, "IN");
+        //dump_mbuf_hex(buf, "IN");
         single_mbuf_input(buf);
     }
     return rx_pkts;
@@ -145,7 +145,7 @@ int dpdk_client_send_packet(struct rte_mbuf *m) {
         rte_pktmbuf_free(m);
         return -1;
     }
-    dump_mbuf_hex(m, "OUT");
+    //dump_mbuf_hex(m, "OUT");
     if (rte_ring_enqueue(lb_tx_ring, m) != 0) {
         LOG_ERROR("Failed to enqueue packet to TX ring, dropping.\n");
         rte_pktmbuf_free(m);

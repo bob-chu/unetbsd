@@ -426,7 +426,7 @@ void port_read(uint8_t queue_id)
         rte_prefetch0(rte_pktmbuf_mtod(pkt, void *));
         if (is_arp_packet(pkt)) {
             for (int j = 0; j < nb_procs; j++) {
-                LOG_INFO("send arp packet to ring[%d]", j);
+                //LOG_INFO("send arp packet to ring[%d]", j);
                 if (j != proc_id) {
                     struct rte_mbuf * cloned_pkt = rte_pktmbuf_clone(pkt, mbuf_pool);
                     if (cloned_pkt) {
@@ -611,7 +611,7 @@ void set_mtu(int mtu)
         }
         // Also update DPDK port MTU
         if (rte_eth_dev_set_mtu(0, mtu) != 0) {
-            LOG_ERROR("Failed to set DPDK port MTU to %d", mtu);
+            LOG_INFO("Failed to set DPDK port MTU to %d", mtu);
         }
     } else {
         LOG_ERROR("Failed to set MTU: Interface not initialized");

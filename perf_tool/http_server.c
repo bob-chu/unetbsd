@@ -433,18 +433,16 @@ static ssize_t send_http_response(client_data_t *data, tcp_conn_t *conn) {
                 data->header_sent += sent;
                 data->total_sent += sent;
                 LOG_DEBUG("Header sent: %zu bytes", sent);
-            } else if (sent < 0/* && errno != EAGAIN && errno != EWOULDBLOCK*/) {
+            } else if (sent < 0 && sent != -35) {
                 LOG_ERROR("Failed to send header: %zd (%s)", sent, strerror(errno));
                 STATS_INC(http_rsp_hdr_send_err);
                 http_on_close(conn);
                 tcp_layer_close(conn);
                 goto out;
-                //return data->total_sent;
             } else {
-                // EAGAIN or EWOULDBLOCK (sent == 0 or sent < 0), wait for next write event
+                // EAGAIN or EWOULDBLOCK (sent == 0 or sent == -35), wait for next write event
                 LOG_DEBUG("Partial header send (%zd), waiting for next write event", data->total_sent);
                 goto out;
-                //return data->total_sent;
             }
         }
 
@@ -460,18 +458,16 @@ static ssize_t send_http_response(client_data_t *data, tcp_conn_t *conn) {
                 data->response_sent += sent;
                 data->total_sent += sent;
                 LOG_DEBUG("Total sent: %zu, Body remain: %zu bytes", data->total_sent, data->response_body_size - data->response_sent);
-            } else if (sent < 0/* && errno != EAGAIN && errno != EWOULDBLOCK*/) {
+            } else if (sent < 0 && sent != -35) {
                 LOG_ERROR("Failed to send body chunk: %zd (%s)", sent, strerror(errno));
                 STATS_INC(http_rsp_body_send_err);
                 //http_on_close(conn);
                 //tcp_layer_close(conn);
                 goto out;
-                //return data->total_sent;
             } else {
-                // EAGAIN or EWOULDBLOCK (sent == 0 or sent < 0), wait for next write event
+                // EAGAIN or EWOULDBLOCK (sent == 0 or sent == -35), wait for next write event
                 LOG_DEBUG("Partial body send (%zd), waiting for next write event", data->total_sent);
                 goto out;
-                //return data->total_sent;
             }
         }
     }

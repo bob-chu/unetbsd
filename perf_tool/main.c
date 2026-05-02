@@ -178,6 +178,8 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
+    printf("DEBUG: mode=%s, ip_addr_start=%s, ip_addr_end=%s, gateway_addr=%s\n", mode, ip_addr_start, ip_addr_end, gateway_addr);
+
     if (dpdk_config) {
         if (dpdk_config->is_dpdk_client) {
             if (dpdk_client_init(dpdk_config) != 0) {
