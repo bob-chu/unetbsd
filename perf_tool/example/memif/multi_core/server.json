@@ -1,0 +1,28 @@
+{
+  "scheduler": { "prepare_duration_sec": 20, "ramp_up_duration_sec": 5, "sustain_duration_sec": 60, "ramp_down_duration_sec": 2, "close_duration_sec": 1 },
+  "objective": { "type": "HTTP_REQUESTS", "value": 10000000 },
+  "http_config": { "use_https": 0, "paths": [{ "path": "/hello", "response_body_size": 2 }] },
+  "interface": { "mtu": 1500 },
+  "network": {
+    "l2": { "mac_address": "00:0a:0a:11:22:33" },
+    "l3": { 
+      "src_ip_start": "192.168.1.100", 
+      "src_ip_end": "192.168.1.109", 
+      "dst_ip_start": "192.168.1.2", 
+      "dst_ip_end": "192.168.1.21" 
+    },
+    "l4": { 
+      "protocol": "TCP", 
+      "src_port_start": 1000, 
+      "src_port_end": 65000, 
+      "dst_port_start": 8000, 
+      "dst_port_end": 8000 
+    }
+  },
+  "dpdk_server": {
+    "iface": "net_memif0",
+    "args": "-n 4 --vdev=net_memif0,mac=00:0a:0a:11:22:33,role=server,socket=/tmp/memif_native.sock,bsize=2048 --file-prefix=s_native",
+    "is_dpdk_client": 0,
+    "core_id": 1
+  }
+}

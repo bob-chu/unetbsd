@@ -1,0 +1,17 @@
+{
+  "scheduler": { "prepare_duration_sec": 3, "ramp_up_duration_sec": 5, "sustain_duration_sec": 60, "ramp_down_duration_sec": 2, "close_duration_sec": 1 },
+  "objective": { "type": "TCP_CONCURRENT", "value": 100, "requests_per_connection": 1 },
+  "http_config": { "use_https": 0, "paths": [{ "path": "/hello", "request_headers": ["User-Agent: perf_tool/1.0"] }] },
+  "interface": { "mtu": 1500 },
+  "network": {
+    "l2": { "mac_address": "00:0a:0a:44:55:66" },
+    "l3": { "src_ip_start": "192.168.1.100", "src_ip_end": "192.168.1.109", "dst_ip_start": "192.168.1.2", "dst_ip_end": "192.168.1.2" },
+    "l4": { "protocol": "TCP", "src_port_start": 1000, "src_port_end": 65000, "dst_port_start": 8000, "dst_port_end": 8000 }
+  },
+  "dpdk_client": {
+    "iface": "net_memif0",
+    "args": "-n 4 --vdev=net_memif0,mac=00:0a:0a:44:55:66,role=client,socket=/tmp/m0.sock,bsize=2048 --file-prefix=c0",
+    "is_dpdk_client": 0,
+    "core_id": 8
+  }
+}

@@ -49,18 +49,28 @@ static uint8_t num_queue;
 static struct client_ring *client_rings;
 static struct client_ring curr_client_ring;
 
-static int nb_procs = 1;
-static int proc_id = 0;
+int nb_procs = 1;
+int proc_id = 0;
 
 struct client_rx_buf {
 	struct rte_mbuf *buffer[BURST_SIZE];
 	uint16_t count;
 };
 
+struct rte_ring *shadow_arp_ring = NULL;
+
+static inline char *get_arp_ring_name(int id) {
+    static char buf[32];
+    snprintf(buf, sizeof(buf), "ARP_RING_%d", id);
+    return buf;
+}
+
 /* One buffer per client rx queue - dynamically allocate array */
 static struct client_rx_buf *cl_rx_buf;
 
 lb_func_t gl_lb_callback;
+
+static inline char *get_mbuf_pool_name(int id);
 
 void register_lb_callback(lb_func_t lb_callback)
 {
@@ -69,28 +79,21 @@ void register_lb_callback(lb_func_t lb_callback)
 
 /* Main functional part of port initialization. 8< */
 static inline int
-port_init(uint16_t port, struct rte_mempool *mbuf_pool)
+port_init(uint16_t port, struct rte_mempool *p_mbuf_pool)
 {
     uint16_t rx_rings = PORT_QUEUE_SZ, tx_rings = PORT_QUEUE_SZ;
-    if (nb_procs > 1) {
-        rx_rings = tx_rings = nb_procs;
-    }
-    LOG_INFO("Initializing port with %u RX queues and %u TX queues", rx_rings, tx_rings);
-
     uint16_t nb_rxd = RX_RING_SIZE;
     uint16_t nb_txd = TX_RING_SIZE;
     int retval;
     uint16_t q;
-    struct rte_eth_dev_info dev_info;
     struct rte_eth_txconf txconf;
     struct rte_eth_conf port_conf;
+    struct rte_eth_dev_info dev_info;
 
-    if (!rte_eth_dev_is_valid_port(port))
-        return -1;
+    if (nb_procs > 1) {
+        rx_rings = tx_rings = nb_procs;
+    }
 
-    memset(&port_conf, 0, sizeof(struct rte_eth_conf));
-
-    // Determine supported RSS hash functions
     retval = rte_eth_dev_info_get(port, &dev_info);
     if (retval != 0) {
         LOG_INFO("Error getting device (port %u) info: %s\n", port,
@@ -98,11 +101,24 @@ port_init(uint16_t port, struct rte_mempool *mbuf_pool)
         return retval;
     }
 
+    if (rx_rings > dev_info.max_rx_queues) rx_rings = dev_info.max_rx_queues;
+    if (tx_rings > dev_info.max_tx_queues) tx_rings = dev_info.max_tx_queues;
+
+    LOG_INFO("Initializing port with %u RX queues and %u TX queues (Max: %u/%u)", 
+            rx_rings, tx_rings, dev_info.max_rx_queues, dev_info.max_tx_queues);
+
+    if (!rte_eth_dev_is_valid_port(port))
+        return -1;
+
+    memset(&port_conf, 0, sizeof(struct rte_eth_conf));
+
     uint64_t rss_hf_temp = RTE_ETH_RSS_IP | RTE_ETH_RSS_UDP | RTE_ETH_RSS_TCP;
     port_conf.rx_adv_conf.rss_conf.rss_hf = rss_hf_temp & dev_info.flow_type_rss_offloads;
 
     if (port_conf.rx_adv_conf.rss_conf.rss_hf != 0) {
         port_conf.rxmode.mq_mode = RTE_ETH_MQ_RX_RSS; // Enable RSS only if hash functions are supported
+        port_conf.rx_adv_conf.rss_conf.rss_key = symmetric_rsskey;
+        port_conf.rx_adv_conf.rss_conf.rss_key_len = 40;
         LOG_INFO("Port %u: Enabled RSS with hash functions: 0x%" PRIx64 "\n", port, port_conf.rx_adv_conf.rss_conf.rss_hf);
     } else {
         port_conf.rxmode.mq_mode = RTE_ETH_MQ_RX_NONE; // No RSS if no hash functions are supported
@@ -147,8 +163,12 @@ port_init(uint16_t port, struct rte_mempool *mbuf_pool)
 
     /* Allocate and set up 1 RX queue per Ethernet port. */
     for (q = 0; q < rx_rings; q++) {
+        struct rte_mempool *q_pool;
+        if (nb_procs <= 1 || q == 0) q_pool = p_mbuf_pool;
+        else q_pool = rte_mempool_lookup(get_mbuf_pool_name(q));
+        
         retval = rte_eth_rx_queue_setup(port, q, nb_rxd,
-                rte_eth_dev_socket_id(port), NULL, mbuf_pool);
+                rte_eth_dev_socket_id(port), NULL, q_pool);
         if (retval < 0)
             return retval;
     }
@@ -161,6 +181,22 @@ port_init(uint16_t port, struct rte_mempool *mbuf_pool)
                 rte_eth_dev_socket_id(port), &txconf);
         if (retval < 0)
             return retval;
+    }
+
+    /* Configure RETA if RSS is enabled and multiple processes */
+    if (nb_procs > 1 && port_conf.rxmode.mq_mode == RTE_ETH_MQ_RX_RSS) {
+        struct rte_eth_rss_reta_entry64 reta_conf[2]; // 128 entries
+        memset(reta_conf, 0, sizeof(reta_conf));
+        for (int i = 0; i < 128; i++) {
+            reta_conf[i / 64].mask |= (1ULL << (i % 64));
+            reta_conf[i / 64].reta[i % 64] = i % nb_procs;
+        }
+        retval = rte_eth_dev_rss_reta_update(port, reta_conf, 128);
+        if (retval != 0) {
+            LOG_INFO("Port %u: Failed to update RETA: %s\n", port, strerror(-retval));
+        } else {
+            LOG_INFO("Port %u: Updated RETA for %d queues\n", port, nb_procs);
+        }
     }
 
     /* Starting Ethernet port. 8< */
@@ -410,46 +446,86 @@ enqueue_rx_packet(uint8_t client, struct rte_mbuf *buf)
     }
 }
 
+#include <rte_thash.h>
+
 void port_read(uint8_t queue_id)
 {
     struct rte_mbuf *bufs[BURST_SIZE];
     const uint16_t nb_rx = rte_eth_rx_burst(0,
-            proc_id,
+            queue_id,
             bufs, BURST_SIZE);
 
     if (unlikely(nb_rx == 0))
        return;
 
-    //LOG_DEBUG("read packet [%d] from port [%d]", nb_rx, proc_id);
     for (int i = 0; i < nb_rx; i++) {
         struct rte_mbuf *pkt = bufs[i];
         rte_prefetch0(rte_pktmbuf_mtod(pkt, void *));
         if (is_arp_packet(pkt)) {
             for (int j = 0; j < nb_procs; j++) {
-                //LOG_INFO("send arp packet to ring[%d]", j);
                 if (j != proc_id) {
                     struct rte_mbuf * cloned_pkt = rte_pktmbuf_clone(pkt, mbuf_pool);
                     if (cloned_pkt) {
-                        enqueue_rx_packet(j, cloned_pkt);
+                        struct rte_ring *r = rte_ring_lookup(get_arp_ring_name(j));
+                        if (r) {
+                            if (rte_ring_enqueue(r, cloned_pkt) < 0) rte_pktmbuf_free(cloned_pkt);
+                        } else {
+                            rte_pktmbuf_free(cloned_pkt);
+                        }
                     }
                 }
             }
         }
 
-        if (gl_lb_callback) {
+        // Process packet directly if RSS is enabled, otherwise use LB or Software RSS
+        if (nb_procs > 1 && !gl_lb_callback) {
+            // Software RSS fallback
+            int prot = 0;
+            uint16_t src_port = 0, dst_port = 0;
+            uint32_t src_ip = 0, dst_ip = 0;
+            
+            // Extract L3/L4 info for hashing
+            struct rte_ether_hdr *eth_hdr = rte_pktmbuf_mtod(pkt, struct rte_ether_hdr *);
+            if (rte_be_to_cpu_16(eth_hdr->ether_type) == RTE_ETHER_TYPE_IPV4) {
+                struct rte_ipv4_hdr *ipv4_hdr = (struct rte_ipv4_hdr *)(eth_hdr + 1);
+                src_ip = ipv4_hdr->src_addr;
+                dst_ip = ipv4_hdr->dst_addr;
+                if (ipv4_hdr->next_proto_id == IPPROTO_TCP) {
+                    struct rte_tcp_hdr *tcp_hdr = (struct rte_tcp_hdr *)(ipv4_hdr + 1);
+                    src_port = tcp_hdr->src_port;
+                    dst_port = tcp_hdr->dst_port;
+                } else if (ipv4_hdr->next_proto_id == IPPROTO_UDP) {
+                    struct rte_udp_hdr *udp_hdr = (struct rte_udp_hdr *)(ipv4_hdr + 1);
+                    src_port = udp_hdr->src_port;
+                    dst_port = udp_hdr->dst_port;
+                }
+            }
+
+            if (src_port != 0) {
+                union rte_thash_tuple tuple;
+                tuple.v4.src_addr = src_ip;
+                tuple.v4.dst_addr = dst_ip;
+                tuple.v4.sport = src_port;
+                tuple.v4.dport = dst_port;
+                uint32_t hash = rte_softrss_be((uint32_t *)&tuple, RTE_THASH_V4_L4_LEN, symmetric_rsskey);
+                uint16_t target_q = hash % nb_procs;
+                if (target_q == proc_id) {
+                    single_mbuf_input(pkt);
+                } else {
+                    enqueue_rx_packet(target_q, pkt);
+                }
+            } else {
+                single_mbuf_input(pkt);
+            }
+        } else if (gl_lb_callback) {
             int prot = 0;
             uint16_t src_port = 0, dst_port = 0;
             get_ports(pkt, &prot, &src_port, &dst_port);
-            uint16_t queue_id = gl_lb_callback(prot, src_port, dst_port);
-            //if (queue_id != ff_global_cfg.dpdk.proc_id) {
-            //rte_ring_mp_enqueue(client_rings[0].rx_q, pkt);
-            enqueue_rx_packet(queue_id, pkt);
-                //continue;
-            //}
+            uint16_t q_id = gl_lb_callback(prot, src_port, dst_port);
+            enqueue_rx_packet(q_id, pkt);
         } else {
             enqueue_rx_packet(0, pkt);
         }
-        //single_mbuf_input(pkt);
     }
     for (uint16_t i = 0; i < nb_procs; i++) {
         flush_rx_queue(i);
@@ -466,7 +542,6 @@ static void rx_ring_read()
             pkts, BURST_SIZE, NULL);
     if (unlikely(rx_pkts == 0)) return;
 
-    //LOG_DEBUG("read packet [%d] from ring [%d]", rx_pkts, proc_id);
     for (i = 0; i < rx_pkts; i++) {
         struct rte_mbuf *buf = (struct rte_mbuf *)pkts[i];
         single_mbuf_input(buf);
@@ -476,7 +551,23 @@ static void rx_ring_read()
 void dpdk_read()
 {
     rte_eth_tx_buffer_flush(0, proc_id, tx_buffer);
-    port_read(proc_id);
+
+    // 1. Process shadow ARP ring
+    if (shadow_arp_ring) {
+        struct rte_mbuf *arp_bufs[BURST_SIZE];
+        int nb_arp = rte_ring_dequeue_burst(shadow_arp_ring, (void **)arp_bufs, BURST_SIZE, NULL);
+        for (int i = 0; i < nb_arp; i++) {
+            single_mbuf_input(arp_bufs[i]);
+        }
+    }
+
+    // Only read from port if this process owns a valid hardware queue
+    struct rte_eth_dev_info dev_info;
+    rte_eth_dev_info_get(0, &dev_info);
+    if (proc_id < dev_info.max_rx_queues) {
+        port_read(proc_id);
+    }
+    
     rx_ring_read();
 }
 
@@ -521,13 +612,28 @@ init_shm_rings(enum rte_proc_type_t proc_type)
         if (client_rings[i].rx_q == NULL)
             rte_exit(EXIT_FAILURE, "Cannot create rx ring queue for client %u\n", i);
         LOG_INFO("rx_ring: %s:%p", q_name, client_rings[i].rx_q);
+
+        if (proc_type == RTE_PROC_PRIMARY) {
+            rte_ring_create(get_arp_ring_name(i), 1024, socket_id, 0);
+        }
+        if (i == proc_id) {
+            shadow_arp_ring = rte_ring_lookup(get_arp_ring_name(i));
+            if (!shadow_arp_ring) {
+                LOG_ERROR("Proc %d: Failed to lookup ARP ring", proc_id);
+            }
+        }
     }
     return 0;
 }
 
+static inline char *get_mbuf_pool_name(int id) {
+    static char buf[32];
+    snprintf(buf, sizeof(buf), "MBUF_POOL_%d", id);
+    return buf;
+}
+
 int dpdk_init(int argc, char **argv)
 {
-    static const char *_MBUF_POOL = "MBUF_POOL";
     enum rte_proc_type_t proc_type;
     int ret = rte_eal_init(argc, argv);
     if (ret < 0) {
@@ -544,15 +650,18 @@ int dpdk_init(int argc, char **argv)
     num_mbufs += nb_procs * CLIENT_QUEUE_RINGSIZE;
     num_mbufs += nb_procs * (RX_RING_SIZE + TX_RING_SIZE);
     proc_type = rte_eal_process_type();
-    /* Allocates mempool to hold the mbufs. 8< */
-    mbuf_pool = (proc_type == RTE_PROC_SECONDARY) ?
-        rte_mempool_lookup(_MBUF_POOL) :
-        rte_pktmbuf_pool_create("MBUF_POOL", num_mbufs * nb_ports,
-            MBUF_CACHE_SIZE, 0, JUMBO_FRAME_MAX_SIZE + RTE_PKTMBUF_HEADROOM, rte_socket_id());
-    /* >8 End of allocating mempool to hold mbuf. */
-
-    if (mbuf_pool == NULL)
-        rte_exit(EXIT_FAILURE, "Cannot create mbuf pool\n");
+    
+    if (proc_type == RTE_PROC_PRIMARY) {
+        for (int i = 0; i < nb_procs; i++) {
+            struct rte_mempool *pool = rte_pktmbuf_pool_create(get_mbuf_pool_name(i), num_mbufs * nb_ports,
+                MBUF_CACHE_SIZE, 0, JUMBO_FRAME_MAX_SIZE + RTE_PKTMBUF_HEADROOM, rte_socket_id());
+            if (!pool) rte_exit(EXIT_FAILURE, "Cannot create mbuf pool %d\n", i);
+            if (i == proc_id) mbuf_pool = pool;
+        }
+    } else {
+        mbuf_pool = rte_mempool_lookup(get_mbuf_pool_name(proc_id));
+        if (!mbuf_pool) rte_exit(EXIT_FAILURE, "Cannot lookup mbuf pool %d\n", proc_id);
+    }
     configure_tx_buffer(0, BURST_SIZE);
 
     init_shm_rings(proc_type);
@@ -620,16 +729,19 @@ void set_mtu(int mtu)
 
 void configure_interface(char *ip_addr, char *gateway_addr)
 {
+    LOG_INFO("Configuring interface with IP %s, Gateway %s", ip_addr, gateway_addr);
     struct in_addr addr, gw;
     inet_pton(AF_INET, ip_addr, &addr);
     inet_pton(AF_INET, gateway_addr, &gw);
     unsigned netmask = 24; // Assuming /24 netmask
     virt_if_add_addr(v_f_dpdk, &addr, netmask, 1);
     virt_if_add_gateway(v_f_dpdk, &gw);
+    LOG_INFO("Interface configured.");
 }
 
 void add_interface_ip(char *ip_addr)
 {
+    LOG_INFO("Adding IP %s to interface", ip_addr);
     struct in_addr addr;
     inet_pton(AF_INET, ip_addr, &addr);
     unsigned netmask = 24; // Assuming /24 netmask

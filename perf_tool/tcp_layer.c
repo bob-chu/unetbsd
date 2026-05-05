@@ -7,6 +7,7 @@
 
 #include <ev.h>
 #include <u_socket.h>
+#include <rte_thash.h>
 
 #include "tcp_layer.h"
 #include "logger.h"
@@ -15,6 +16,10 @@
 #include "common.h"
 #include <sys/queue.h>
 #include <stdbool.h>
+
+extern int nb_procs;
+extern int proc_id;
+extern char *g_mode;
 
 TAILQ_HEAD(tcp_conn_list, tcp_conn);
 static struct tcp_conn_list g_tcp_conn_pool;
@@ -99,22 +104,6 @@ static bool g_port_pool_initialized = false;
 
 void tcp_layer_init_local_port_pool(perf_config_t *config) {
     if (g_port_pool_initialized) return;
-    int start_port = config->l4.src_port_start;
-    int end_port = config->l4.src_port_end;
-    g_local_port_count = end_port - start_port + 1;
-    
-    g_local_ports = (int *)malloc(g_local_port_count * sizeof(int));
-    if (!g_local_ports) {
-        g_local_port_count = 0;
-        return;
-    }
-    
-    for (int i = 0; i < g_local_port_count; i++) {
-        g_local_ports[i] = start_port + i;
-    }
-    g_local_port_used = 0;
-    g_current_port_index = 0;
-    g_last_port_stats_log_time = 0.0;
 
     struct in_addr start_ip, end_ip;
     if (inet_pton(AF_INET, config->l3.src_ip_start, &start_ip) == 1 &&
@@ -161,18 +150,53 @@ void tcp_layer_init_local_port_pool(perf_config_t *config) {
 
     g_server_port_count = config->l4.dst_port_end - config->l4.dst_port_start + 1;
     g_server_ports = (int *)malloc(g_server_port_count * sizeof(int));
-    if (!g_server_ports) {
-        g_server_port_count = 0;
-        return;
+    if (g_server_ports) {
+        for (int i = 0; i < g_server_port_count; i++) {
+            g_server_ports[i] = config->l4.dst_port_start + i;
+        }
     }
-    for (int i = 0; i < g_server_port_count; i++) {
-        g_server_ports[i] = config->l4.dst_port_start + i;
+
+    int start_port = config->l4.src_port_start;
+    int end_port = config->l4.src_port_end;
+    int p_total = end_port - start_port + 1;
+
+    g_local_ports = (int *)malloc(p_total * sizeof(int));
+    g_local_port_count = 0;
+
+    bool is_server = (g_mode != NULL && strcmp(g_mode, "server") == 0);
+
+    if (g_local_ports && g_server_ports && g_local_ips && g_server_ips) {
+        // Source is always Client, Destination is always Server in perf_tool config
+        uint32_t client_ip = g_local_ips[0].s_addr;
+        uint32_t server_ip = g_server_ips[0].s_addr;
+        uint16_t server_port = htons(g_server_ports[0]);
+
+        for (int i = 0; i < p_total; i++) {
+            uint16_t client_port = htons(start_port + i);
+            union rte_thash_tuple tuple;
+            
+            // The tuple for hardware RSS is ALWAYS (Client IP, Server IP, Client Port, Server Port)
+            // relative to the "src" and "dst" fields in the JSON.
+            tuple.v4.src_addr = client_ip;
+            tuple.v4.dst_addr = server_ip;
+            tuple.v4.sport = client_port;
+            tuple.v4.dport = server_port;
+
+            uint32_t hash = rte_softrss_be((uint32_t *)&tuple, RTE_THASH_V4_L4_LEN, symmetric_rsskey);
+
+            if (nb_procs <= 1 || is_server || (hash % nb_procs) == proc_id) {
+                g_local_ports[g_local_port_count++] = start_port + i;
+            }
+        }
     }
+
+    g_local_port_used = 0;
+    g_current_port_index = 0;
+    g_last_port_stats_log_time = 0.0;
     g_current_server_ip_index = 0;
     g_current_server_port_index = 0;
     g_port_pool_initialized = true;
 }
-
 static struct in_addr tcp_layer_get_local_ip(void) {
     if (g_local_ip_count > 0) {
         struct in_addr ip = g_local_ips[g_current_ip_index];
