@@ -176,3 +176,11 @@ void sysctl_tun(char *name, int val)
     }
 }
 
+extern void netbsd_process_event(void);
+
+void u_stack_tick(void)
+{
+    softint_run();
+    netbsd_process_event();
+}
+

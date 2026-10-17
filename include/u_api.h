@@ -1,6 +1,10 @@
 #ifndef U_API_H
 #define U_API_H
 
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE
+#endif
+
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <sys/uio.h>
@@ -32,9 +36,15 @@ int u_socket(int domain, int type, int protocol);
 int u_bind(int sockfd, const struct sockaddr *addr, socklen_t addrlen);
 int u_listen(int sockfd, int backlog);
 int u_accept(int sockfd, struct sockaddr *addr, socklen_t *addrlen);
+int u_accept4(int sockfd, struct sockaddr *addr, socklen_t *addrlen, int flags);
 int u_connect(int sockfd, const struct sockaddr *addr, socklen_t addrlen);
 ssize_t u_recvfrom(int sockfd, void *buf, size_t len, int flags, struct sockaddr *from, socklen_t *fromlen);
 ssize_t u_sendto(int sockfd, const void *buf, size_t len, int flags, const struct sockaddr *to, socklen_t tolen);
+ssize_t u_recvmsg(int sockfd, struct msghdr *msg, int flags);
+ssize_t u_sendmsg(int sockfd, const struct msghdr *msg, int flags);
+struct mmsghdr;
+int u_recvmmsg(int sockfd, struct mmsghdr *msgvec, unsigned int vlen, int flags, struct timespec *timeout);
+int u_sendmmsg(int sockfd, struct mmsghdr *msgvec, unsigned int vlen, int flags);
 int u_setsockopt(int sockfd, int level, int optname, const void *optval, socklen_t optlen);
 int u_getsockopt(int sockfd, int level, int optname, void *optval, socklen_t *optlen);
 int u_close(int fd);

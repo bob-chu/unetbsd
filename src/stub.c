@@ -1565,4 +1565,8 @@ const struct filterops fs_filtops = {
 
 /* kern_event.c: atomic_add_int */
 void atomic_add_int(volatile unsigned int *ptr, int val) { *ptr += val; }
+void kernconfig_lock(void) {}
+void kernconfig_unlock(void) {}
+bool device_has_partitions(struct device *dev) { (void)dev; return false; }
+bool timespecsubok(const struct timespec *tsp, const struct timespec *usp) { (void)tsp; (void)usp; return true; }
 

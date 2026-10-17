@@ -480,6 +480,16 @@ executable(
     dependencies : [libev_dep, pthread_dep],
     install : true
 )
+# test_u_api - Test extended u_* socket API (u_accept4, u_recvmsg, u_sendmsg, u_sendmmsg, u_recvmmsg)
+executable(
+    'test_u_api',
+    'app/test_u_api.c',
+    c_args : cflags_user,
+    include_directories : [include_directories('include'), include_directories('app')],
+    link_with : libnetbsdstack_static,
+    dependencies : [libev_dep, pthread_dep],
+    install : true
+)
 
 # SAM build target
 #sam = find_program('sam', required : false)

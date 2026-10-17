@@ -1,0 +1,7 @@
+build/
+netbsd_src/
+core
+core.*
+*.core
+ptweb/dist/
+ptweb/node_modules/

@@ -208,10 +208,10 @@ u_listen(int s, int backlog)
 }
 
 /*
- * u_accept - Accept a connection.
+ * u_accept4 - Accept a connection with flags.
  */
 int
-u_accept(int s, struct sockaddr *name, socklen_t *namelen)
+u_accept4(int s, struct sockaddr *name, socklen_t *namelen, int flags)
 {
 	struct socket *so, *so2;
 	struct mbuf *nam;
@@ -288,10 +288,21 @@ u_accept(int s, struct sockaddr *name, socklen_t *namelen)
 
 	/* Set up the new file structure */
 	fp->f_flag = FREAD | FWRITE;
+	if (flags & 0x800) /* SOCK_NONBLOCK */
+		fp->f_flag |= FNONBLOCK;
 	fp->f_type = DTYPE_SOCKET;
 	fp->f_ops = &socketops;
 	fp->f_socket = so2;
 
+	if (flags & 0x800) { /* SOCK_NONBLOCK */
+		solock(so2);
+		so2->so_state |= SS_NBIO;
+		sounlock(so2);
+	}
+
+	if (flags & 0x80000) { /* SOCK_CLOEXEC */
+		fd_set_exclose(curlwp, fd, true);
+	}
 	sounlock(so);
 
 	/* Get peer address if requested */
@@ -317,6 +328,14 @@ u_accept(int s, struct sockaddr *name, socklen_t *namelen)
 
 	fd_putfile(s);
 	return fd;
+}
+/*
+ * u_accept - Accept a connection (backward compatibility wrapper).
+ */
+int
+u_accept(int s, struct sockaddr *name, socklen_t *namelen)
+{
+	return u_accept4(s, name, namelen, 0);
 }
 
 /*
@@ -522,6 +541,194 @@ u_sendto(int s, const void *buf, size_t len, int flags,
 		return u_set_errno(error);
 
 	return len - auio.uio_resid;
+}
+/*
+ * Linux userspace msghdr / mmsghdr layout translation.
+ * On 64-bit Linux, msg_iovlen and msg_controllen are size_t (8 bytes),
+ * whereas in NetBSD kernel they are int/socklen_t (4 bytes).
+ */
+struct linux_msghdr {
+	void		*msg_name;
+	socklen_t	msg_namelen;
+	int		_pad1;
+	struct iovec	*msg_iov;
+	size_t		msg_iovlen;
+	void		*msg_control;
+	size_t		msg_controllen;
+	int		msg_flags;
+};
+
+struct linux_mmsghdr {
+	struct linux_msghdr msg_hdr;
+	unsigned int msg_len;
+};
+
+/*
+ * u_recvmsg - Receive a message from a socket with ancillary data.
+ */
+ssize_t
+u_recvmsg(int s, struct msghdr *msg, int flags)
+{
+	struct linux_msghdr *lmsg = (struct linux_msghdr *)msg;
+	struct socket *so;
+	struct mbuf *m_from = NULL;
+	struct mbuf *m_control = NULL;
+	struct uio auio;
+	int error;
+
+	if (msg == NULL)
+		return u_set_errno_ssize(EINVAL);
+
+	error = fd_getsock(s, &so);
+	if (error)
+		return u_set_errno_ssize(error);
+
+	auio.uio_iov = lmsg->msg_iov;
+	auio.uio_iovcnt = (int)lmsg->msg_iovlen;
+	auio.uio_resid = 0;
+	for (size_t i = 0; i < lmsg->msg_iovlen; i++)
+		auio.uio_resid += lmsg->msg_iov[i].iov_len;
+	auio.uio_rw = UIO_READ;
+	auio.uio_offset = 0;
+	auio.uio_vmspace = NULL;
+	size_t len = auio.uio_resid;
+
+	error = (*so->so_receive)(so, lmsg->msg_name ? &m_from : NULL, &auio,
+	    NULL, lmsg->msg_control ? &m_control : NULL, &flags);
+
+	if (error == 0 && lmsg->msg_name && m_from) {
+		struct sockaddr *sa = mtod(m_from, struct sockaddr *);
+		socklen_t sa_len = sa->sa_len;
+		if (lmsg->msg_namelen < sa_len)
+			sa_len = lmsg->msg_namelen;
+		memcpy(lmsg->msg_name, sa, sa_len);
+		lmsg->msg_namelen = sa_len;
+	}
+	if (m_from)
+		m_freem(m_from);
+
+	if (error == 0 && lmsg->msg_control && m_control) {
+		size_t c_len = m_control->m_len;
+		if (lmsg->msg_controllen < c_len)
+			c_len = lmsg->msg_controllen;
+		m_copydata(m_control, 0, c_len, lmsg->msg_control);
+		lmsg->msg_controllen = c_len;
+	} else if (lmsg->msg_control) {
+		lmsg->msg_controllen = 0;
+	}
+	if (m_control)
+		m_freem(m_control);
+
+	fd_putfile(s);
+
+	if (error)
+		return u_set_errno_ssize(error);
+
+	return len - auio.uio_resid;
+}
+
+/*
+ * u_sendmsg - Send a message on a socket with ancillary data.
+ */
+ssize_t
+u_sendmsg(int s, const struct msghdr *msg, int flags)
+{
+	const struct linux_msghdr *lmsg = (const struct linux_msghdr *)msg;
+	struct socket *so;
+	struct mbuf *nam = NULL;
+	struct mbuf *control = NULL;
+	struct uio auio;
+	int error;
+
+	if (msg == NULL)
+		return u_set_errno_ssize(EINVAL);
+
+	error = fd_getsock(s, &so);
+	if (error)
+		return u_set_errno_ssize(error);
+
+	if (lmsg->msg_name) {
+		error = u_sockargs(&nam, lmsg->msg_name, lmsg->msg_namelen);
+		if (error) {
+			fd_putfile(s);
+			return u_set_errno_ssize(error);
+		}
+	}
+
+	if (lmsg->msg_control && lmsg->msg_controllen > 0) {
+		error = sockargs(&control, lmsg->msg_control, lmsg->msg_controllen,
+		    UIO_USERSPACE, MT_CONTROL);
+		if (error) {
+			if (nam) m_freem(nam);
+			fd_putfile(s);
+			return u_set_errno_ssize(error);
+		}
+	}
+
+	auio.uio_iov = lmsg->msg_iov;
+	auio.uio_iovcnt = (int)lmsg->msg_iovlen;
+	auio.uio_resid = 0;
+	for (size_t i = 0; i < lmsg->msg_iovlen; i++)
+		auio.uio_resid += lmsg->msg_iov[i].iov_len;
+	auio.uio_rw = UIO_WRITE;
+	auio.uio_offset = 0;
+	auio.uio_vmspace = NULL;
+	size_t len = auio.uio_resid;
+
+	error = (*so->so_send)(so, nam ? mtod(nam, struct sockaddr *) : NULL,
+	    &auio, NULL, control, flags, curlwp);
+
+	if (nam)
+		m_freem(nam);
+	fd_putfile(s);
+
+	if (error)
+		return u_set_errno_ssize(error);
+
+	return len - auio.uio_resid;
+}
+
+/*
+ * u_sendmmsg - Send multiple messages on a socket.
+ */
+int
+u_sendmmsg(int s, struct mmsghdr *msgvec, unsigned int vlen, int flags)
+{
+	struct linux_mmsghdr *lvec = (struct linux_mmsghdr *)msgvec;
+	unsigned int sent = 0;
+	for (unsigned int i = 0; i < vlen; i++) {
+		ssize_t ret = u_sendmsg(s, (const struct msghdr *)&lvec[i].msg_hdr, flags);
+		if (ret < 0) {
+			if (sent > 0)
+				return (int)sent;
+			return (int)ret;
+		}
+		lvec[i].msg_len = (unsigned int)ret;
+		sent++;
+	}
+	return (int)sent;
+}
+
+/*
+ * u_recvmmsg - Receive multiple messages on a socket.
+ */
+int
+u_recvmmsg(int s, struct mmsghdr *msgvec, unsigned int vlen, int flags, struct timespec *timeout)
+{
+	(void)timeout;
+	struct linux_mmsghdr *lvec = (struct linux_mmsghdr *)msgvec;
+	unsigned int recvd = 0;
+	for (unsigned int i = 0; i < vlen; i++) {
+		ssize_t ret = u_recvmsg(s, (struct msghdr *)&lvec[i].msg_hdr, flags);
+		if (ret < 0) {
+			if (recvd > 0)
+				return (int)recvd;
+			return (int)ret;
+		}
+		lvec[i].msg_len = (unsigned int)ret;
+		recvd++;
+	}
+	return (int)recvd;
 }
 
 /*
