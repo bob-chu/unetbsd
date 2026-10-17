@@ -52,10 +52,10 @@ struct lwp	*curlwp;
 const int msize = 512;
 const int mclbytes = 2048;
 
-#define PHYSMEM_MB 4096
-#define PAGE_SIZE_VAL 4096
-unsigned long physmem = (PHYSMEM_MB * 1024 * 1024) / PAGE_SIZE_VAL;
-unsigned long nkmempages = (PHYSMEM_MB * 1024 * 1024 / 2) / PAGE_SIZE_VAL;
+#define PHYSMEM_MB 4096UL
+#define PAGE_SIZE_VAL 4096UL
+unsigned long physmem = (PHYSMEM_MB * 1024UL * 1024UL) / PAGE_SIZE_VAL;
+unsigned long nkmempages = (PHYSMEM_MB * 1024UL * 1024UL / 2UL) / PAGE_SIZE_VAL;
 
 int nmbclusters = 524288;
 int mblowat = 256;

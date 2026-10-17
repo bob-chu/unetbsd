@@ -173,6 +173,94 @@ int main(int argc, char *argv[])
     assert(u_is_nonblocking(accepted_fd) == 1);
     printf("   TCP u_accept4(SOCK_NONBLOCK) returned fd %d (non-blocking confirmed) PASSED!\n", accepted_fd);
 
+    /* ------------------------------------------------------------- */
+    /* Test 4: TCP Bidirectional Data Transfer (u_write & u_read)   */
+    /* ------------------------------------------------------------- */
+    printf("5. Testing TCP bidirectional data transfer (u_write / u_read)...\n");
+    char tcp_msg[] = "UNETBSD_TCP_DATA_PAYLOAD";
+    ssize_t w_sent = u_write(tcp_cli, tcp_msg, strlen(tcp_msg));
+    assert(w_sent == (ssize_t)strlen(tcp_msg));
+
+    for (int t = 0; t < 5; t++) {
+        user_hardclock();
+        u_stack_tick();
+    }
+
+    char tcp_rbuf[128] = {0};
+    ssize_t r_recvd = u_read(accepted_fd, tcp_rbuf, sizeof(tcp_rbuf) - 1);
+    assert(r_recvd == (ssize_t)strlen(tcp_msg));
+    assert(memcmp(tcp_rbuf, tcp_msg, r_recvd) == 0);
+
+    /* Echo back from server to client */
+    char tcp_echo[] = "UNETBSD_TCP_ECHO_RESPONSE";
+    ssize_t e_sent = u_write(accepted_fd, tcp_echo, strlen(tcp_echo));
+    assert(e_sent == (ssize_t)strlen(tcp_echo));
+
+    for (int t = 0; t < 5; t++) {
+        user_hardclock();
+        u_stack_tick();
+    }
+
+    char cli_rbuf[128] = {0};
+    ssize_t c_recvd = u_read(tcp_cli, cli_rbuf, sizeof(cli_rbuf) - 1);
+    assert(c_recvd == (ssize_t)strlen(tcp_echo));
+    assert(memcmp(cli_rbuf, tcp_echo, c_recvd) == 0);
+    printf("   TCP bidirectional u_write and u_read PASSED!\n");
+
+    /* ------------------------------------------------------------- */
+    /* Test 5: TCP Multi-Kilobyte Stream & Window Drain             */
+    /* ------------------------------------------------------------- */
+    printf("6. Testing TCP 16KB stream data transfer...\n");
+    #define STREAM_BYTES 16384
+    char *stream_data = malloc(STREAM_BYTES);
+    assert(stream_data != NULL);
+    for (int i = 0; i < STREAM_BYTES; i++) {
+        stream_data[i] = (char)(i & 0xFF);
+    }
+
+    ssize_t stream_sent = u_write(tcp_cli, stream_data, STREAM_BYTES);
+    assert(stream_sent > 0);
+
+    size_t total_stream_recvd = 0;
+    char *stream_recv_buf = malloc(STREAM_BYTES);
+    assert(stream_recv_buf != NULL);
+
+    for (int round = 0; round < 100 && total_stream_recvd < STREAM_BYTES; round++) {
+        user_hardclock();
+        u_stack_tick();
+        ssize_t n = u_read(accepted_fd, stream_recv_buf + total_stream_recvd, STREAM_BYTES - total_stream_recvd);
+        if (n > 0) {
+            total_stream_recvd += n;
+        }
+        if (stream_sent < STREAM_BYTES) {
+            ssize_t rem = u_write(tcp_cli, stream_data + stream_sent, STREAM_BYTES - stream_sent);
+            if (rem > 0) stream_sent += rem;
+        }
+    }
+    assert(total_stream_recvd == STREAM_BYTES);
+    assert(memcmp(stream_data, stream_recv_buf, STREAM_BYTES) == 0);
+    free(stream_data);
+    free(stream_recv_buf);
+    printf("   TCP 16KB stream transfer verified PASSED!\n");
+
+    /* ------------------------------------------------------------- */
+    /* Test 6: TCP Half-Close (u_shutdown SHUT_WR) & EOF Detection  */
+    /* ------------------------------------------------------------- */
+    printf("7. Testing TCP u_shutdown(SHUT_WR) and EOF detection...\n");
+    ret = u_shutdown(tcp_cli, SHUT_WR);
+    assert(ret == 0);
+
+    for (int t = 0; t < 10; t++) {
+        user_hardclock();
+        u_stack_tick();
+    }
+
+    char eof_buf[16];
+    ssize_t eof_res = u_read(accepted_fd, eof_buf, sizeof(eof_buf));
+    /* Reading from half-closed socket with no more data returns 0 (EOF) */
+    assert(eof_res == 0);
+    printf("   TCP u_shutdown(SHUT_WR) and EOF detection PASSED!\n");
+
     u_close(tcp_cli);
     u_close(accepted_fd);
     u_close(tcp_srv);
