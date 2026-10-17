@@ -111,6 +111,18 @@ u_sockargs(struct mbuf **mp, const struct sockaddr *addr, socklen_t addrlen)
 
 	return 0;
 }
+/*
+ * Reverse translation: NetBSD sockaddr → Linux sockaddr
+ */
+static void
+u_sockaddr_to_linux(struct sockaddr *sa)
+{
+	if (sa == NULL)
+		return;
+	uint8_t family = ((const uint8_t *)sa)[1];
+	*(uint16_t *)sa = (uint16_t)family;
+}
+
 
 /* ============================================================
  * Socket API
@@ -316,6 +328,7 @@ u_accept4(int s, struct sockaddr *name, socklen_t *namelen, int flags)
 			if (namelen && *namelen < sa_len)
 				sa_len = *namelen;
 			memcpy(name, sa, sa_len);
+			u_sockaddr_to_linux(name);
 			if (namelen)
 				*namelen = sa_len;
 		}
@@ -483,6 +496,7 @@ u_recvfrom(int s, void *buf, size_t len, int flags,
 		if (fromlen && *fromlen < sa_len)
 			sa_len = *fromlen;
 		memcpy(from, sa, sa_len);
+		u_sockaddr_to_linux(from);
 		if (fromlen)
 			*fromlen = sa_len;
 	}
@@ -602,6 +616,7 @@ u_recvmsg(int s, struct msghdr *msg, int flags)
 		if (lmsg->msg_namelen < sa_len)
 			sa_len = lmsg->msg_namelen;
 		memcpy(lmsg->msg_name, sa, sa_len);
+		u_sockaddr_to_linux(lmsg->msg_name);
 		lmsg->msg_namelen = sa_len;
 	}
 	if (m_from)
@@ -856,6 +871,7 @@ u_getpeername(int s, struct sockaddr *asa, socklen_t *alen)
 		if (alen && *alen < sa_len)
 			sa_len = *alen;
 		memcpy(asa, sa, sa_len);
+		u_sockaddr_to_linux(asa);
 		if (alen)
 			*alen = sa_len;
 	}
@@ -892,6 +908,7 @@ u_getsockname(int s, struct sockaddr *asa, socklen_t *alen)
 		if (alen && *alen < sa_len)
 			sa_len = *alen;
 		memcpy(asa, sa, sa_len);
+		u_sockaddr_to_linux(asa);
 		if (alen)
 			*alen = sa_len;
 	}

@@ -171,6 +171,8 @@ int main(int argc, char *argv[])
     int accepted_fd = u_accept4(tcp_srv, (struct sockaddr *)&cli_peer, &cli_peer_len, 0x800 /* SOCK_NONBLOCK */);
     assert(accepted_fd >= 0);
     assert(u_is_nonblocking(accepted_fd) == 1);
+    assert(cli_peer.sin_family == AF_INET);
+    assert(cli_peer.sin_addr.s_addr == htonl(INADDR_LOOPBACK));
     printf("   TCP u_accept4(SOCK_NONBLOCK) returned fd %d (non-blocking confirmed) PASSED!\n", accepted_fd);
 
     /* ------------------------------------------------------------- */
