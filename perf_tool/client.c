@@ -54,6 +54,7 @@ void run_client(struct ev_loop *loop, perf_config_t *config) {
 
 static void client_scheduler_cb(EV_P_ ev_timer *w, int revents) {
     perf_config_t *config = (perf_config_t *)w->data;
+    scheduler_check_phase_transition("client");
     test_phase_t current_phase = scheduler_get_current_phase();
 
     switch (current_phase) {

@@ -327,7 +327,7 @@ static int lcore_rxtx(void *arg) {
                         rte_pktmbuf_mtod_offset(bufs[i], struct rte_ipv6_hdr *,
                                                 sizeof(struct rte_ether_hdr));
                     dst_ip.family = AF_INET6;
-                    memcpy(dst_ip.addr.ipv6, ipv6_hdr->dst_addr.a, sizeof(ipv6_hdr->dst_addr.a));
+                    memcpy(dst_ip.addr.ipv6, ipv6_hdr->dst_addr, sizeof(dst_ip.addr.ipv6));
                 } else if (eth_type == RTE_ETHER_TYPE_ARP) {
                     struct rte_arp_hdr *arp_hdr = rte_pktmbuf_mtod_offset(
                         bufs[i], struct rte_arp_hdr *,
@@ -490,7 +490,7 @@ static int lcore_rx(void *arg) {
                         rte_pktmbuf_mtod_offset(bufs[i], struct rte_ipv6_hdr *,
                                                 sizeof(struct rte_ether_hdr));
                     dst_ip.family = AF_INET6;
-                    memcpy(dst_ip.addr.ipv6, ipv6_hdr->dst_addr.a, sizeof(ipv6_hdr->dst_addr.a));
+                    memcpy(dst_ip.addr.ipv6, ipv6_hdr->dst_addr, sizeof(dst_ip.addr.ipv6));
                 } else if (eth_type == RTE_ETHER_TYPE_ARP) {
                     struct rte_arp_hdr *arp_hdr = rte_pktmbuf_mtod_offset(
                         bufs[i], struct rte_arp_hdr *,

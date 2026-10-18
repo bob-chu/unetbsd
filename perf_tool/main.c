@@ -115,6 +115,7 @@ int main(int argc, char *argv[]) {
     LOG_INFO("Config parsed successfully.");
 
     metrics_init();
+    netbsd_init();
 
     char *ip_addr_start = NULL;
     char *ip_addr_end = NULL;

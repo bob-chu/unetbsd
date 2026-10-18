@@ -2,7 +2,7 @@
   "scheduler": {
     "prepare_duration_sec": 3,
     "ramp_up_duration_sec": 10,
-    "sustain_duration_sec": 50,
+    "sustain_duration_sec": 5280,
     "ramp_down_duration_sec": 10,
     "close_duration_sec": 1
   },
@@ -20,7 +20,8 @@
         "path": "/hello",
         "request_headers": [
           "User-Agent: perf_tool/1.0",
-          "Accept: */*"
+          "Accept: */*",
+          "X-Padding: 1234567890"
         ],
         "response_headers": [
           "Server: unetbsd",
@@ -53,15 +54,15 @@
   },
   "dpdk": {
     "iface": "memif0",
-    "args": "--vdev=net_memif,id=0,role=client --proc-type=primary --file-prefix=memif_c",
+    "args": "--vdev=net_memif,id=0,role=client,socket=/tmp/memif_test4.sock --proc-type=primary --file-prefix=memif_c",
     "core_id": 2
   },
   "client_payload": {
-    "data": "Hello from client!",
-    "size": 18
+    "data": "Hello from client! Pad to 100 bytes: 012345678901234567890123456789012345678901234567890123456789012345678901",
+    "size": 100
   },
   "server_response": {
-    "data": "Hello from server!",
-    "size": 18
+    "data": "Hello from server! Pad to 100 bytes: 012345678901234567890123456789012345678901234567890123456789012345678901",
+    "size": 100
   }
 }

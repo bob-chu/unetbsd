@@ -63,6 +63,9 @@ static void parse_dpdk_config(cJSON *json, dpdk_config_t *dpdk_config, const cha
 }
 
 int parse_config(const char *file_path, perf_config_t *config) {
+    if (config) {
+        memset(config, 0, sizeof(*config));
+    }
     char *buffer = NULL;
     long length;
     FILE *f = fopen(file_path, "rb");
@@ -150,6 +153,12 @@ int parse_config(const char *file_path, perf_config_t *config) {
     // Parse dpdk config
     parse_dpdk_config(json, &config->dpdk_client, "dpdk_client");
     parse_dpdk_config(json, &config->dpdk_server, "dpdk_server");
+    if (!config->dpdk_client.args && !config->dpdk_client.iface) {
+        parse_dpdk_config(json, &config->dpdk_client, "dpdk");
+    }
+    if (!config->dpdk_server.args && !config->dpdk_server.iface) {
+        parse_dpdk_config(json, &config->dpdk_server, "dpdk");
+    }
 
     // Parse client payload
     cJSON *client_payload_json = cJSON_GetObjectItemCaseSensitive(json, "client_payload");
