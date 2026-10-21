@@ -115,6 +115,8 @@ int main(int argc, char *argv[]) {
     LOG_INFO("Config parsed successfully.");
 
     metrics_init();
+    if (config.tcp_syn_cache_size > 0)
+        sysctl_tun("tcp_syn_cache_size", config.tcp_syn_cache_size);
     netbsd_init();
 
     char *ip_addr_start = NULL;

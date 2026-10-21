@@ -71,6 +71,7 @@ typedef struct {
 } http_config_t;
 
 typedef struct {
+  int tcp_syn_cache_size; /* Zero means default (293); startup only. */
   scheduler_config_t scheduler;
   objective_config_t objective;
   l2_config_t l2;

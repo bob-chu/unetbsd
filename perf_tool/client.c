@@ -35,7 +35,7 @@ void run_client(struct ev_loop *loop, perf_config_t *config) {
 
     scheduler_init(loop, config);
 
-    ev_timer_init(&client_scheduler_watcher, client_scheduler_cb, 0., 0.05);
+    ev_timer_init(&client_scheduler_watcher, client_scheduler_cb, 0., 1.0);
     client_scheduler_watcher.data = config;
     ev_timer_start(loop, &client_scheduler_watcher);
 

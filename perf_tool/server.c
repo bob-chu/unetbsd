@@ -13,6 +13,12 @@
 #include "metrics.h"
 #include "scheduler.h"
 
+static ev_timer server_stats_watcher;
+
+static void server_stats_cb(EV_P_ ev_timer *w, int revents) {
+    scheduler_report_connections("server");
+}
+
 void run_server(struct ev_loop *loop, perf_config_t *config) {
     scheduler_init(loop, config);
 
@@ -23,4 +29,6 @@ void run_server(struct ev_loop *loop, perf_config_t *config) {
     } else {
         LOG_ERROR("Unsupported protocol: %s", config->l4.protocol);
     }
+    ev_timer_init(&server_stats_watcher, server_stats_cb, 0., 1.0);
+    ev_timer_start(loop, &server_stats_watcher);
 }

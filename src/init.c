@@ -167,6 +167,11 @@ void sysctl_tun(char *name, int val)
     } else if (strcmp(name, "tcp_do_sack") == 0) {
         extern int tcp_do_sack;
         tcp_do_sack = val;
+    } else if (strcmp(name, "tcp_syn_cache_size") == 0) {
+        extern int syn_cache_set_size(int);
+        int error = syn_cache_set_size(val);
+        if (error != 0)
+            printf("tcp_syn_cache_size rejected (%d): use 1..1048576 before netbsd_init()\n", error);
     } else if (strcmp(name, "tcp_syn_cache_limit") == 0) {
         extern int tcp_syn_cache_limit;
         tcp_syn_cache_limit = val;

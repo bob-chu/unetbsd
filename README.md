@@ -129,3 +129,33 @@ Performance test results for Connections Per Second (CPS).
       50 Cores(890K)  | ####################################
 (Each # represents approximately 25K CPS)
 ```
+
+### Local benchmark results (2026-10-21)
+
+Measured on an AMD Ryzen 9 6900HX under WSL2, using DPDK memif and
+unencrypted HTTP with one request per connection. CPS results below use
+100-byte responses. Concurrency is per client; CPS for two pairs is combined.
+
+| Test | Client/server pairs | Concurrent connections per client | Sustain measurement | Result |
+| --- | ---: | ---: | ---: | ---: |
+| Small-response CPS | 1 | 30,000 | 61 s | 83.6K CPS |
+| Small-response CPS | 2 | 30,000 | 59 s | 104.2K CPS |
+| 1 MiB response throughput | 1 | 64 | 60 s | 14.43 Gbps |
+
+The throughput test measured 14.426 Gbps at both client and server, including
+HTTP headers, with zero reported failures. The single-pair tests used logical
+CPUs 2/3; the two-pair test used 2/4 and 6/8, so these runs are not a controlled
+scaling comparison. The CPS runs reported 79 and 315 failures, respectively.
+
+Follow-up tests held CPU placement fixed to compare each pair alone with both
+running together:
+
+| Concurrent connections per client | Pair A alone | Pair B alone | Both pairs combined |
+| ---: | ---: | ---: | ---: |
+| 30,000 | 90.2K CPS | 80.1K CPS | 118.4K CPS |
+| 3,000 | 115.9K CPS | Not measured | 164.1K CPS |
+
+These follow-up runs used a 30-second sustain phase and reported zero failures.
+Each configuration was measured once. Results vary with concurrency, CPU
+placement, and host load. These are separate measurements from the older
+scaling results above.

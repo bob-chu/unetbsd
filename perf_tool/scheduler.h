@@ -41,4 +41,6 @@ void scheduler_set_paused(bool paused); // New declaration
 bool scheduler_is_paused(void); // New declaration
 const char **scheduler_get_phase_names(void); // New declaration
 
+void scheduler_report_connections(const char *role);
+
 #endif // SCHEDULER_H

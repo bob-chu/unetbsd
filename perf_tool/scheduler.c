@@ -17,6 +17,10 @@ static metrics_t last_metrics = {0};
 static int time_index = 0;
 
 static double g_start_time;
+static double g_last_connection_report;
+static uint64_t g_last_connections_opened;
+static uint64_t g_last_bytes_sent;
+static uint64_t g_last_bytes_received;
 static double g_current_phase_start_time;
 
 static test_phase_t g_current_phase = PHASE_PREPARE;
@@ -52,6 +56,10 @@ void scheduler_init(struct ev_loop *loop, perf_config_t *config) {
     g_loop = loop;
     g_config = config;
     g_start_time = ev_now(g_loop);
+    g_last_connection_report = g_start_time;
+    g_last_connections_opened = 0;
+    g_last_bytes_sent = 0;
+    g_last_bytes_received = 0;
     g_current_phase_start_time = g_start_time;
     g_current_phase = PHASE_PREPARE;
 
@@ -96,12 +104,32 @@ double scheduler_get_current_phase_start_time(void) {
     return g_current_phase_start_time;
 }
 
+/* Shared monotonic clock and cumulative counts allow cross-process comparison. */
+void scheduler_report_connections(const char *role) {
+    double now = ev_now(g_loop);
+    double elapsed = now - g_last_connection_report;
+    uint64_t opened = g_current_stats->connections_opened;
+    double cps = elapsed > 0 ? (opened - g_last_connections_opened) / elapsed : 0;
+    uint64_t sent = g_current_stats->tcp_bytes_sent;
+    uint64_t received = g_current_stats->tcp_bytes_received;
+    double tx_mbps = elapsed > 0 ? (sent - g_last_bytes_sent) * 8.0 / elapsed / 1e6 : 0;
+    double rx_mbps = elapsed > 0 ? (received - g_last_bytes_received) * 8.0 / elapsed / 1e6 : 0;
+    printf("[%s connections] Time: %.6f, Opened: %lu, CPS: %.2f, Sent: %lu, Received: %lu, Tx: %.2f Mbps, Rx: %.2f Mbps\n",
+           role, now, (unsigned long)opened, cps, (unsigned long)sent,
+           (unsigned long)received, tx_mbps, rx_mbps);
+    g_last_connection_report = now;
+    g_last_connections_opened = opened;
+    g_last_bytes_sent = sent;
+    g_last_bytes_received = received;
+}
+
 void scheduler_check_phase_transition(const char *role) {
     if (g_scheduler_paused) {
         LOG_DEBUG("Scheduler is paused, skipping phase transition check.");
         return;
     }
     double now = ev_now(g_loop);
+    scheduler_report_connections(role);
     double total_elapsed_time = now - g_start_time;
 
     metrics_t current_metrics = metrics_get_snapshot();

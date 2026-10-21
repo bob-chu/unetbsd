@@ -100,6 +100,18 @@ int parse_config(const char *file_path, perf_config_t *config) {
         return -1;
     }
 
+    cJSON *syn_size = cJSON_GetObjectItemCaseSensitive(json, "tcp_syn_cache_size");
+    if (syn_size != NULL) {
+        if (!cJSON_IsNumber(syn_size) || syn_size->valuedouble < 1 ||
+            syn_size->valuedouble > 1048576 ||
+            syn_size->valuedouble != (double)syn_size->valueint) {
+            fprintf(stderr, "tcp_syn_cache_size must be an integer between 1 and 1048576\n");
+            cJSON_Delete(json);
+            return -1;
+        }
+        config->tcp_syn_cache_size = syn_size->valueint;
+    }
+
     // Parse scheduler config
     cJSON *scheduler_json = cJSON_GetObjectItemCaseSensitive(json, "scheduler");
     if (scheduler_json) {

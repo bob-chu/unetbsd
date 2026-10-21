@@ -500,3 +500,11 @@ executable(
 #    )
 #endif
 
+syn_cache_test = executable(
+    'test_syn_cache',
+    'app/test_syn_cache.c',
+    include_directories : include_directories('include'),
+    link_with : libnetbsdstack_static,
+    dependencies : [libev_dep, pthread_dep],
+)
+test('syn_cache_size', syn_cache_test)

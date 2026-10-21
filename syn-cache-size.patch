@@ -1,0 +1,44 @@
+diff --git a/sys/netinet/tcp_syncache.c b/sys/netinet/tcp_syncache.c
+index db8f7ca21..ed403e5e0 100644
+--- a/sys/netinet/tcp_syncache.c
++++ b/sys/netinet/tcp_syncache.c
+@@ -164,6 +164,7 @@ __KERNEL_RCSID(0, "$NetBSD: tcp_syncache.c,v 1.8 2026/07/23 17:45:17 riastradh E
+ #include <sys/errno.h>
+ #include <sys/syslog.h>
+ #include <sys/pool.h>
++#include <sys/kmem.h>
+ #include <sys/domain.h>
+ #include <sys/kernel.h>
+ #include <sys/lwp.h> /* for lwp0 */
+@@ -213,7 +214,19 @@ static int	syn_cache_respond(struct syn_cache *);
+ static int	tcp_syn_cache_size = TCP_SYN_HASH_SIZE;
+ int		tcp_syn_cache_limit = TCP_SYN_HASH_SIZE*TCP_SYN_BUCKET_SIZE;
+ int		tcp_syn_bucket_limit = 3*TCP_SYN_BUCKET_SIZE;
+-static struct	syn_cache_head tcp_syn_cache[TCP_SYN_HASH_SIZE];
++static struct syn_cache_head *tcp_syn_cache;
++
++/* Configure before syn_cache_init(); live resizing would require rehashing. */
++int
++syn_cache_set_size(int size)
++{
++	if (size < 1 || size > 1048576)
++		return EINVAL;
++	if (tcp_syn_cache != NULL)
++		return EBUSY;
++	tcp_syn_cache_size = size;
++	return 0;
++}
+ 
+ /*
+  * TCP compressed state engine.  Currently used to hold compressed
+@@ -308,6 +321,10 @@ syn_cache_init(void)
+ 	pool_init(&syn_cache_pool, sizeof(struct syn_cache), 0, 0, 0,
+ 	    "synpl", NULL, IPL_SOFTNET);
+ 
++	tcp_syn_cache = kmem_zalloc((size_t)tcp_syn_cache_size *
++	    sizeof(*tcp_syn_cache), KM_SLEEP);
++	printf("SYN cache: %d hash buckets\n", tcp_syn_cache_size);
++
+ 	/* Initialize the hash buckets. */
+ 	for (i = 0; i < tcp_syn_cache_size; i++)
+ 		TAILQ_INIT(&tcp_syn_cache[i].sch_bucket);
