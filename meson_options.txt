@@ -1,1 +1,3 @@
 option('use_dpdk', type : 'boolean', value : true, description : 'Enable DPDK support')
+
+option('library_only', type: 'boolean', value: false, description: 'Build only stack libraries, without applications or frontend tooling')

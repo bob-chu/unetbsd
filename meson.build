@@ -217,6 +217,11 @@ libnetbsdstack_shared = shared_library(
 )
 
 
+# Embedders do not need Go, npm, benchmark apps, or the POSIX preload shim.
+if get_option('library_only')
+    subdir_done()
+endif
+
 # Apply patch for TCP output cache in userspace event-driven model
 patch_file = 'disable_cache_optimization.patch'
 message('Make sure to apply the patch ' + patch_file + ' to the NetBSD source if needed.')
